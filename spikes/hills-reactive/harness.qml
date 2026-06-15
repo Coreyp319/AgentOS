@@ -32,7 +32,7 @@ Window {
         property real     uDark: 1.0
         property real     uIntensity: 1.0
         property int      uTheme: 0                  // Big Sur
-        property int      uStyle: 1                  // Hills
+        property int      uStyle: 0                  // Flow
         property real     uWinReact: 0.0
         property int      uWinCount: 0
         property real     uActiveMove: 0.0

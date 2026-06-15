@@ -2,7 +2,8 @@
 
 Validates the ambient **reactive grammar** from [`docs/vision.md`](../../docs/vision.md)
 end-to-end on the *real* aurora shader: a hand-written agent-state file drives the
-Nimbus Aurora **Hills** wallpaper (style 1) to a design-grammar-correct look per state.
+Nimbus Aurora **Flow** (style 0) and **Hills** (style 1) wallpapers to a
+design-grammar-correct look per state. (Dir name is historical — Flow was wired second.)
 
 ## Result (proven)
 
@@ -28,7 +29,8 @@ Compiles with the pack's own recipe: `qsb --qt6 -o aurora.frag.qsb aurora.frag`.
 ## Run
 
 ```bash
-./run.sh        # writes agent.json + agent_data.js per state, renders each to a PNG
+PREFIX=flow ./run.sh   # renders the harness's current uStyle per state -> <PREFIX>_<state>.png
+# switch wallpaper by setting the ShaderEffect `uStyle` in harness.qml (0=Flow, 1=Hills)
 ```
 
 ## Findings → for the real implementation
@@ -40,8 +42,12 @@ Compiles with the pack's own recipe: `qsb --qt6 -o aurora.frag.qsb aurora.frag`.
   generated `agent_data.js` shim only to load deterministically under a bare `qml6`.
 - **Render on the session, not offscreen.** `QT_QPA_PLATFORM=offscreen` has no GL
   context here and produced blank frames.
-- **Tuning:** the warm-glow vertical position and all gains are single constants in the
-  Hills branch — easy to dial. Per the design, contributions stay capped + behind the
-  highlight guard so working + loud music can't compound into a blowout.
+- **Tuning:** the warm-glow position and all gains are single constants in each branch —
+  easy to dial. Per the design, contributions stay capped so working + loud music can't
+  compound into a blowout.
+- **Per-style tuning genuinely differs.** Flow's `needs_you` warmth had to relax its
+  bright-crest gate to stay visible (Flow's crests rarely sit low-centre); Hills' warmth
+  sits behind the far ridges instead. Each wallpaper's cue lands on different geometry —
+  expected, and exactly why the per-wallpaper table exists.
 
 Throwaway spike; the real change lands in the pack's `9-gpu-effects/interactive-bg/`.

@@ -4,6 +4,7 @@ set -u
 cd "$(dirname "$0")"
 QML="$(command -v qml6 || command -v qml)"
 [ -n "$QML" ] || { echo "no qml6/qml runtime"; exit 1; }
+PREFIX="${PREFIX:-flow}"   # output filename prefix (set to the wallpaper being rendered)
 
 emit() {
   # canonical bridge artifact (the "hand-written state file")
@@ -18,8 +19,8 @@ run_one() {
   # render on the live session (offscreen has no GL context here -> blank frames).
   timeout 25 "$QML" harness.qml >"log_$name.txt" 2>&1
   if [ -s out.png ]; then
-    mv out.png "hills_${name}.png"
-    echo "  $name -> hills_${name}.png ($(stat -c%s "hills_${name}.png") bytes)"
+    mv out.png "${PREFIX}_${name}.png"
+    echo "  $name -> ${PREFIX}_${name}.png ($(stat -c%s "${PREFIX}_${name}.png") bytes)"
   else
     echo "  $name -> FAILED (see log_$name.txt)"; tail -3 "log_$name.txt" | sed 's/^/      /'
   fi

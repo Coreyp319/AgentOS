@@ -918,6 +918,11 @@ vec3 baseLook(int style, vec2 warpP, vec2 p, vec2 mp, float curGate, float t,
     //     leaves the temporal derivative (the apparent motion) uniform everywhere,
     //     so it only ever reads as a lens on top of a straight current.
     const float SC = 0.85;
+    // --- AgentOS reactivity (spike) ---
+    float aBusy = clamp(uAgentBusy, 0.0, 1.0);
+    float aWarm = clamp(uAgentWarm, 0.0, 1.0);
+    float aSnag = clamp(uAgentSnag, 0.0, 1.0);
+    float aPace = (1.0 + 0.8 * aBusy) * (1.0 - 0.5 * aSnag);   // current speed
 
     // 1) PER-PIXEL VELOCITY field: base diagonal current routed around every window
     //    (see windowFlow). Time-independent -> it routes the flow even when idle.
@@ -927,8 +932,8 @@ vec3 baseLook(int style, vec2 warpP, vec2 p, vec2 mp, float curGate, float t,
     //    resets; two phases offset by half a cycle, triangle-crossfaded, so the
     //    reset is invisible and the spatial variation in V never accumulates into
     //    scramble. This is what makes the apparent motion curve around windows.
-    float D  = 1.0 * (1.0 + 0.5 * mLevel + 0.4 * mBass);  // bass reaches further
-    float ph = fract(t * 0.6);
+    float D  = 1.0 * (1.0 + 0.5 * mLevel + 0.4 * mBass) * aPace;  // bass reaches further; agent paces it
+    float ph = fract(t * 0.6 * aPace);
     float pA = ph, pB = fract(ph + 0.5);
     float wA = 1.0 - abs(2.0 * pA - 1.0);
     float wB = 1.0 - abs(2.0 * pB - 1.0);                 // wA + wB == 1 always
@@ -939,12 +944,25 @@ vec3 baseLook(int style, vec2 warpP, vec2 p, vec2 mp, float curGate, float t,
     float f  = fA * wA + fB * wB;
     float rx = rxA * wA + rxB * wB;
 
-    // bass swells the bright field (lowers the threshold so ribbons broaden)
-    shade = smoothstep(0.25 - 0.06 * mBass, 0.85, f + 0.12 * rx);
+    // bass swells the bright field (lowers the threshold so ribbons broaden);
+    // working broadens them further.
+    shade = smoothstep(0.25 - 0.06 * mBass - 0.10 * aBusy, 0.85, f + 0.12 * rx);
     vec3 ribbon = ramp(shade, c0, c1, c2, c3, c4);
     // mid fills in ribbon body; bass already widened where they reach
-    float ribbonAmt = (0.65 + 0.08 * mBass + 0.10 * mMid) * smoothstep(0.1, 0.7, f);
-    return mix(sky, ribbon, ribbonAmt);
+    float ribbonAmt = (0.65 + 0.08 * mBass + 0.10 * mMid + 0.10 * aBusy) * smoothstep(0.1, 0.7, f);
+    vec3 col = mix(sky, ribbon, ribbonAmt);
+    // working: a faint cool rise (lift the bright field a touch).
+    col *= (1.0 + 0.06 * aBusy);
+    // needs_you: a slow warm breath from lower-centre, riding the brightest crests
+    //   — the ONE deliberate warmth (design-ux), localised so foreground stays legible.
+    float breath = 0.55 + 0.45 * sin(t * 0.62);
+    float lowc   = smoothstep(0.2, -0.7, warpP.y) * exp(-abs(p.x) * 0.9);
+    col += vec3(1.00, 0.60, 0.34) * lowc * (0.5 + 0.5 * shade) * aWarm * breath * 0.75;
+    // snag: desaturate + slightly dim the ribbons — calm "stalled", never red.
+    float snagLuma = dot(col, vec3(0.299, 0.587, 0.114));
+    col = mix(col, vec3(snagLuma), 0.40 * aSnag);
+    col *= (1.0 - 0.10 * aSnag);
+    return col;
 }
 
 void main() {
