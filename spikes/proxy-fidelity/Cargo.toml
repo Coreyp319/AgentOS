@@ -1,0 +1,16 @@
+[package]
+name = "proxy-fidelity"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# SPIKE: throwaway. Proves an HTTP-aware Rust reverse proxy preserves
+# Ollama/OpenAI streaming (SSE) + tool-calls byte-faithfully. Not agentosd.
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+
+[profile.dev]
+opt-level = 0
