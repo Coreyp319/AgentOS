@@ -2,3 +2,6 @@
 **/target
 *.swp
 .DS_Store
+# throwaway external clone + its venv (C1-spike); findings live in spikes/kwin-mcp-FINDINGS.md
+/spikes/kwin-mcp/
+**/.venv/
