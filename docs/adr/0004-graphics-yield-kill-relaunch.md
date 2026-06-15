@@ -32,3 +32,23 @@ The graphics yield is **conditional kill/relaunch**:
 - `agentosd` decides via NVML VRAM reads + Ollama `/api/ps` (see the v0 monitor).
 - Live in-engine shedding is explicitly out of scope until/unless `bevy_solari` grows a
   way to release its acceleration structure.
+
+## Real-data refinement (2026-06-15)
+The read-only monitor (`agentosd monitor`), run against the live box with per-process
+NVML attribution, corrected the premise of this ADR:
+
+- The graphics footprint is **dominated by ordinary user apps** (firefox, VS Code,
+  spotify, plasmashell, kwin) — ~2.5GB *even with nimbus-flux not running*. `agentosd`
+  cannot and must not kill those.
+- Therefore the **wallpaper-RT eviction lever is conditional and secondary**: it frees
+  VRAM only when nimbus-flux is actually running, and even then ~1.5GB against a 21GB
+  model. `llama-server` was measured at **19.5GB** for the 18GB-reported 27B model, so
+  headroom is thinner than the self-reported sizes suggest.
+- The **primary** arbitration lever is therefore **model-side**: fit the model to the
+  current real budget (pick/swap a smaller quant; evict idle Ollama models via
+  `ollama stop`), leaning on `OLLAMA_MAX_LOADED_MODELS=1` + `keep_alive`. Wallpaper-RT
+  eviction is a minor add-on, applied only when nimbus-flux is the swing consumer.
+- The monitor now credits the eviction saving only when nimbus-flux is detected among
+  the graphics processes; otherwise the verdict states no wallpaper is available to evict.
+- The 36B model (Q4, ~21.8GB est.) does **not** fit alongside a normal desktop on 24GB
+  and needs CPU offload regardless — the truce mainly helps the ~18–20GB range.
