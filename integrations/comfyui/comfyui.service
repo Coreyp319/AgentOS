@@ -1,0 +1,30 @@
+[Unit]
+Description=ComfyUI — local video/image generation backend for AgentOS dreaming (HTTP API on 127.0.0.1:8188)
+Documentation=file://%h/Documents/AgentOS/integrations/comfyui/README.md
+# Local-only backend; no network dependency. Start after the graphical session so the live
+# RT wallpaper claims its VRAM first — ComfyUI loads no model weights until a job is queued,
+# so the idle server only holds the CUDA context (~0.5 GiB). Job-time VRAM is arbitrated by
+# the agentosd VRAM coordinator / lease (ADR-0006/0010), which evicts this lane on preempt.
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ComfyUI
+# Mirrors spikes/dreaming/start-comfyui.sh, but self-contained (no dependency on spikes/).
+# --listen 127.0.0.1: API + UI loopback-only (the dreaming client uses COMFY_HOST=127.0.0.1:8188).
+# --preview-method latent2rgb: near-free live denoise preview; no extra model/VRAM.
+ExecStart=%h/ComfyUI/.venv/bin/python %h/ComfyUI/main.py --listen 127.0.0.1 --port 8188 --preview-method latent2rgb
+Environment="PATH=%h/ComfyUI/.venv/bin:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Best-effort lane: restart on crash, but don't thrash if it OOM-loops at startup.
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=120
+StartLimitBurst=4
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

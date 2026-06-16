@@ -1,0 +1,31 @@
+# NOTE: This is a *vendored reference copy* of the already-installed unit at
+# ~/.config/systemd/user/hermes-gateway.service. It documents the boot stack in-repo;
+# the live unit is the source of truth. Do not assume edits here take effect — install
+# them with `install -m644 hermes-gateway.service ~/.config/systemd/user/ && systemctl
+# --user daemon-reload`. `gateway run` is the always-on Hermes agent daemon (kanban,
+# cron, delegation, messaging all live under it).
+[Unit]
+Description=Hermes Agent Gateway - Messaging Platform Integration
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/home/corey/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run
+WorkingDirectory=/home/corey/.hermes
+Environment="PATH=/home/corey/.hermes/hermes-agent/venv/bin:/home/corey/.hermes/hermes-agent/node_modules/.bin:/home/corey/.local/node-v22.22.3-linux-x64/bin:/home/corey/.local/bin:/home/corey/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="VIRTUAL_ENV=/home/corey/.hermes/hermes-agent/venv"
+Environment="HERMES_HOME=/home/corey/.hermes"
+Restart=always
+RestartSec=5
+RestartForceExitStatus=75
+KillMode=mixed
+KillSignal=SIGTERM
+ExecReload=/bin/kill -USR1 $MAINPID
+TimeoutStopSec=210
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
