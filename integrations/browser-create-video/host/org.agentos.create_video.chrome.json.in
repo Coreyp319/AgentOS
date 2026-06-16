@@ -1,0 +1,7 @@
+{
+  "name": "org.agentos.create_video",
+  "description": "AgentOS Create Video host",
+  "path": "@HOST@",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://@CHROME_EXTENSION_ID@/"]
+}

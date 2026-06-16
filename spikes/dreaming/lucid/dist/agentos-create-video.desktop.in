@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Service
+# KonqPopupMenu/Plugin is still required on Plasma 6 (6.6.5) — present on every working file.
+ServiceTypes=KonqPopupMenu/Plugin
+# Group both actions under one "Create" submenu in the right-click menu.
+X-KDE-Submenu=Create
+# Only the still formats the i2v pipeline accepts (no svg/raw/heif).
+MimeType=image/png;image/jpeg;image/webp;image/gif;image/bmp;image/tiff;
+Actions=createVideo;createVideoPrivate;
+
+[Desktop Action createVideo]
+Name=Create Video from Image
+Icon=camera-video
+# %f = one LOCAL path; KIO spawns one process per file on multi-select (one video per image).
+# `--` ends options so a file named like a flag (e.g. `-x.png`) can't be parsed as one (security).
+Exec=python3 "@LUCID_DIR@/create_from_image.py" -- %f
+
+[Desktop Action createVideoPrivate]
+Name=Create Video from Image (Private)
+Icon=view-private
+# --private = ADR-0016 ephemeral session (tmpfs, not saved, auto-burned on logout).
+Exec=python3 "@LUCID_DIR@/create_from_image.py" --private -- %f
