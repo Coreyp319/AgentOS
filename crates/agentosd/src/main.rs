@@ -9,6 +9,12 @@
 //!     admission, SIGKILL on preempt (ADR-0010; see `coord.rs`).
 //!   * `lease`   — D-Bus GPU lease server: acquire/release/status over the session
 //!     bus, same admission + priority core (ADR-0006/0010; see `lease.rs`).
+//!   * `telemetry` — read-only historian: append per-tick VRAM/residency/lease to a
+//!     persistent `telemetry.jsonl` so coexistence policy can be tuned and validated on
+//!     real data, not guessed (ADR-0018; see `telemetry.rs`).
+//!   * `coexist` — read-only analyzer: turn `telemetry.jsonl` into a proposed residency plan
+//!     (warm pool vs heavy lane, max-loaded/keep-alive, real footprints) — proposes, never
+//!     applies (ADR-0018 §4; see `analyze.rs`).
 //!
 //! `monitor` proves the load-bearing pieces of the VRAM coordinator WITHOUT doing
 //! anything destructive:
@@ -28,10 +34,12 @@ use nvml_wrapper::enums::device::UsedGpuMemory;
 use nvml_wrapper::Nvml;
 use serde::Deserialize;
 
+mod analyze;
 mod coord;
 mod feed;
 mod keyhole;
 mod lease;
+mod telemetry;
 
 const OLLAMA_PS: &str = "http://127.0.0.1:11434/api/ps";
 const OLLAMA_TAGS: &str = "http://127.0.0.1:11434/api/tags";
@@ -69,18 +77,18 @@ struct TagModel {
     size: u64, // on-disk bytes
 }
 
-fn mib(bytes: u64) -> u64 {
+pub(crate) fn mib(bytes: u64) -> u64 {
     bytes / (1024 * 1024)
 }
 
-fn used_mib(u: &UsedGpuMemory) -> Option<u64> {
+pub(crate) fn used_mib(u: &UsedGpuMemory) -> Option<u64> {
     match u {
         UsedGpuMemory::Used(b) => Some(mib(*b)),
         UsedGpuMemory::Unavailable => None,
     }
 }
 
-fn proc_name(pid: u32) -> String {
+pub(crate) fn proc_name(pid: u32) -> String {
     fs::read_to_string(format!("/proc/{pid}/comm"))
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "?".into())
@@ -94,11 +102,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "keyhole" => keyhole::run(std::env::args().any(|a| a == "--once")),
         "coord" => coord::run(std::env::args().skip(2).collect()),
         "lease" => lease::run(),
+        "telemetry" => telemetry::run(std::env::args().skip(2).collect()),
+        "coexist" => analyze::run(std::env::args().skip(2).collect()),
         other => {
             eprintln!(
                 "agentosd: unknown mode `{other}`. Modes: monitor (read-only VRAM), \
                  feed (emit agent.json), keyhole (emit keyhole.json for the tray instrument), \
-                 coord (VRAM lease + SIGKILL evict), lease (D-Bus lease server). See docs/adr/."
+                 coord (VRAM lease + SIGKILL evict), lease (D-Bus lease server), \
+                 telemetry (append telemetry.jsonl history for coexistence tuning), \
+                 coexist (analyze telemetry → propose a residency plan). See docs/adr/."
             );
             std::process::exit(2);
         }

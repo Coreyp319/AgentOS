@@ -1,0 +1,15 @@
+[Unit]
+Description=AgentOS telemetry historian (VRAM/residency/lease → telemetry.jsonl for coexistence tuning, ADR-0018)
+# Not tied to graphical-session: the historian must also record headless overnight batch/dream runs.
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/agentosd telemetry --interval 5
+Restart=on-failure
+RestartSec=5
+# Lowest-priority observer — pure background logging, must never compete with inference.
+Nice=15
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

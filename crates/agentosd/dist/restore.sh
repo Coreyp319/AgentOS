@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Revert apply.sh. Pass --purge to also remove the installed binary.
+# Revert apply.sh. Pass --purge to also remove the installed binary + the telemetry history.
 set -euo pipefail
 
-UNITS=(nimbus-aurora-agent.service nimbus-aurora-keyhole.service)
+UNITS=(nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service)
 UNIT_DIR="$HOME/.config/systemd/user"
 BIN_DEST="$HOME/.local/bin/agentosd"
 RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentosd"
 
 for UNIT in "${UNITS[@]}"; do
   systemctl --user disable --now "$UNIT" 2>/dev/null && echo "✓ stopped + disabled $UNIT" \
@@ -13,9 +14,12 @@ for UNIT in "${UNITS[@]}"; do
   rm -f "$UNIT_DIR/$UNIT"
 done
 rm -f "$RUNTIME/nimbus-aurora/agent.json" "$RUNTIME/nimbus-aurora/keyhole.json"
+# Telemetry history is accumulated user data — kept by default, removed only on --purge.
 if [ "${1:-}" = "--purge" ]; then
   rm -f "$BIN_DEST"
   echo "✓ purged $BIN_DEST"
+  rm -f "$STATE/telemetry.jsonl" "$STATE/telemetry.jsonl.1"
+  echo "✓ purged telemetry history in $STATE"
 fi
 systemctl --user daemon-reload 2>/dev/null || true
 echo "✓ reverted"
