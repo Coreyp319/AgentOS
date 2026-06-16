@@ -34,6 +34,13 @@ not silently drift from one.
   (`kanban.db` + `gateway_state.json`) → `$XDG_RUNTIME_DIR/nimbus-aurora/agent.json`
   for the reactive wallpaper. Install as a `--user` service via
   `crates/agentosd/dist/{apply,restore}.sh`.
+- `agentosd keyhole [--once]` — ADR-0012 producer: read-only lease/VRAM/residency/fleet →
+  `$XDG_RUNTIME_DIR/nimbus-aurora/keyhole.json` for the tray instrument (consumed by the
+  Plasma plasmoid spiked in `spikes/keyhole/`). Own NVML handle (like `monitor`, never the
+  `lease` daemon's), adaptive cadence, honest UNKNOWN (an unreachable Hermes reads `unknown`,
+  not the calm `idle` the wallpaper feed folds it into). Lease tier/holder/preempt come from
+  an optional `lease.json` mirror (the daemon push is the remaining off-lock integration).
+  Same `--user` service install as `feed`.
 - `agentosd coord [--tier …] [--estimate-mib N] [-- <cmd>]` — VRAM coordinator slice
   (ADR-0010): predict-before-load admission, owns the spawned job's PID, SIGKILL on
   preempt (send SIGUSR1 to simulate the interactive request; D-Bus lease is ADR-0006).

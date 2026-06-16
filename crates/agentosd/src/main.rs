@@ -3,6 +3,8 @@
 //! Modes:
 //!   * `monitor` — v0 read-only VRAM monitor (below).
 //!   * `feed`    — P1 producer: Hermes fleet state → `agent.json` (see `feed.rs`).
+//!   * `keyhole` — ADR-0012 producer: lease/VRAM/residency/fleet → `keyhole.json` for the
+//!     tray instrument; read-only, own NVML handle, honest UNKNOWN (see `keyhole.rs`).
 //!   * `coord`   — VRAM coordinator slice: own a GPU job's PID, NVML-gated
 //!     admission, SIGKILL on preempt (ADR-0010; see `coord.rs`).
 //!   * `lease`   — D-Bus GPU lease server: acquire/release/status over the session
@@ -28,6 +30,7 @@ use serde::Deserialize;
 
 mod coord;
 mod feed;
+mod keyhole;
 mod lease;
 
 const OLLAMA_PS: &str = "http://127.0.0.1:11434/api/ps";
@@ -88,13 +91,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match mode.as_str() {
         "monitor" => run_monitor(),
         "feed" => feed::run(std::env::args().any(|a| a == "--once")),
+        "keyhole" => keyhole::run(std::env::args().any(|a| a == "--once")),
         "coord" => coord::run(std::env::args().skip(2).collect()),
         "lease" => lease::run(),
         other => {
             eprintln!(
                 "agentosd: unknown mode `{other}`. Modes: monitor (read-only VRAM), \
-                 feed (emit agent.json), coord (VRAM lease + SIGKILL evict), \
-                 lease (D-Bus lease server). See docs/adr/."
+                 feed (emit agent.json), keyhole (emit keyhole.json for the tray instrument), \
+                 coord (VRAM lease + SIGKILL evict), lease (D-Bus lease server). See docs/adr/."
             );
             std::process::exit(2);
         }

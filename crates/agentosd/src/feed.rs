@@ -107,7 +107,7 @@ SELECT \
   COALESCE(SUM(status IN ('triage','todo','scheduled','ready','review')), 0) AS pending \
 FROM tasks";
 
-fn read_fleet(db: &Path) -> rusqlite::Result<FleetCounts> {
+pub(crate) fn read_fleet(db: &Path) -> rusqlite::Result<FleetCounts> {
     let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     // WAL DB with busy_timeout=0; give the reader a small window so a writer's
     // checkpoint doesn't trip an instant SQLITE_BUSY.
@@ -130,7 +130,7 @@ struct GatewayFile {
     active_agents: u32,
 }
 
-fn read_gateway(path: &Path) -> Option<GatewayInfo> {
+pub(crate) fn read_gateway(path: &Path) -> Option<GatewayInfo> {
     let g: GatewayFile = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
     Some(GatewayInfo { gateway_state: g.gateway_state, active_agents: g.active_agents })
 }
@@ -143,7 +143,7 @@ struct NeedsYouFile {
 
 /// Count of pending Hermes approvals, written by the `needs-you-signal` plugin.
 /// Absent/unparseable → 0 (Hermes isn't blocked on us, or the plugin isn't installed).
-fn read_needs_you(path: &Path) -> u32 {
+pub(crate) fn read_needs_you(path: &Path) -> u32 {
     fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<NeedsYouFile>(&s).ok())
@@ -157,7 +157,7 @@ fn current_uid() -> u32 {
 
 /// `$XDG_RUNTIME_DIR/nimbus-aurora` (created if absent), with the `/run/user/<uid>`
 /// fallback the existing bridges use.
-fn feed_dir() -> std::io::Result<PathBuf> {
+pub(crate) fn feed_dir() -> std::io::Result<PathBuf> {
     let runtime = std::env::var("XDG_RUNTIME_DIR")
         .ok()
         .filter(|s| !s.is_empty())
@@ -167,7 +167,7 @@ fn feed_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-fn hermes_path(file: &str) -> PathBuf {
+pub(crate) fn hermes_path(file: &str) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
     PathBuf::from(home).join(".hermes").join(file)
 }
@@ -182,7 +182,7 @@ fn write_feed(dir: &Path, feed: &AgentFeed) -> std::io::Result<()> {
     fs::rename(&tmp, dir.join("agent.json"))
 }
 
-fn state_word(s: u8) -> &'static str {
+pub(crate) fn state_word(s: u8) -> &'static str {
     match s {
         0 => "idle",
         1 => "working",

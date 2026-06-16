@@ -2,15 +2,17 @@
 # Revert apply.sh. Pass --purge to also remove the installed binary.
 set -euo pipefail
 
-UNIT="nimbus-aurora-agent.service"
-UNIT_DEST="$HOME/.config/systemd/user/$UNIT"
+UNITS=(nimbus-aurora-agent.service nimbus-aurora-keyhole.service)
+UNIT_DIR="$HOME/.config/systemd/user"
 BIN_DEST="$HOME/.local/bin/agentosd"
 RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-systemctl --user disable --now "$UNIT" 2>/dev/null && echo "✓ stopped + disabled $UNIT" \
-  || echo "(service was not active)"
-rm -f "$RUNTIME/nimbus-aurora/agent.json"
-rm -f "$UNIT_DEST"
+for UNIT in "${UNITS[@]}"; do
+  systemctl --user disable --now "$UNIT" 2>/dev/null && echo "✓ stopped + disabled $UNIT" \
+    || echo "($UNIT was not active)"
+  rm -f "$UNIT_DIR/$UNIT"
+done
+rm -f "$RUNTIME/nimbus-aurora/agent.json" "$RUNTIME/nimbus-aurora/keyhole.json"
 if [ "${1:-}" = "--purge" ]; then
   rm -f "$BIN_DEST"
   echo "✓ purged $BIN_DEST"
