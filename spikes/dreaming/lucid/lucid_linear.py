@@ -37,6 +37,9 @@ import lucid_safety as S   # noqa: E402  (the deterministic gates)
 COORD_NAME = "org.agentos.Coordinator1"
 COORD_PATH = "/org/agentos/Coordinator1"
 PROFILE = os.environ.get("LUCID_PROFILE", "comfyui")
+# Params appended to the daemon-owned profile argv (dream.sh DREAM_PARAMS parity). The real
+# `comfyui` profile takes none; the `sleep` stand-in profile takes a duration (smoke-testing).
+PARAMS = [p for p in os.environ.get("LUCID_PARAMS", "").split() if p]
 EST_MIB = int(os.environ.get("LUCID_EST_MIB", "17000"))
 COMFY_HOST = os.environ.get("COMFY_HOST", "127.0.0.1:8188")
 READY_TIMEOUT = int(os.environ.get("LUCID_READY_TIMEOUT", "180"))
@@ -55,7 +58,7 @@ def _coord(*args):
 def lease_spawn():
     """Ask agentosd to Spawn+own ComfyUI under the batch lease. Returns a token, or None to
     fail open (coordinator down OR admission refused -> the dream yields, never forces VRAM)."""
-    r = _coord("Spawn", "susas", "batch", str(EST_MIB), PROFILE, "0")
+    r = _coord("Spawn", "susas", "batch", str(EST_MIB), PROFILE, str(len(PARAMS)), *PARAMS)
     if r.returncode != 0:
         log(f"coordinator unreachable ({r.stderr.strip() or r.stdout.strip()}) — fail open (ADR-0003)")
         return None
