@@ -1,4 +1,4 @@
-# ADR-0012: Coordinator IPC trust model + lease lifecycle
+# ADR-0013: Coordinator IPC trust model + lease lifecycle
 
 - Status: Proposed (needs Corey's decision — changes the ADR-0006 plugin call contract)
 - Date: 2026-06-16

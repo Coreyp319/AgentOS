@@ -176,7 +176,7 @@ the impure shell had two Critical + five High. **Fixed + re-tested this pass** (
 lower tier* is gated by **priority**, now with a computed fit verdict surfaced to the successor
 (earlier text over-promised "the SIGKILL is gated by that math").
 
-**Deferred to [ADR-0012](0012-coordinator-ipc-trust-and-lease-lifecycle.md) (needs a decision):**
+**Deferred to [ADR-0013](0013-coordinator-ipc-trust-and-lease-lifecycle.md) (needs a decision):**
 the IPC trust model (S1 — unauthenticated `Spawn`-arbitrary-argv on the session bus) and lease
 lifecycle (H4 — crashed-holder reclaim / TTL; M4 — anti-strobe dwell). These change the ADR-0006
 plugin call contract, so they are ADR-before-code.
