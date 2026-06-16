@@ -118,7 +118,7 @@ def save_chain(session, chain):
     ST.save_chain(session, ST.is_private(session), chain)
 
 
-def start(session, opening_image, private=False, consent=False, _trusted_seed=False):
+def start(session, opening_image, private=False, consent=False, _trusted_seed=False, premise=None):
     # start() is the SINGLE B2 chokepoint (ADR-0017). _trusted_seed=True is reachable ONLY for a
     # server-generated abstract opening (no real person) — never for a user-supplied image. Every
     # user seed passes B2 here, so no surface can route around the guard.
@@ -131,9 +131,14 @@ def start(session, opening_image, private=False, consent=False, _trusted_seed=Fa
     ref_name, abs_path = ST.frame_ref(session, private, f"{session}_n0.png")
     import shutil
     shutil.copy(opening_image, abs_path)
-    chain = {"session": session, "private": private, "nodes": [
-        {"id": 0, "parent": None, "label": "opening", "prompt": None,
-         "seed": None, "clip": None, "out_frame": ref_name}]}
+    # premise: the session's initial prompt — "what this dream is about". Persisted with the chain so
+    # context_for() can bias EVERY beat suggestion toward it, not just the opening frame (the Start
+    # "initial prompt"). Optional + gated by the caller; stored trimmed, never required.
+    chain = {"session": session, "private": private,
+             "premise": (premise or "").strip()[:300] or None,
+             "nodes": [
+                 {"id": 0, "parent": None, "label": "opening", "prompt": None,
+                  "seed": None, "clip": None, "out_frame": ref_name}]}
     save_chain(session, chain)
     return chain
 
@@ -224,11 +229,16 @@ def step(session, prompt, label):
 
 
 def context_for(session):
-    """Linear story-so-far from the chain (the labels along the single spine)."""
+    """Linear story-so-far from the chain (the labels along the single spine), led by the session's
+    premise (the initial prompt) so every proposed beat stays on-theme — not just the opening."""
     chain = load_chain(session)
     labels = [n["label"] for n in chain["nodes"] if n["label"] not in (None, "opening")]
     cap = chain["nodes"][-1].get("caption")
-    parts = ["Story so far: " + " -> ".join(labels) + "." if labels else "The dream is just beginning."]
+    parts = []
+    premise = chain.get("premise")
+    if premise:
+        parts.append("This dream is about: " + premise + ".")
+    parts.append("Story so far: " + " -> ".join(labels) + "." if labels else "The dream is just beginning.")
     parts.append("On screen now: " + (cap or "the opening image."))
     return " ".join(parts)
 

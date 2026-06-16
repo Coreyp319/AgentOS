@@ -10,12 +10,16 @@ HOST_SRC="$HERE/host/agentos_create_video_host.py"
 MANIFEST_NAME="org.agentos.create_video.json"
 
 for dest in \
+  "$HOME/.config/mozilla/native-messaging-hosts" \
   "$HOME/.mozilla/native-messaging-hosts" \
+  "$HOME/.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts" \
+  "$HOME/snap/firefox/common/.mozilla/native-messaging-hosts" \
+  "$HOME/.var/app/io.gitlab.librewolf-community/.librewolf/native-messaging-hosts" \
   "$HOME/.config/chromium/NativeMessagingHosts" \
   "$HOME/.config/google-chrome/NativeMessagingHosts"; do
   rm -f "$dest/$MANIFEST_NAME"
 done
-echo "✓ native-host manifests removed (Firefox / Chromium / Chrome)"
+echo "✓ native-host manifests removed (Firefox XDG/legacy/Flatpak/Snap, LibreWolf, Chromium, Chrome)"
 
 # Reset the baked launcher path so the working tree returns to the committed placeholder.
 if [ -f "$HOST_SRC" ]; then

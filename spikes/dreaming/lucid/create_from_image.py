@@ -176,20 +176,23 @@ def _clean_png(raw, private):
 
 
 def consent_for_real_person(verdict):
-    """A real, photographed person needs explicit per-seed consent — surfaced as a modal dialog,
-    default Cancel. No kdialog (or user declines) => fail closed. We never infer consent from the
-    right-click; the click consents to trying, not to who is depicted."""
-    msg = ("This looks like a photo of a real person.\n\n"
-           "Only continue if you are this person, or have the right to use this image, to make a "
-           "video from it.")
+    """A real, photographed person needs explicit per-seed consent — surfaced as a modal dialog.
+    No kdialog (or user declines) => fail closed. We never infer consent from the right-click; the
+    click consents to trying, not to who is depicted. (The richer in-app modal — see
+    design/consent-likeness.html — additionally pins Cancel as the default focus and gates Continue
+    behind an attestation; a native dialog can't guarantee that, but Escape/Cancel stays the safe path.)"""
+    msg = ("Lucid would animate this person into a moving video.\n\n"
+           "Only continue if this is you — or you have their permission, or the right to use this "
+           "image. Lucid can't verify who owns it; by continuing, you take responsibility for it.")
     if not shutil.which("kdialog"):
         notify("Can't create this video", "A real person was detected and consent can't be "
                "confirmed here — not created.", "critical")
         return False
-    r = subprocess.run(["kdialog", "--title", "Create Video — consent",
-                        "--warningyesno", msg,
-                        "--yes-label", "I have the right — continue",
-                        "--no-label", "Cancel"])
+    # warningcontinuecancel: a "risky action" dialog (Continue / Cancel) — Escape maps to Cancel, the
+    # safe outcome. Returns 0 only on an explicit Continue. Clearer than yes/no for a consent gate.
+    r = subprocess.run(["kdialog", "--title", "Create video — a real person is in this image",
+                        "--warningcontinuecancel", msg,
+                        "--continue-label", "I have the right — continue"])
     return r.returncode == 0
 
 

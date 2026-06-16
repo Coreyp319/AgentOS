@@ -1,0 +1,173 @@
+<!DOCTYPE html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Lucid · the initial prompt + Refine (design exploration)</title>
+<!--
+  THROWAWAY design exploration (frontend-design pass, 2026-06-16). NOT the shipping surface.
+  Proposes the Start surface's "initial prompt" + an inline Refine button (backed by lucid_refine.py
+  → POST /api/refine; the local narrator polishes a rough idea, red-line-gated both ways). The prompt
+  is a NARRATIVE SEED: it paints the opening (t2i) AND persists as the chain's premise, so every beat
+  stays on-theme (lucid_linear: start(premise=…) + context_for()).
+
+  Refine is non-destructive: it keeps the original for one-tap Undo, glows the rewrite so the change
+  is legible, and fails honestly (calm inline note, your words kept). Open in a browser — Refine is
+  simulated here (a real build calls /api/refine). Stays in the deep-navy instrument register.
+-->
+<link rel=preconnect href="https://fonts.googleapis.com">
+<link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,360;1,9..144,360&display=swap" rel=stylesheet>
+<style>
+:root{
+ --base:#12141c; --deep:#161a28; --horizon:#1a2238; --field:#10131d;
+ --text:#e9ecf3; --muted:#8a90a0; --label:#7a8090; --hair:rgba(255,255,255,.07);
+ --blue:#7aa2ff; --warm:#e0884f; --up:#74d39a;
+ --blue-wash:color-mix(in srgb,var(--blue) 11%,transparent);
+ --data:ui-sans-serif,system-ui,"SF Pro Text",sans-serif;
+ --display:"Fraunces",Georgia,serif;
+ --r-sm:9px; --r-md:16px; --ease:cubic-bezier(.2,.85,.25,1);
+}
+*{box-sizing:border-box}
+body{margin:0;color:var(--text);font-family:var(--data);font-size:15px;line-height:1.55;min-height:100vh;
+ background:
+  radial-gradient(1000px 600px at 80% -10%, color-mix(in srgb,var(--blue) 8%,transparent), transparent 60%),
+  linear-gradient(160deg, var(--base), var(--deep) 45%, var(--horizon));
+ -webkit-font-smoothing:antialiased}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.04;mix-blend-mode:overlay;
+ background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.wrap{max-width:600px;margin:0 auto;padding:48px 22px 80px}
+.brand{display:flex;align-items:baseline;gap:11px;margin-bottom:4px}
+.mark{font-family:var(--display);font-weight:360;font-size:2.2rem;letter-spacing:-.01em;line-height:1}
+.tag{font-family:var(--display);font-style:italic;font-size:1rem;color:var(--muted)}
+.intro{color:var(--muted);font-size:.85rem;margin:6px 0 22px;max-width:48ch}
+
+.card{background:rgba(38,42,54,.46);border:1px solid var(--hair);border-radius:var(--r-md);
+ padding:22px;backdrop-filter:blur(14px)}
+.card-title{font-weight:600;font-size:1.05rem}
+.lead{color:var(--muted);font-size:.86rem;margin-top:5px}
+
+/* --- the initial prompt: the hero field, Refine living in its corner --- */
+.promptwrap{position:relative;margin-top:18px}
+.field{width:100%;min-height:104px;resize:vertical;background:var(--field);color:var(--text);
+ border:1px solid var(--hair);border-radius:var(--r-md);padding:15px 16px 46px;font:inherit;line-height:1.5;
+ transition:border-color .15s, box-shadow .3s}
+.field::placeholder{color:var(--label)}
+.field:focus{outline:none;border-color:color-mix(in srgb,var(--blue) 55%,var(--hair))}
+.field.glow{animation:glow 1.5s var(--ease)}
+@keyframes glow{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--warm) 55%,transparent), inset 0 0 0 60px color-mix(in srgb,var(--warm) 12%,transparent)}
+ 100%{box-shadow:0 0 0 0 transparent, inset 0 0 0 60px transparent}}
+
+/* the Refine button, "right there" in the field's corner */
+.refine{position:absolute;right:9px;bottom:9px;display:inline-flex;align-items:center;gap:7px;
+ background:color-mix(in srgb,var(--warm) 14%,var(--deep));color:#f3d9c4;
+ border:1px solid color-mix(in srgb,var(--warm) 40%,transparent);border-radius:999px;
+ padding:7px 13px 7px 11px;font:inherit;font-size:.8rem;font-weight:500;cursor:pointer;
+ transition:border-color .15s, background .15s, transform .1s}
+.refine:hover{border-color:var(--warm);background:color-mix(in srgb,var(--warm) 20%,var(--deep))}
+.refine:active{transform:translateY(1px)}
+.refine:disabled{opacity:.55;cursor:default}
+.refine .wand{width:14px;height:14px;display:block}
+.refine.busy .wand{animation:spin 1s linear infinite}
+.refine.busy .sparkle{animation:twinkle 1s ease-in-out infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes twinkle{0%,100%{opacity:.3}50%{opacity:1}}
+
+.under{display:flex;align-items:center;gap:12px;min-height:22px;margin-top:9px;font-size:var(--label,.78rem)}
+.under .ok{color:var(--up);font-size:.78rem;display:inline-flex;gap:6px;align-items:center}
+.under .err{color:#f0a36b;font-size:.78rem}
+.link{background:none;border:none;color:var(--blue);font:inherit;font-size:.78rem;cursor:pointer;padding:0;text-decoration:underline;text-underline-offset:2px}
+.hint{color:var(--label);font-size:.75rem;margin-left:auto}
+
+/* the secondary inputs — quieter than the prompt */
+.divider{display:flex;align-items:center;gap:12px;color:var(--label);font-size:.74rem;margin:20px 0 14px}
+.divider::before,.divider::after{content:"";height:1px;background:var(--hair);flex:1}
+.opt{display:block;color:var(--muted);font-size:.82rem;margin-bottom:6px}
+input[type=file]{color:var(--muted);font-size:.82rem;max-width:100%}
+.check{display:flex;gap:9px;align-items:flex-start;margin:18px 0 4px;cursor:pointer}
+.check input{margin-top:3px;accent-color:var(--warm)}
+.lock{color:var(--text);font-weight:600}
+.note{color:var(--label);font-size:.75rem}
+
+.begin{display:block;width:100%;text-align:center;background:var(--blue-wash);
+ border:1px solid color-mix(in srgb,var(--blue) 30%,var(--hair));color:var(--text);
+ border-radius:var(--r-sm);padding:13px;margin-top:18px;font:inherit;font-weight:600;cursor:pointer;
+ transition:border-color .15s, background .15s}
+.begin:hover{border-color:var(--blue);background:color-mix(in srgb,var(--blue) 16%,transparent)}
+.b2{margin-top:12px;color:var(--label);font-size:.72rem;display:flex;gap:7px;align-items:flex-start}
+.b2 svg{flex:0 0 auto;width:13px;height:13px;margin-top:2px;stroke:var(--label);fill:none;stroke-width:1.6}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+
+@media (prefers-reduced-motion:reduce){.field.glow{animation:none}.refine.busy .wand,.refine.busy .sparkle{animation:none}}
+@media (prefers-reduced-transparency:reduce){.card{backdrop-filter:none;background:rgba(24,28,40,.96)}}
+</style></head><body><div class=wrap>
+ <div class=brand><span class=mark>Lucid</span><span class=tag>· begin a dream</span></div>
+ <div class=intro>Tell Lucid what to dream about. Your prompt paints the opening and sets the theme every beat follows.</div>
+
+ <div class=card>
+  <div class=card-title>What's this dream about?</div>
+  <div class=lead>A few words is enough — Refine can shape it into a vivid opening shot.</div>
+
+  <div class=promptwrap>
+   <textarea id=prompt class=field placeholder="e.g. a calm aurora over dark rolling hills, someone watching"></textarea>
+   <button id=refineBtn class=refine onclick=refine()>
+    <svg class=wand viewBox="0 0 24 24" fill=none stroke="#f3d9c4" stroke-width=1.8 stroke-linecap=round><path d="M5 19l9-9"/><path class=sparkle d="M16 4l1 2 2 1-2 1-1 2-1-2-2-1 2-1z" fill="#f3d9c4" stroke=none/><path d="M14 6l4 4"/></svg>
+    <span id=refineLbl>Refine</span>
+   </button>
+  </div>
+
+  <div class=under id=under>
+   <span class=hint id=hint>The prompt is checked before anything is made.</span>
+  </div>
+
+  <div class=divider>and, if you like</div>
+  <label class=opt>Opening image <span class=note>(optional — your prompt paints one otherwise)</span></label>
+  <input type=file accept="image/*">
+
+  <label class=check>
+   <input type=checkbox id=priv>
+   <span><span class=lock>🔒 Private session</span> <span class=note>— kept in memory, not saved, never shown elsewhere, wiped when you log out.</span></span>
+  </label>
+
+  <button class=begin onclick="document.getElementById('hint').textContent='✦ (demo) starting — the prompt seeds the opening + the premise.'">✦ Begin a dream</button>
+  <div class=b2>
+   <svg viewBox="0 0 24 24"><circle cx=12 cy=12 r=9/><path d="M12 8v5M12 16h.01"/></svg>
+   <span>Any image you upload is checked for real-person likeness first, and its location/camera metadata is stripped.</span>
+  </div>
+ </div>
+</div>
+
+<script>
+const fld=document.getElementById('prompt'), btn=document.getElementById('refineBtn'),
+ lbl=document.getElementById('refineLbl'), under=document.getElementById('under');
+let original=null;
+
+// In production this is: const j = await (await fetch('/api/refine',{method:'POST',
+//   headers:{'Content-Type':'application/json','X-Lucid-Token':CSRF},body:JSON.stringify({text})})).json()
+// Here it's simulated so the static file runs standalone.
+function fakeRefine(text){
+ return new Promise((res)=>setTimeout(()=>{
+  const t=text.trim().toLowerCase();
+  if(/aurora/.test(t)) return res({ok:true,refined:"A solitary figure stands on a ridge of dark, rolling hills as an emerald and violet aurora washes across the night sky, its glow drifting slowly over their silhouette."});
+  if(!t) return res({ok:false,reason:"Type an idea first."});
+  const subj=text.trim().replace(/[.\s]+$/,'');
+  res({ok:true,refined:`${subj.charAt(0).toUpperCase()+subj.slice(1)} — held in soft, cinematic light, the scene breathing with a slow, drifting camera.`});
+ }, 950));
+}
+
+async function refine(){
+ const text=fld.value.trim();
+ if(!text){ setUnder(`<span class=err>Type an idea first.</span>`); fld.focus(); return; }
+ original=fld.value;
+ btn.classList.add('busy'); btn.disabled=true; lbl.textContent='Refining…';
+ setUnder(`<span class=hint>Shaping your idea…</span>`);
+ const j=await fakeRefine(text);
+ btn.classList.remove('busy'); btn.disabled=false; lbl.textContent='Refine';
+ if(!j.ok){ setUnder(`<span class=err>${j.reason||'Couldn’t refine — type your own.'}</span>`); return; }
+ fld.value=j.refined;
+ fld.classList.remove('glow'); void fld.offsetWidth; fld.classList.add('glow');   // re-trigger the glow
+ setUnder(`<span class=ok>✓ Refined</span><button class=link onclick=undo()>Undo</button>`
+  +`<span class=hint>Edit it freely before you begin.</span>`);
+}
+function undo(){ if(original!=null){ fld.value=original; fld.focus();
+ setUnder(`<span class=hint>Back to your words.</span>`); } }
+function setUnder(html){ under.innerHTML=html; }
+</script>
+</body></html>

@@ -37,10 +37,17 @@ FF_TPL="$HERE/host/org.agentos.create_video.firefox.json.in"
 CR_TPL="$HERE/host/org.agentos.create_video.chrome.json.in"
 MANIFEST_NAME="org.agentos.create_video.json"
 
-# Per-browser native-messaging-host directories. We install ONLY where the browser's parent
-# config dir already exists (i.e. the browser is present) — missing browsers are skipped, not created.
+# Per-browser native-messaging-host directories. We install ONLY where the browser's base config
+# dir already exists (i.e. the browser is present) — missing browsers are skipped, not created.
+# Firefox has SEVERAL possible homes: modern Firefox (~128+) moved its profile to the XDG path
+# $HOME/.config/mozilla (NOT $HOME/.mozilla), and Flatpak/Snap builds live under their own roots —
+# cover them all, else a recent Firefox is silently skipped (the bug this fixes).
 declare -A BROWSERS=(
-  ["Firefox"]="$HOME/.mozilla|$HOME/.mozilla/native-messaging-hosts|firefox"
+  ["Firefox (XDG)"]="$HOME/.config/mozilla|$HOME/.config/mozilla/native-messaging-hosts|firefox"
+  ["Firefox (legacy)"]="$HOME/.mozilla|$HOME/.mozilla/native-messaging-hosts|firefox"
+  ["Firefox (Flatpak)"]="$HOME/.var/app/org.mozilla.firefox|$HOME/.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts|firefox"
+  ["Firefox (Snap)"]="$HOME/snap/firefox|$HOME/snap/firefox/common/.mozilla/native-messaging-hosts|firefox"
+  ["LibreWolf (Flatpak)"]="$HOME/.var/app/io.gitlab.librewolf-community|$HOME/.var/app/io.gitlab.librewolf-community/.librewolf/native-messaging-hosts|firefox"
   ["Chromium"]="$HOME/.config/chromium|$HOME/.config/chromium/NativeMessagingHosts|chrome"
   ["Chrome"]="$HOME/.config/google-chrome|$HOME/.config/google-chrome/NativeMessagingHosts|chrome"
 )
