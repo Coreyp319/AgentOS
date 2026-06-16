@@ -28,6 +28,12 @@ const COEXIST_FRACTION: f64 = 0.5;
 /// Fallback `size_vram → real footprint` multiplier when no `load:` event was captured to learn it
 /// from (measured ~1.45× for gemma4, 2026-06-16 — CUDA context + KV cache are invisible to size_vram).
 const DEFAULT_UNDERCOUNT: f64 = 1.45;
+/// Don't trust a footprint learned from fewer than this many CLEAN load-deltas (a 1-sample footprint
+/// is indistinguishable from a 500-sample one — determinism review); below it, use corrected size_vram.
+const MIN_FOOTPRINT_SAMPLES: usize = 3;
+/// Cap on the learned size_vram→real multiplier. The plausible band is ~1.0–1.5 (measured 1.42–1.45);
+/// above this is a noisy log, not physics. The low side is pinned to 1.0 by the clean-load filter.
+const UNDERCOUNT_MAX: f64 = 2.0;
 /// Below this many parsed samples the recommendation is low-confidence — say so, don't pretend.
 const MIN_SAMPLES: usize = 60;
 /// Recency half-life for the popularity signal: a load this long ago counts half as much as one
@@ -100,10 +106,15 @@ pub struct ModelStat {
 }
 
 impl ModelStat {
-    /// The number admission should reserve: measured real footprint, else corrected `size_vram`.
+    /// The number admission should reserve. Trust a measured footprint only with enough clean samples;
+    /// otherwise use corrected `size_vram`. Floored to `reported_max_mib` so a contaminated free-delta
+    /// (observed: real read *below* size_vram) can never under-reserve — under-reserving causes OOM.
     fn admission_mib(&self, undercount: f64) -> u64 {
-        self.real_footprint_mib
-            .unwrap_or_else(|| ((self.reported_max_mib as f64) * undercount).round() as u64)
+        let estimate = match self.real_footprint_mib {
+            Some(v) if self.footprint_samples >= MIN_FOOTPRINT_SAMPLES => v,
+            _ => ((self.reported_max_mib as f64) * undercount).round() as u64,
+        };
+        estimate.max(self.reported_max_mib)
     }
 }
 
@@ -162,18 +173,19 @@ fn aggregate(ticks: &[RawTick]) -> (Vec<ModelStat>, f64) {
                 *loads.entry(name.to_string()).or_default() += 1;
                 *load_score.entry(name.to_string()).or_default() +=
                     recency_weight(max_ts.saturating_sub(t.ts_ms));
-                // Footprint = free[i-1] - free[i], when both knowable.
+                // Footprint = free[i-1] - free[i]. Accept ONLY a clean load: the drop must be at least
+                // the reported size_vram. A drop smaller than size_vram means another allocation freed
+                // concurrently in the tick — contaminated; discard it rather than learn a too-low
+                // (OOM-dangerous) footprint. (Observed live: a single bad tick yielded a ×0.83 ratio.)
                 if i > 0 {
                     let (prev, now) = (ticks[i - 1].vram.free_mib, t.vram.free_mib);
-                    if prev > 0 && now > 0 && prev > now {
+                    let rep =
+                        t.residency.iter().find(|r| r.name == name).map(|r| r.vram_mib).unwrap_or(0);
+                    if prev > 0 && now > 0 && prev > now && rep > 0 {
                         let delta = (prev - now) as u64;
-                        deltas.entry(name.to_string()).or_default().push(delta);
-                        // Learn the size_vram undercount from this same event.
-                        if let Some(rep) = t.residency.iter().find(|r| r.name == name).map(|r| r.vram_mib)
-                        {
-                            if rep > 0 {
-                                undercount_ratios.push(delta as f64 / rep as f64);
-                            }
+                        if delta >= rep {
+                            deltas.entry(name.to_string()).or_default().push(delta);
+                            undercount_ratios.push(delta as f64 / rep as f64); // ≥ 1.0 by construction
                         }
                     }
                 }
@@ -189,7 +201,8 @@ fn aggregate(ticks: &[RawTick]) -> (Vec<ModelStat>, f64) {
         // total_cmp: total order, can't panic on a non-finite ratio (NaN guard, determinism review).
         undercount_ratios.sort_by(|a, b| a.total_cmp(b));
         undercount_ratios[undercount_ratios.len() / 2] // median ratio
-    };
+    }
+    .min(UNDERCOUNT_MAX); // cap the high side; the low side is ≥1.0 from the clean-load filter
 
     let names: std::collections::BTreeSet<String> =
         resident.keys().chain(loads.keys()).cloned().collect();
@@ -371,15 +384,23 @@ fn report(plan: &Plan) {
     }
 
     println!("Per-model (ranked by recency-weighted use; ticks shown as a diagnostic, not the rank key):");
-    println!("  {:<34} {:>6} {:>6} {:>9} {:>11}", "model", "ticks", "loads", "size_vram", "real");
+    println!(
+        "  {:<30} {:>6} {:>6} {:>10} {:>11} {:>8}",
+        "model", "ticks", "loads", "size_vram", "real", "admit"
+    );
     for m in &plan.models {
         let real = match m.real_footprint_mib {
             Some(v) => format!("{v}M({}x)", m.footprint_samples), // (N) = clean load-deltas learned from
             None => format!("~{}M*", (m.reported_max_mib as f64 * plan.undercount).round()),
         };
         println!(
-            "  {:<34} {:>6} {:>6} {:>8}M {:>11}",
-            m.name, m.ticks_resident, m.loads, m.reported_max_mib, real
+            "  {:<30} {:>6} {:>6} {:>9}M {:>11} {:>7}M",
+            m.name,
+            m.ticks_resident,
+            m.loads,
+            m.reported_max_mib,
+            real,
+            m.admission_mib(plan.undercount) // the floored/gated reservation Phase 3 would use
         );
     }
     if plan.models.iter().any(|m| m.real_footprint_mib.is_none()) {
@@ -468,6 +489,40 @@ mod tests {
         assert!((undercount - (4700.0 / 3236.0)).abs() < 0.001);
         // admission reserves the REAL number, not size_vram.
         assert_eq!(g.admission_mib(undercount), 4700);
+    }
+
+    #[test]
+    fn contaminated_load_delta_discarded_and_admission_floors_to_size_vram() {
+        // Reproduces the live ×0.83 case: the free-drop (2797) read SMALLER than reported size_vram
+        // (3385) because a concurrent free contaminated the tick. The delta must be discarded (not
+        // learned as a too-low footprint), the undercount must fall back to the default (never <1.0),
+        // and admission must never reserve below size_vram.
+        let ticks = vec![
+            tick(8000, 16000, 24000, &[], &[]),
+            tick(10800, 13203, 24000, &[("m", 3385)], &["load:m"]), // free fell only 2797 < 3385
+            tick(8000, 16000, 24000, &[], &["unload:m"]),
+        ];
+        let (models, undercount) = aggregate(&ticks);
+        let m = &models[0];
+        assert_eq!(m.real_footprint_mib, None, "contaminated delta must not be learned");
+        assert_eq!(m.footprint_samples, 0);
+        assert_eq!(undercount, DEFAULT_UNDERCOUNT, "no clean ratio → default, never <1.0");
+        assert!(m.admission_mib(undercount) >= 3385, "must never reserve below size_vram");
+    }
+
+    #[test]
+    fn one_clean_sample_is_not_yet_trusted_but_still_floors_above_size_vram() {
+        // A single clean load (delta 5000 ≥ size_vram 3500): recorded, but below MIN_FOOTPRINT_SAMPLES,
+        // so admission uses corrected size_vram rather than the lone measurement — and never less.
+        let ticks = vec![
+            tick(8000, 16000, 24000, &[], &[]),
+            tick(13000, 11000, 24000, &[("m", 3500)], &["load:m"]),
+        ];
+        let (models, undercount) = aggregate(&ticks);
+        let m = &models[0];
+        assert_eq!(m.footprint_samples, 1);
+        assert!(m.admission_mib(undercount) >= 3500);
+        assert!(undercount <= UNDERCOUNT_MAX && undercount >= 1.0);
     }
 
     #[test]
