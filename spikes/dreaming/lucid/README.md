@@ -51,3 +51,20 @@ type-your-own beats; on-disk branching tree.
 **Doesn't (owed before ship):** coordinator lease / GPU turn-taking, consent gate
 + opt-in, VLM frame-grounding (ADR-0014 §6), the real red-line guard, QML panel +
 notification surface, "set as wallpaper" via the ADR-0005 tx, dream cleanup/quota.
+
+## MVP slice — `lucid_linear.py` (ADR-0015)
+
+After the [design council](../../../docs/research/0008-lucid-review-scorecard.md), the buildable
+slice is a **linear chain through the coordinator lease**, which fixes the blockers `lucid_engine.py`
+left open:
+- `lucid_safety.py` — deterministic, model-external, fail-closed gates (schema validator + code-side
+  red-line on **both** the LLM and type-your-own paths; `confirm_evicted` instead of trusting
+  `keep_alive:0`). Unit-tested in `test_lucid_safety.py` (no model/GPU/daemon — `python3 test_lucid_safety.py`).
+- `lucid_linear.py` — the video step goes through `Spawn`/`Release` on the agentosd coordinator
+  (reuses the `dream.sh` client), confirms eviction before acquiring, writes an **atomic** append-only
+  `chain.json`, and **fails open** if the coordinator is down. Test seams (`LUCID_GEN_CMD`,
+  `LUCID_READY_CMD`) prove the dance without a GPU.
+
+Still owed (see ADR-0015): the **image-side** likeness guard (B2 — a `seed_image_guard` hook, currently
+fail-closed off), ComfyUI warm-keep, the kill/keep metric, and everything behind the greenlight gate
+(branching, QML panel, §6 grounding, "set as wallpaper").
