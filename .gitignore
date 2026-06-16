@@ -5,3 +5,7 @@
 # throwaway external clone + its venv (C1-spike); findings live in spikes/kwin-mcp-FINDINGS.md
 /spikes/kwin-mcp/
 **/.venv/
+
+# Python bytecode (Hermes plugin source)
+__pycache__/
+*.pyc

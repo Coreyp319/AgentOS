@@ -16,7 +16,9 @@
 //!   snag    = `tasks.status = 'blocked'` OR `consecutive_failures > 0`
 //!             (crash/timeout fall back to `ready` w/ the counter bumped — the column
 //!              alone can't show them)
-//!   needs_you (warm) is P2 (pending approvals) — never emitted here.
+//!   needs_you (warm) = a pending Hermes approval (P2), read from
+//!     `~/.hermes/needs_you.json` (written by the `needs-you-signal` plugin) and
+//!     gated on the gateway being alive (the signal is in-process → could go stale).
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -70,12 +72,23 @@ fn ramp(n: u32, lo: f64, hi: f64) -> f64 {
     round3(lo + (hi - lo) * t)
 }
 
-/// Pure mapping: fleet counts (+ optional gateway info) → the ambient feed.
-/// snag takes precedence over working; needs_you (warm) is deferred to P2.
-pub fn derive_feed(fleet: &FleetCounts, gw: Option<&GatewayInfo>) -> AgentFeed {
+/// Pure mapping: fleet counts + optional gateway info + pending-approval count →
+/// the ambient feed. Precedence: **needs_you > snag > working > idle** — a pending
+/// approval means the agent is blocked waiting on YOU, the most actionable signal.
+pub fn derive_feed(fleet: &FleetCounts, gw: Option<&GatewayInfo>, needs_you: u32) -> AgentFeed {
     let active = fleet.running + gw.map(|g| g.active_agents).unwrap_or(0);
+    // A pending approval lives only in the gateway's RAM (P2 recon), so a crashed
+    // gateway could leave a stale needs_you.json. Only honour it while the gateway
+    // is actually alive; the plugin also rewrites an empty file on clean startup.
+    let gateway_alive = gw
+        .map(|g| matches!(g.gateway_state.as_str(), "running" | "starting" | "degraded"))
+        .unwrap_or(false);
+    let pending = if gateway_alive { needs_you } else { 0 };
 
-    if fleet.snagged > 0 {
+    if pending > 0 {
+        // the ONE deliberate warm bloom (design-ux) — outranks working/snag.
+        AgentFeed { state: 2, busy: 0.0, warm: ramp(pending, 0.75, 0.9), snag: 0.0 }
+    } else if fleet.snagged > 0 {
         AgentFeed { state: 4, busy: 0.0, warm: 0.0, snag: ramp(fleet.snagged, 0.6, 0.9) }
     } else if active > 0 {
         AgentFeed { state: 1, busy: ramp(active, 0.7, 1.0), warm: 0.0, snag: 0.0 }
@@ -120,6 +133,22 @@ struct GatewayFile {
 fn read_gateway(path: &Path) -> Option<GatewayInfo> {
     let g: GatewayFile = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
     Some(GatewayInfo { gateway_state: g.gateway_state, active_agents: g.active_agents })
+}
+
+#[derive(Deserialize, Default)]
+struct NeedsYouFile {
+    #[serde(default)]
+    pending: u32,
+}
+
+/// Count of pending Hermes approvals, written by the `needs-you-signal` plugin.
+/// Absent/unparseable → 0 (Hermes isn't blocked on us, or the plugin isn't installed).
+fn read_needs_you(path: &Path) -> u32 {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<NeedsYouFile>(&s).ok())
+        .map(|n| n.pending)
+        .unwrap_or(0)
 }
 
 fn current_uid() -> u32 {
@@ -173,25 +202,28 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
     let out = dir.join("agent.json");
     let kanban = hermes_path("kanban.db");
     let gateway = hermes_path("gateway_state.json");
+    let needs_you_path = hermes_path("needs_you.json");
     println!("agentosd feed → {}", out.display());
 
     let mut last: Option<AgentFeed> = None;
     loop {
         let fleet = read_fleet(&kanban).unwrap_or_default();
         let gw = read_gateway(&gateway);
-        let feed = derive_feed(&fleet, gw.as_ref());
+        let needs_you = read_needs_you(&needs_you_path);
+        let feed = derive_feed(&fleet, gw.as_ref(), needs_you);
 
         let changed = last.as_ref() != Some(&feed);
         if changed || once {
             match write_feed(&dir, &feed) {
                 Ok(()) if changed => println!(
-                    "[{}] {} (run {}, snag {}, pend {}/{}, gw {}) → {}",
+                    "[{}] {} (run {}, snag {}, pend {}/{}, approve {}, gw {}) → {}",
                     crate::now_hms(),
                     state_word(feed.state),
                     fleet.running,
                     fleet.snagged,
                     fleet.pending,
                     fleet.total,
+                    needs_you,
                     gw.as_ref().map(|g| g.gateway_state.as_str()).unwrap_or("-"),
                     serde_json::to_string(&feed).unwrap(),
                 ),
@@ -213,7 +245,10 @@ mod tests {
     use super::*;
 
     fn gw(active: u32) -> GatewayInfo {
-        GatewayInfo { gateway_state: "running".into(), active_agents: active }
+        gw_state("running", active)
+    }
+    fn gw_state(state: &str, active: u32) -> GatewayInfo {
+        GatewayInfo { gateway_state: state.into(), active_agents: active }
     }
     fn counts(running: u32, snagged: u32) -> FleetCounts {
         FleetCounts { running, snagged, total: running + snagged, pending: 0 }
@@ -222,7 +257,7 @@ mod tests {
     #[test]
     fn idle_when_empty() {
         assert_eq!(
-            derive_feed(&FleetCounts::default(), None),
+            derive_feed(&FleetCounts::default(), None, 0),
             AgentFeed { state: 0, busy: 0.0, warm: 0.0, snag: 0.0 }
         );
     }
@@ -230,24 +265,24 @@ mod tests {
     #[test]
     fn one_running_task_reads_as_working() {
         assert_eq!(
-            derive_feed(&counts(1, 0), None),
+            derive_feed(&counts(1, 0), None, 0),
             AgentFeed { state: 1, busy: 0.7, warm: 0.0, snag: 0.0 }
         );
     }
 
     #[test]
     fn busy_scales_then_saturates() {
-        assert_eq!(derive_feed(&counts(2, 0), None).busy, 0.8);
-        assert_eq!(derive_feed(&counts(3, 0), None).busy, 0.9);
-        assert_eq!(derive_feed(&counts(4, 0), None).busy, 1.0);
-        assert_eq!(derive_feed(&counts(10, 0), None).busy, 1.0);
+        assert_eq!(derive_feed(&counts(2, 0), None, 0).busy, 0.8);
+        assert_eq!(derive_feed(&counts(3, 0), None, 0).busy, 0.9);
+        assert_eq!(derive_feed(&counts(4, 0), None, 0).busy, 1.0);
+        assert_eq!(derive_feed(&counts(10, 0), None, 0).busy, 1.0);
     }
 
     #[test]
     fn gateway_chat_turns_count_as_working() {
         // No kanban tasks, but the gateway is actively processing 2 turns.
         assert_eq!(
-            derive_feed(&FleetCounts::default(), Some(&gw(2))),
+            derive_feed(&FleetCounts::default(), Some(&gw(2)), 0),
             AgentFeed { state: 1, busy: 0.8, warm: 0.0, snag: 0.0 }
         );
     }
@@ -256,22 +291,50 @@ mod tests {
     fn snag_takes_precedence_over_working() {
         // Busy AND snagged → snag wins, busy is forced to 0.
         assert_eq!(
-            derive_feed(&counts(3, 1), Some(&gw(5))),
+            derive_feed(&counts(3, 1), Some(&gw(5)), 0),
             AgentFeed { state: 4, busy: 0.0, warm: 0.0, snag: 0.6 }
         );
     }
 
     #[test]
     fn snag_scales() {
-        assert_eq!(derive_feed(&counts(0, 1), None).snag, 0.6);
-        assert_eq!(derive_feed(&counts(0, 4), None).snag, 0.9);
+        assert_eq!(derive_feed(&counts(0, 1), None, 0).snag, 0.6);
+        assert_eq!(derive_feed(&counts(0, 4), None, 0).snag, 0.9);
     }
 
     #[test]
-    fn warm_is_always_zero_in_p1() {
+    fn pending_approval_lights_needs_you_warm() {
+        // gateway alive + 1 pending approval → the warm needs_you bloom (state 2).
+        assert_eq!(
+            derive_feed(&FleetCounts::default(), Some(&gw(0)), 1),
+            AgentFeed { state: 2, busy: 0.0, warm: 0.75, snag: 0.0 }
+        );
+    }
+
+    #[test]
+    fn needs_you_outranks_snag_and_working() {
+        // busy AND snagged AND a pending approval → needs_you wins; busy+snag forced 0.
+        assert_eq!(
+            derive_feed(&counts(3, 2), Some(&gw(5)), 2),
+            AgentFeed { state: 2, busy: 0.0, warm: 0.8, snag: 0.0 }
+        );
+    }
+
+    #[test]
+    fn needs_you_suppressed_when_gateway_not_alive() {
+        // a stale needs_you.json (gateway stopped / file missing) must NOT raise warm.
+        assert_eq!(derive_feed(&FleetCounts::default(), Some(&gw_state("stopped", 0)), 3).warm, 0.0);
+        assert_eq!(derive_feed(&FleetCounts::default(), None, 3).warm, 0.0);
+        // and it falls through to the real state — a running task still reads as working.
+        assert_eq!(derive_feed(&counts(1, 0), Some(&gw_state("stopped", 0)), 3).state, 1);
+    }
+
+    #[test]
+    fn warm_zero_without_pending_approval() {
+        // with no pending approval, warm stays 0 across all working/snag combos.
         for running in 0..6 {
             for snagged in 0..6 {
-                assert_eq!(derive_feed(&counts(running, snagged), Some(&gw(running))).warm, 0.0);
+                assert_eq!(derive_feed(&counts(running, snagged), Some(&gw(running)), 0).warm, 0.0);
             }
         }
     }

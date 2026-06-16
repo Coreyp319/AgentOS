@@ -1,0 +1,8 @@
+name: needs-you-signal
+version: "0.1.0"
+description: "Writes ~/.hermes/needs_you.json when Hermes is blocked on a user approval, for the AgentOS ambient desktop layer (observer-only; never vetoes)."
+author: AgentOS
+kind: standalone
+hooks:
+  - pre_approval_request
+  - post_approval_response
