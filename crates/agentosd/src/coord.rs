@@ -89,6 +89,14 @@ impl Admission {
     pub fn granted(&self) -> bool {
         matches!(self, Admission::Grant { .. })
     }
+
+    /// The estimated footprint this verdict was computed for (carried so a preempt can
+    /// predict post-eviction free VRAM from the victim's admitted estimate).
+    pub fn est_mib(&self) -> u64 {
+        match self {
+            Admission::Grant { est_mib, .. } | Admission::Deny { est_mib, .. } => *est_mib,
+        }
+    }
 }
 
 /// Predict-before-load (ADR-0010 §4): grant only if the estimated footprint plus a

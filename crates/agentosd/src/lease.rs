@@ -31,6 +31,7 @@
 //! comes from the gateway holding inference responses, ADR-0006). A revoke *signal* for
 //! cooperative holders, and the Hermes plugin that calls this, are the remaining work.
 
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,6 +55,9 @@ const OBJ_PATH: &str = "/org/agentos/Coordinator1";
 struct Held {
     tier: Tier,
     token: u64,
+    /// The footprint this holder was admitted for — so a preempt can predict the free
+    /// VRAM after evicting it (H1: complete the preempt decision, not just priority).
+    est_mib: u64,
 }
 
 /// Outcome of an `acquire` against the single lease.
@@ -83,22 +87,25 @@ impl LeaseState {
     }
 
     /// Decide + mutate. `admission` (computed from live NVML by the caller) keeps NVML
-    /// out of this testable core. Admission gates only a *fresh* grant: a preemption
-    /// SIGKILLs the holder and frees its VRAM, so current-free is the wrong budget for
-    /// it — the displaced job's footprint was already admitted when it acquired.
+    /// out of this testable core. Admission gates only a *fresh* grant (predict-before-load,
+    /// ADR-0010 §4). A preemption is decided by **priority** (`arbitrate`) — the lower tier
+    /// must always yield — and the new holder is installed with its own `est`; the caller
+    /// re-checks fit against post-eviction free VRAM (H1) and acts on the verdict.
     pub fn acquire(&mut self, tier: Tier, admission: &Admission) -> AcquireResult {
+        let est = admission.est_mib();
         match arbitrate(self.holder.map(|h| Holder { tier: h.tier }), tier) {
             LeaseDecision::Queue => AcquireResult::Queued,
             LeaseDecision::Preempt => {
-                let victim = self.holder.expect("Preempt implies a holder").token;
-                let token = self.install(tier);
-                AcquireResult::Preempted { token, victim }
+                // arbitrate returns Preempt only when a holder exists.
+                let Some(victim) = self.holder else { return AcquireResult::Queued };
+                let token = self.install(tier, est);
+                AcquireResult::Preempted { token, victim: victim.token }
             }
             LeaseDecision::Grant => {
                 if !admission.granted() {
                     return AcquireResult::Denied;
                 }
-                let token = self.install(tier);
+                let token = self.install(tier, est);
                 AcquireResult::Granted { token }
             }
         }
@@ -122,11 +129,16 @@ impl LeaseState {
         self.holder.map_or(0, |h| h.token)
     }
 
-    /// Issue a fresh token and install `tier` as the sole holder.
-    fn install(&mut self, tier: Tier) -> u64 {
+    /// The current holder's admitted footprint estimate (for the preempt fit re-check).
+    pub fn holder_est(&self) -> Option<u64> {
+        self.holder.map(|h| h.est_mib)
+    }
+
+    /// Issue a fresh token and install `tier` (admitted for `est_mib`) as the sole holder.
+    fn install(&mut self, tier: Tier, est_mib: u64) -> u64 {
         let token = self.next_token;
         self.next_token += 1;
-        self.holder = Some(Held { tier, token });
+        self.holder = Some(Held { tier, token, est_mib });
         token
     }
 }
@@ -165,14 +177,60 @@ impl Inner {
 
 fn spawn_owned(argv: &[String]) -> std::io::Result<(Child, u32)> {
     let mut it = argv.iter();
-    let prog = it.next().expect("argv non-empty (checked by caller)");
+    let prog = it
+        .next()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty argv"))?;
     let child = Command::new(prog)
         .args(it)
+        // Own process group (R1): the child is its own group leader (pgid == pid), so a
+        // launcher that forks workers (e.g. ComfyUI) is reclaimed as a whole group on evict.
+        .process_group(0)
+        .stdin(Stdio::null())
         // Fail-safe (ADR-0003): never leak an owned GPU process if the daemon dies.
         .kill_on_drop(true)
         .spawn()?;
-    let pid = child.id().unwrap_or(0);
+    // A spawned child has a pid until reaped; None only if it died instantly → spawn anomaly.
+    let pid = child
+        .id()
+        .ok_or_else(|| std::io::Error::other("child exited before id()"))?;
     Ok((child, pid))
+}
+
+/// Best-effort executable pre-flight so a bad `argv[0]` is caught *before* we evict an
+/// incumbent (H3): only checks an absolute/relative path; a bare PATH name passes through.
+fn looks_executable(prog: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    if !prog.contains('/') {
+        return true; // resolved via PATH at spawn time; can't cheaply check here
+    }
+    std::fs::metadata(prog)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// SIGKILL the whole process group led by `pid` (set via `process_group(0)`), so a forking
+/// owned job is fully reclaimed — `POST /free` is never trusted (ADR-0010 §5, finding R1).
+fn sigkill_group(pid: u32) {
+    // Safe: a kill(2) syscall with a constant signal; negative pid targets the group.
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+}
+
+/// Scaled safety headroom (H5 partial): self-reported model sizes undercount (ADR-0004
+/// measured 19.5 GB for an 18 GB-reported model), so a flat 512 MiB is too thin on big
+/// models. Keep ≥6% of the estimate, floored at the base headroom.
+fn headroom_for(est_mib: u64) -> u64 {
+    (est_mib / 16).max(HEADROOM_MIB)
+}
+
+/// H1: complete the preempt decision. After evicting the victim, will the successor fit?
+/// Predicted free = current free + the victim's admitted footprint *iff we actually own
+/// (and thus reclaim) it*; a cooperative victim frees nothing agentosd controls. Pure +
+/// tested — the kill is authorized by priority, this just makes the consequence explicit.
+fn fits_after_evict(free_mib: u64, victim_est: u64, reclaimable: bool, succ_est: u64, headroom: u64) -> bool {
+    let predicted = if reclaimable { free_mib.saturating_add(victim_est) } else { free_mib };
+    admit(predicted, succ_est, headroom).granted()
 }
 
 // ---------------------------------------------------------------------------
@@ -194,14 +252,51 @@ impl Coordinator {
         estimate_mib: u32,
         argv: Option<Vec<String>>,
     ) -> (bool, u64, String) {
+        use std::fmt::Write as _;
+
         let tier = match Tier::from_arg(&tier_name) {
             Ok(t) => t,
             Err(e) => return (false, 0, format!("error: {e}")),
         };
-        let free = free_mib(&self.nvml).await.unwrap_or(0);
-        let admission = admit(free, estimate_mib as u64, HEADROOM_MIB);
+        let est = estimate_mib as u64;
+        let headroom = headroom_for(est);
+
+        // H3: pre-flight the binary BEFORE we lock/evict, so a bad argv can't destroy an
+        // incumbent. (PATH-relative names pass through; resolved at spawn time.)
+        if let Some(args) = argv.as_deref() {
+            if args.is_empty() {
+                return (false, 0, "spawn: empty argv".into());
+            }
+            if !looks_executable(&args[0]) {
+                return (false, 0, format!("spawn: `{}` is not an executable file", args[0]));
+            }
+        }
+
+        // R2: distinguish "couldn't read VRAM" (None) from "0 free".
+        let free_opt = free_mib(&self.nvml).await;
 
         let mut inner = self.inner.lock().await;
+        let prev_est = inner.lease.holder_est().unwrap_or(0);
+
+        // Fresh-grant admissibility, with fail-open per tier (ADR-0003): on an unreadable
+        // GPU, interactive (top tier) grants anyway — never block live AI on a read blip —
+        // while batch/best-effort fail *closed* (don't start a heavy job blind).
+        let admit_ok = match free_opt {
+            Some(free) => admit(free, est, headroom).granted(),
+            None => tier == Tier::Interactive,
+        };
+        let admission = if admit_ok {
+            Admission::Grant { free_mib: free_opt.unwrap_or(0), est_mib: est, headroom_mib: headroom }
+        } else {
+            Admission::Deny {
+                free_mib: free_opt.unwrap_or(0),
+                est_mib: est,
+                headroom_mib: headroom,
+                short_mib: 0,
+            }
+        };
+
+        // preempted = Some((victim_token, fit_verdict)); fit verdict completes the decision (H1).
         let (token, preempted) = match inner.lease.acquire(tier, &admission) {
             AcquireResult::Queued => {
                 return (
@@ -215,30 +310,51 @@ impl Coordinator {
                 );
             }
             AcquireResult::Denied => {
-                let short = match admission {
-                    Admission::Deny { short_mib, .. } => short_mib,
-                    _ => 0,
-                };
-                return (
-                    false,
-                    0,
-                    format!(
-                        "denied: short {short}M (free {free}M vs est {estimate_mib}M + headroom {HEADROOM_MIB}M)"
+                let msg = match free_opt {
+                    None => format!(
+                        "declined: VRAM unreadable — {} batch fails closed (won't start blind); \
+                         interactive would fail open",
+                        tier.as_str()
                     ),
-                );
+                    Some(free) => {
+                        let short = match admit(free, est, headroom) {
+                            Admission::Deny { short_mib, .. } => short_mib,
+                            _ => 0,
+                        };
+                        format!("denied: short {short}M (free {free}M vs est {est}M + headroom {headroom}M)")
+                    }
+                };
+                return (false, 0, msg);
             }
             AcquireResult::Granted { token } => (token, None),
-            AcquireResult::Preempted { token, victim } => (token, Some(victim)),
+            AcquireResult::Preempted { token, victim } => {
+                // H1: re-verify fit against PREDICTED post-eviction free (current + the
+                // victim's admitted footprint, iff we actually own/reclaim it). The kill is
+                // authorized by priority; this completes the *decision* and warns the caller.
+                let reclaimable = inner.owned.as_ref().is_some_and(|j| j.token == victim);
+                let fit = match free_opt {
+                    Some(free) => {
+                        if fits_after_evict(free, prev_est, reclaimable, est, headroom) {
+                            "fits"
+                        } else {
+                            "WONT-FIT"
+                        }
+                    }
+                    None => "fit-unknown",
+                };
+                (token, Some((victim, fit)))
+            }
         };
 
-        // Evict the previously-owned child on preemption (ADR-0010 §5: own-PID SIGKILL;
-        // `POST /free` is never on this path). kill_on_drop reaps the rest when it drops.
-        let mut evicted: Option<(u64, String, u32)> = None;
-        if let Some(victim) = preempted {
-            if let Some(mut job) = inner.owned.take() {
+        // Evict the previously-owned child on preemption — carry the Child OUT so we can
+        // reap it (H2) rather than drop-and-hope; SIGKILL the whole group (R1).
+        let mut evicted_child: Option<Child> = None;
+        let mut evicted_info: Option<(u64, String, u32, &'static str)> = None;
+        if let Some((victim, fit)) = preempted {
+            if let Some(job) = inner.owned.take() {
                 if job.token == victim {
-                    let _ = job.child.start_kill();
-                    evicted = Some((job.token, job.label.clone(), job.pid));
+                    evicted_info = Some((job.token, job.label.clone(), job.pid, fit));
+                    evicted_child = Some(job.child);
                 } else {
                     inner.owned = Some(job); // not the victim (shouldn't happen) — keep it
                 }
@@ -246,18 +362,21 @@ impl Coordinator {
         }
 
         // `Spawn` requests: agentosd spawns + OWNS the child. On spawn failure, roll the
-        // lease back — a lease without its process is worse than no lease.
+        // lease back (a lease without its process is worse than no lease) and reap any victim.
         if let Some(args) = argv.as_deref() {
             match spawn_owned(args) {
                 Ok((child, pid)) => {
-                    inner.owned =
-                        Some(OwnedJob { token, child, pid, label: args.join(" ") });
+                    inner.owned = Some(OwnedJob { token, child, pid, label: args.join(" ") });
                 }
                 Err(e) => {
                     inner.lease.release(token);
                     drop(inner);
-                    if let Some((vt, label, pid)) = evicted {
-                        println!("coordd: PREEMPT token {vt} → SIGKILL `{label}` pid {pid}");
+                    if let Some((vt, label, pid, _)) = evicted_info {
+                        eprintln!("coordd: spawn failed after preempting token {vt} (`{label}` pid {pid})");
+                        sigkill_group(pid);
+                    }
+                    if let Some(mut ch) = evicted_child {
+                        let _ = ch.wait().await;
                     }
                     return (false, 0, format!("spawn failed: {e}"));
                 }
@@ -267,30 +386,48 @@ impl Coordinator {
         let owned_pid = inner.owned.as_ref().filter(|j| j.token == token).map(|j| j.pid);
         drop(inner);
 
-        if let Some((vt, label, pid)) = evicted {
+        if let Some((vt, label, pid, fit)) = evicted_info {
             println!(
-                "coordd: PREEMPT token {vt} → SIGKILL `{label}` pid {pid} (own-PID evict, ADR-0010 §5)"
+                "coordd: PREEMPT token {vt} → SIGKILL group of `{label}` pid {pid} \
+                 (own-PID/group evict, ADR-0010 §5; successor {fit})"
             );
-            self.spawn_reclaim_probe(free);
+            sigkill_group(pid);
+            if let Some(child) = evicted_child {
+                self.spawn_reclaim_task(child, free_opt.unwrap_or(0));
+            }
         }
 
-        let mut msg = if preempted.is_some() {
-            format!("granted {} token {token}; preempted prior holder (free {free}M)", tier.as_str())
-        } else {
-            format!("granted {} token {token} (free {free}M)", tier.as_str())
+        let mut msg = match preempted {
+            Some((victim, fit)) => {
+                format!("granted {} token {token}; preempted token {victim} ({fit})", tier.as_str())
+            }
+            None => format!("granted {} token {token}", tier.as_str()),
         };
+        match free_opt {
+            Some(free) => { let _ = write!(msg, " (free {free}M)"); }
+            None => msg.push_str(" (free unknown)"),
+        }
         if let Some(pid) = owned_pid {
-            msg.push_str(&format!("; agentosd owns pid {pid}"));
+            let _ = write!(msg, "; agentosd owns pid {pid}");
+        }
+        // H1: a granted-but-won't-fit preempt is loud — the successor must offload/shrink.
+        if matches!(preempted, Some((_, "WONT-FIT"))) {
+            eprintln!(
+                "coordd: WARNING token {token} granted but WONT-FIT after eviction — \
+                 successor must offload/shrink (ADR-0004)"
+            );
         }
         (true, token, msg)
     }
 
-    /// Fire-and-forget VRAM-reclaim proof after a SIGKILL: let the driver settle, then
-    /// log free-VRAM delta. Off the D-Bus response path so `Acquire` stays snappy.
-    fn spawn_reclaim_probe(&self, before: u64) {
+    /// Reap an evicted/released child, then prove reclaim. The SIGKILL (to the group) has
+    /// already been sent; we `wait()` the leader so the Δ is read after *actual* exit (H2),
+    /// not a fixed-sleep guess. Off the response path so the handler stays snappy.
+    fn spawn_reclaim_task(&self, mut child: Child, before: u64) {
         let nvml = Arc::clone(&self.nvml);
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = child.wait().await; // reap the leader (no zombie)
+            tokio::time::sleep(Duration::from_millis(150)).await; // brief driver settle
             if let Some(after) = free_mib(&nvml).await {
                 println!(
                     "coordd: post-evict free {after}M (was {before}M; Δ {}M reclaimed)",
@@ -320,18 +457,27 @@ impl Coordinator {
     }
 
     /// Release the lease (true iff `token` is the current holder's). If that holder is an
-    /// agentosd-owned job, its child is SIGKILLed too — releasing means "done with the GPU".
+    /// agentosd-owned job, its process group is SIGKILLed too — releasing means "done with
+    /// the GPU" — and the leader is reaped (no zombie).
     async fn release(&self, token: u64) -> bool {
         let mut inner = self.inner.lock().await;
         let freed = inner.lease.release(token);
+        let mut to_reap: Option<(Child, u32)> = None;
         if freed {
-            if let Some(mut job) = inner.owned.take() {
+            if let Some(job) = inner.owned.take() {
                 if job.token == token {
-                    let _ = job.child.start_kill();
+                    to_reap = Some((job.child, job.pid));
                 } else {
                     inner.owned = Some(job);
                 }
             }
+        }
+        drop(inner);
+        if let Some((mut child, pid)) = to_reap {
+            sigkill_group(pid);
+            tokio::spawn(async move {
+                let _ = child.wait().await; // reap the leader
+            });
         }
         freed
     }
@@ -488,5 +634,32 @@ mod tests {
     #[test]
     fn release_on_an_empty_lease_is_false() {
         assert!(!LeaseState::new().release(1));
+    }
+
+    #[test]
+    fn holder_est_is_carried_through_acquire() {
+        let mut st = LeaseState::new();
+        st.acquire(Tier::Batch, &admit(20_000, 3_000, 512)); // est 3000
+        assert_eq!(st.holder_est(), Some(3_000));
+        st.acquire(Tier::Interactive, &admit(20_000, 9_000, 512)); // preempt, est 9000
+        assert_eq!(st.holder_est(), Some(9_000));
+    }
+
+    #[test]
+    fn headroom_scales_with_estimate_floored_at_base() {
+        assert_eq!(headroom_for(0), HEADROOM_MIB); // floor
+        assert_eq!(headroom_for(4_000), HEADROOM_MIB); // 250 < 512 → floor
+        assert_eq!(headroom_for(20_000), 1_250); // 6.25% dominates the floor
+    }
+
+    #[test]
+    fn fits_after_evict_completes_the_preempt_decision() {
+        // Reclaimable 2GB victim, 20GB successor, 4GB free → predicted 6GB < 20GB → WONT-FIT.
+        assert!(!fits_after_evict(4_000, 2_000, true, 20_000, headroom_for(20_000)));
+        // Reclaimable big victim makes room for the successor → fits.
+        assert!(fits_after_evict(2_000, 19_000, true, 18_000, 512));
+        // Cooperative victim (not reclaimable) frees nothing → only current free counts.
+        assert!(!fits_after_evict(4_000, 19_000, false, 18_000, 512));
+        assert!(fits_after_evict(20_000, 0, false, 18_000, 512));
     }
 }

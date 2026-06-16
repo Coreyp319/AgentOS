@@ -6,6 +6,7 @@ version = 4
 name = "agentosd"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "nvml-wrapper",
  "reqwest",
  "rusqlite",

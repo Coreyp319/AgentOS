@@ -16,3 +16,6 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "sync"] }
 # D-Bus control plane (ADR-0006): the GPU lease server on the session bus. tokio reactor.
 zbus = { version = "5", default-features = false, features = ["tokio"] }
+# SIGKILL of a whole process group (kill(-pgid)) so an owned job that forks workers
+# (e.g. ComfyUI) is fully reclaimed — review finding R1.
+libc = "0.2"

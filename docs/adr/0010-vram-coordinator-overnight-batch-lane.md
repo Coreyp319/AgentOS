@@ -148,3 +148,35 @@ floor under ADR-0009/0010/0011 — the load-bearing mechanism is now real code, 
   (`Spawn`) jobs don't have this — the supervisor reaps them.
 - **`coord` (standalone) is now superseded** by the daemon for production; it remains as a
   no-D-Bus demo of single-PID supervision (SIGUSR1-triggered) and shares the same pure core.
+
+## Review & hardening (2026-06-16)
+
+A 4-reviewer panel (resource-safety · rust · security · determinism) audited the slice —
+[scorecard](../research/0005-coordinator-review-scorecard.md). The pure core was rated excellent;
+the impure shell had two Critical + five High. **Fixed + re-tested this pass** (36 tests, clippy clean):
+
+- **R1 — group-kill.** Owned children spawn in their own process group (`process_group(0)`); eviction
+  SIGKILLs the whole group (`kill(-pgid)`), so a launcher that forks workers (ComfyUI) is fully
+  reclaimed — not just the direct PID. *Proven live*: a forked-grandchildren job is wiped on preempt.
+- **R2 — fail-open restored.** An unreadable NVML no longer coerces to `free=0` (which would *deny
+  interactive*). Interactive fails **open** (grant); batch/best-effort fail **closed** (don't start
+  blind). Honors ADR-0003.
+- **H1 — preempt decision completed.** After arbitration decides yield, the successor's fit is
+  re-checked against *predicted* post-eviction free VRAM (current + the victim's admitted estimate,
+  carried in the lease) via the pure, tested `fits_after_evict`; a `WONT-FIT` grant is surfaced +
+  logged loud (interactive still wins — top tier — but the caller is told to offload/shrink).
+- **H2 — honest reclaim.** The evicted child is `wait()`-reaped (no zombie) *before* the reclaim Δ
+  is read, replacing the fixed-300 ms guess.
+- **H3 — atomic-ish preempt.** A bad `argv` is pre-flighted (`looks_executable`) *before* any
+  eviction, so a typo can't destroy the incumbent.
+- **H5 (partial) — scaled headroom** (`max(512, est/16)`); the full per-`NUM_PARALLEL` KV model is
+  deferred to an ADR amendment.
+
+**This correction to the contract:** the *grant* is gated by VRAM math; the *preempt + kill of the
+lower tier* is gated by **priority**, now with a computed fit verdict surfaced to the successor
+(earlier text over-promised "the SIGKILL is gated by that math").
+
+**Deferred to [ADR-0012](0012-coordinator-ipc-trust-and-lease-lifecycle.md) (needs a decision):**
+the IPC trust model (S1 — unauthenticated `Spawn`-arbitrary-argv on the session bus) and lease
+lifecycle (H4 — crashed-holder reclaim / TTL; M4 — anti-strobe dwell). These change the ADR-0006
+plugin call contract, so they are ADR-before-code.
