@@ -1,0 +1,8 @@
+name: gpu-coordinator
+version: "0.1.0"
+description: "Holds the agentosd interactive VRAM lease (org.agentos.Coordinator1) around Hermes inference so live AI preempts the overnight dream/batch lane (ADR-0006/0010). Refcounted + fail-open; opt-in. Disable with AGENTOS_GPU_COORD_DISABLE=1."
+author: AgentOS
+kind: standalone
+# Wiring is in register(): this plugin registers the `llm_execution` *middleware* (which
+# wraps the provider call), not an observer hook — so there is no `hooks:` list. See
+# __init__.py and docs/research/0007 for the design.
