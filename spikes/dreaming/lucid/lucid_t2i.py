@@ -20,8 +20,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import comfy_client as cc   # noqa: E402  (the one validated ComfyUI client — ADR-0001)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lucid_safety as S    # noqa: E402  (the red-line prompt gate)
+import lucid_models         # noqa: E402  (model registry — single source of truth)
 
-CKPT = os.environ.get("LUCID_T2I_CKPT", "sd_turbo.safetensors")
+CKPT = os.environ.get("LUCID_T2I_CKPT") or lucid_models.get("t2i-opening", "sd_turbo.safetensors")
 EST_MIB = int(os.environ.get("LUCID_T2I_EST_MIB", "6500"))   # SD-Turbo weights + working set
 STEPS = int(os.environ.get("LUCID_T2I_STEPS", "4"))   # SD-Turbo: 1-4 steps
 CFG = float(os.environ.get("LUCID_T2I_CFG", "1.0"))   # SD-Turbo: cfg 1.0

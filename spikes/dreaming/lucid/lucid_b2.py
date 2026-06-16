@@ -28,11 +28,12 @@ import os
 import urllib.request
 
 import lucid_facecv as facecv   # deterministic opencv face detection (ADR-0017 primary gate)
+import lucid_models             # the model registry — single source of truth for affiliations
 
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-# A vision-capable model. Default to gemma4 (smallest vision model on this box); override to a
-# dedicated detector when one is installed. NOT used for narration's output — external input only.
-B2_MODEL = os.environ.get("LUCID_B2_MODEL", "gemma4:latest")
+# The vision model is declared in the registry (integrations/models/registry.json) so the user can
+# see + audit it; env overrides for tests. NOT used for narration's output — external input only.
+B2_MODEL = os.environ.get("LUCID_B2_MODEL") or lucid_models.get("b2-vision", "gemma4:latest")
 
 _PROMPT = (
     "You are an image safety classifier for a video generator. Inspect the image and return ONLY "

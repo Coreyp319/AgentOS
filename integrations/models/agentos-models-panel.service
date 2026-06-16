@@ -1,0 +1,29 @@
+[Unit]
+Description=AgentOS model audit panel — what models run, what for, and that they're local (127.0.0.1:9124)
+Documentation=file://%h/Documents/AgentOS/integrations/models/README.md
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Read-only: serves the audit page + /api/models from registry.json, Ollama /api/ps, and nvidia-smi.
+# Loopback-only, stdlib-only, never writes.
+ExecStart=/usr/bin/python3 %h/Documents/AgentOS/integrations/models/models_panel.py
+Environment="AGENTOS_MODELS_HOST=127.0.0.1"
+Environment="AGENTOS_MODELS_PORT=9124"
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=5
+KillMode=mixed
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=default.target

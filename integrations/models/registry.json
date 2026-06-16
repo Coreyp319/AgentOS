@@ -1,0 +1,58 @@
+{
+  "_comment": "AgentOS model registry — the single source of truth for which model does what. Code resolves its model from here (lucid_models.get(id)); the audit panel renders it. Edit here, not in code. All entries are LOCAL — nothing leaves this machine.",
+  "version": 1,
+  "models": [
+    {
+      "id": "b2-vision",
+      "role": "Seed-likeness safety check (B2)",
+      "purpose": "Looks at an opening image — uploaded or generated — to flag a real person (asks consent) or a possible minor (hard block) before it can be animated. The deterministic opencv face detector is the primary gate; this model is the real-vs-drawn / age second opinion.",
+      "model": "moondream",
+      "runtime": "ollama",
+      "size_gb": 1.7,
+      "source": "ollama library: moondream (vikhyatk/moondream2, 1.8B vision)",
+      "local": true,
+      "safety_critical": true,
+      "used_by": ["Lucid B2", "right-click Create Video from Image"],
+      "notes": "Small on purpose: it must load even when the GPU is busy, so the consent check never silently fails. opencv Haar (CPU) backstops it."
+    },
+    {
+      "id": "narrator",
+      "role": "Story suggestions (next-beat)",
+      "purpose": "Proposes the 3–4 'what happens next' choices each turn, and expands the chosen one into a motion prompt. Output is schema-validated and red-line-filtered before it can reach the GPU.",
+      "model": "gemma4:latest",
+      "runtime": "ollama",
+      "size_gb": 9.6,
+      "source": "ollama (local) — Gemma 4",
+      "local": true,
+      "safety_critical": false,
+      "used_by": ["Lucid beat-gen"],
+      "notes": "Evicted (keep_alive:0) before the video step so it never co-resides with the 24GB i2v model."
+    },
+    {
+      "id": "t2i-opening",
+      "role": "Text-to-opening (describe → image)",
+      "purpose": "Renders the dream's opening frame from a typed description. The result still passes B2 (a t2i can render a person too).",
+      "model": "sd_turbo.safetensors",
+      "runtime": "comfyui",
+      "size_gb": 4.9,
+      "source": "huggingface: stabilityai/sd-turbo",
+      "local": true,
+      "safety_critical": false,
+      "used_by": ["Lucid text-to-opening"],
+      "notes": "Fast (1–4 steps). The description passes the red-line gate first; generation is predict-before-load so it refuses rather than OOMs."
+    },
+    {
+      "id": "i2v-dream",
+      "role": "Dream video (image → video)",
+      "purpose": "The actual dream: animates the current frame into the next clip, last-frame → first-frame, steered by the chosen beat.",
+      "model": "Wan2.2-Remix-i2v-14b (high+low)",
+      "runtime": "comfyui",
+      "size_gb": 21.8,
+      "source": "local ComfyUI checkpoint (Wan 2.2 Remix i2v 14B)",
+      "local": true,
+      "safety_critical": false,
+      "used_by": ["Lucid dream loop"],
+      "notes": "The heavy one. Runs only through the VRAM coordinator lease (Spawn/confirm-evict/Release); live inference always outranks it."
+    }
+  ]
+}

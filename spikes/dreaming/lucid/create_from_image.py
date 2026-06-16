@@ -41,6 +41,7 @@ import lucid_linear as L   # noqa: E402  (lease + red-line gate + B2 — the gov
 import lucid_b2 as B2      # noqa: E402  (seed-likeness verdict, so we can surface consent honestly)
 import lucid_safety as S   # noqa: E402  (the deterministic prompt gate)
 import lucid_store as ST   # noqa: E402  (private/ephemeral storage hygiene — ADR-0016)
+import lucid_jobs as J     # noqa: E402  (visible queue for NON-private creations — the :8765 board)
 
 APP = "AgentOS · Create"
 ICON = "camera-video"
@@ -192,7 +193,18 @@ def consent_for_real_person(verdict):
     return r.returncode == 0
 
 
-def gate_seed(local_path, pre_consent):
+def _job(job_id, **fields):
+    """Record progress on the visible :8765 board — NON-private creations only. job_id is None for
+    a private creation (ADR-0016: never shown on the board), making every call a no-op. Best-effort."""
+    if not job_id:
+        return
+    try:
+        J.update(job_id, **fields)
+    except Exception:
+        pass
+
+
+def gate_seed(local_path, pre_consent, job_id=None):
     """Run B2 and DECIDE, surfacing each outcome honestly. Returns True only if cleared to generate.
 
     Hard block (minor)        -> notify, refuse, no override.
@@ -210,13 +222,16 @@ def gate_seed(local_path, pre_consent):
     if verdict.requires_consent:
         if pre_consent or consent_for_real_person(verdict):
             return True
+        _job(job_id, status="blocked", detail="consent declined")
         notify("Cancelled", "No video was created.")
         return False
     if verdict.flags.get("possibly_minor"):
+        _job(job_id, status="blocked", detail="image not allowed (possible minor)")
         notify("Can't create this video",
                "This image may show a minor, so it can't be used. This is a safety limit and "
                "can't be turned off.", "critical")
         return False
+    _job(job_id, status="blocked", detail="couldn't verify the image safely")
     notify("Couldn't check this image safely",
            "The on-device image check isn't available right now, so nothing was created. "
            "Try again in a moment.")
@@ -231,8 +246,19 @@ def run(arg, private, pre_consent=False):
         except Exception as e:
             print(f"[create] orphan reap skipped: {e}", file=sys.stderr)
 
+    # One session id, reused as the board job id so a creation is traceable end to end. A PRIVATE
+    # creation gets NO board entry (job_id stays None) — it must never appear on the :8765 hub.
+    session = "shot_" + secrets.token_hex(4)
+    job_id = None
+    if not private:
+        try:
+            job_id = J.create("Create from image", job_id=session)
+        except Exception:
+            job_id = None
+
     # Resource gate (FAIL OPEN): no lease daemon => nothing to generate on; skip calmly.
     if not coordinator_up():
+        _job(job_id, status="skipped", detail="graphics turn-taking is offline")
         notify("Dreaming is offline — skipping",
                "The GPU coordinator isn't running, so the video wasn't created. It never "
                "interrupts what you're doing.")
@@ -245,38 +271,44 @@ def run(arg, private, pre_consent=False):
             local = _clean_png(_fetch_raw(arg), private)   # validate + strip EXIF + cap (ADR-0017)
         except RuntimeError as e:
             if str(e) == "__no_pillow__":
+                _job(job_id, status="failed", detail="image sanitizer unavailable")
                 notify("Couldn't prepare this image",
                        "The image sanitizer (Pillow) isn't available, so nothing was created.",
                        "critical")
                 return 0
             raise
         except ValueError as e:
+            _job(job_id, status="failed", detail=f"unusable image: {e}")
             notify("Couldn't use this image", f"{e} — nothing was created.")
             return 0
 
+        _job(job_id, status="checking")
         # Identity/likeness gate (FAIL CLOSED) — same gate for private and non-private.
-        if not gate_seed(local, pre_consent):
+        if not gate_seed(local, pre_consent, job_id):
             return 0
 
+        _job(job_id, status="generating")
         notify("Creating your video…" + tag,
                "This takes a few minutes — you'll get a notification when it's ready."
                + (" Private: sealed in RAM, not saved." if private else ""))
 
         # The governed generation: B2 already cleared the seed, so start() trusts it; the lease,
         # eviction-confirm and red-line prompt gate all live inside lucid_linear from here.
-        session = "shot_" + secrets.token_hex(4)
         ST.clear(session)
         L.start(session, local, private=private, _trusted_seed=True)
         prompt = S.gate_prompt(MOTION_PROMPT)
         if prompt is None:                       # defensive: a neutral motion prompt should pass
+            _job(job_id, status="failed", detail="motion prompt blocked")
             notify("Couldn't create this video", "The motion prompt was blocked. Nothing created.")
             return 0
         node = L.step(session, prompt, label="animate")
         if node is None:                         # generate_video fell open (GPU busy / preempted)
+            _job(job_id, status="skipped", detail="the graphics card was busy")
             notify("The GPU is busy — skipped for now" + tag,
                    "Lucid waits its turn and won't interrupt you. Try again shortly.")
             return 0
 
+        _job(job_id, status="ready", clip=node.get("clip"), frame=node.get("out_frame"))
         if private:
             notify("Your private video is ready",
                    "Ephemeral — not saved, wiped when you log out. Open Lucid to view; "
@@ -285,9 +317,11 @@ def run(arg, private, pre_consent=False):
             notify("Your video is ready", "Saved to your dreams — open Lucid to view it.")
         return 0
     except SystemExit as e:                      # a gate inside lucid_linear refused (belt-and-braces)
+        _job(job_id, status="blocked", detail=str(e) or "refused by a safety gate")
         notify("Can't create this video", str(e) or "Refused by a safety gate.", "critical")
         return 0
     except Exception as e:
+        _job(job_id, status="failed", detail="something went wrong")
         print(f"[create] failed: {e}", file=sys.stderr)
         notify("Couldn't create the video" + tag, "Something went wrong — nothing was saved.")
         return 0
