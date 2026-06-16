@@ -30,6 +30,10 @@ not silently drift from one.
 - `cargo build -p agentosd`
 - `agentosd monitor` — v0 read-only VRAM + Ollama `/api/ps` monitor (does nothing
   destructive; proves NVML + pressure math against the real GPU).
+- `agentosd feed [--once]` — P1 producer: read-only Hermes fleet state
+  (`kanban.db` + `gateway_state.json`) → `$XDG_RUNTIME_DIR/nimbus-aurora/agent.json`
+  for the reactive wallpaper. Install as a `--user` service via
+  `crates/agentosd/dist/{apply,restore}.sh`.
 
 ## Relationship map
 ```

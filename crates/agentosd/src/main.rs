@@ -1,7 +1,11 @@
 //! agentosd — AgentOS resource broker.
 //!
-//! v0 implements ONLY the read-only VRAM monitor — it proves the load-bearing
-//! pieces of the VRAM coordinator WITHOUT doing anything destructive:
+//! Modes:
+//!   * `monitor` — v0 read-only VRAM monitor (below).
+//!   * `feed`    — P1 producer: Hermes fleet state → `agent.json` (see `feed.rs`).
+//!
+//! `monitor` proves the load-bearing pieces of the VRAM coordinator WITHOUT doing
+//! anything destructive:
 //!   * read GPU VRAM via NVML, attributed PER-PROCESS (graphics vs compute),
 //!     not by crude subtraction
 //!   * read Ollama's loaded models (`/api/ps`) and local model sizes (`/api/tags`)
@@ -17,6 +21,8 @@ use std::{fs, thread, time::Duration};
 use nvml_wrapper::enums::device::UsedGpuMemory;
 use nvml_wrapper::Nvml;
 use serde::Deserialize;
+
+mod feed;
 
 const OLLAMA_PS: &str = "http://127.0.0.1:11434/api/ps";
 const OLLAMA_TAGS: &str = "http://127.0.0.1:11434/api/tags";
@@ -73,11 +79,21 @@ fn proc_name(pid: u32) -> String {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "monitor".into());
-    if mode != "monitor" {
-        eprintln!("agentosd v0: only `monitor` (read-only) is implemented. See docs/adr/.");
-        std::process::exit(2);
+    match mode.as_str() {
+        "monitor" => run_monitor(),
+        "feed" => feed::run(std::env::args().any(|a| a == "--once")),
+        other => {
+            eprintln!(
+                "agentosd: unknown mode `{other}`. Modes: monitor (read-only VRAM), \
+                 feed (emit agent.json). See docs/adr/."
+            );
+            std::process::exit(2);
+        }
     }
+}
 
+/// v0 read-only VRAM monitor (ADR-0004) — unchanged from the original `main`.
+fn run_monitor() -> Result<(), Box<dyn std::error::Error>> {
     let nvml = match Nvml::init() {
         Ok(n) => n,
         Err(e) => {
@@ -213,7 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// HH:MM:SS (UTC) without a date crate — adequate for a monitor log.
-fn now_hms() -> String {
+pub(crate) fn now_hms() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)

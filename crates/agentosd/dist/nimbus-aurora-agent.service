@@ -1,0 +1,15 @@
+[Unit]
+Description=AgentOS agent-state feed (Hermes fleet → agent.json for the reactive wallpaper)
+Documentation=https://github.com/  (AgentOS docs/adr/0007, docs/cocovox-harvest-backlog.md)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/agentosd feed
+Restart=on-failure
+RestartSec=2
+Nice=8
+
+[Install]
+WantedBy=graphical-session.target
