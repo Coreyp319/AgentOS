@@ -115,25 +115,36 @@ floor under ADR-0009/0010/0011 — the load-bearing mechanism is now real code, 
 - **Async-runtime shift (§7)** — `tokio` introduced; the supervisor is a `select!` over the NVML
   interval tick, owned-child exit, the preempt signal, and shutdown (SIGINT/SIGTERM). NVML runs
   behind `spawn_blocking`. `monitor`/`feed` keep their blocking loops untouched.
-- **D-Bus lease server (ADR-0006)** — `agentosd lease` (`crates/agentosd/src/lease.rs`) serves
-  `org.agentos.Coordinator1` on the session bus (zbus, tokio reactor): `Acquire(tier, est)`,
-  `Release(token)`, `Status()`. Backed by the *same* `admit` + `arbitrate` core plus a pure,
-  tested `LeaseState` (single exclusive lease, monotonic tokens so a preempted holder's stale
-  `Release` can't free its successor). Validated live via `busctl`: grant → queue (equal tier)
-  → preempt (interactive over batch) → stale-release rejected → release → deny (oversized est).
-  Whole crate: **33 tests green, clippy clean.**
+- **Unified coordinator daemon (ADR-0006 + §1–§6)** — `agentosd lease`
+  (`crates/agentosd/src/lease.rs`) is `coord` × `lease` merged into one process: it serves
+  `org.agentos.Coordinator1` on the session bus (zbus, tokio reactor) **and** owns the batch
+  children, so a preemption actually SIGKILLs the running job. Two holder kinds:
+  `Acquire(tier, est)` = cooperative (caller owns its own process — Hermes inference; agentosd
+  owns nothing, top-tier so never killed) and `Spawn(tier, est, argv)` = owned (agentosd
+  spawns + holds the PID — ComfyUI/batch). Plus `Release(token)` and `Status()`. Backed by the
+  *same* `admit` + `arbitrate` core plus a pure, tested `LeaseState` (single exclusive lease,
+  monotonic tokens). A background supervisor reaps a naturally-exited owned child and
+  auto-releases its lease.
+- **Proven live via `busctl`:** the lease protocol (grant → queue → preempt → stale-release
+  rejected → release → deny), AND the headline merge — `Spawn` a batch child, then a cooperative
+  `Acquire(interactive)` **SIGKILLs that owned PID** (verified gone via `pgrep`) and grants the
+  interactive holder; a `Spawn`ed job that exits on its own is **auto-released** by the
+  supervisor. Whole crate: **33 tests green, clippy clean.**
 
-**Deliberately NOT yet (the next unification step / `[SUBSTRATE-BLOCKED]` elsewhere):**
+**Deliberately NOT yet (`[SUBSTRATE-BLOCKED]` resolved here; remaining wiring):**
 
-- **`coord` ⨉ `lease` are not unified into one daemon.** `coord` evicts on SIGUSR1; `lease`'s
-  preempt outcome says "owner SIGKILLs it" but is not yet wired to SIGKILL `coord`'s owned child.
-  Merging them — one process that serves the lease *and* owns/evicts the batch PID — is next.
+- **Spawning ComfyUI specifically** — `Spawn` owns *any* `argv`; wiring the real ComfyUI
+  invocation + the dream cache write (ADR-0009) is next.
+- The **Hermes plugin** (ADR-0006) — the daemon now exists for it to call; the plugin
+  (`llm_request` priority tag, `llm_execution` `Acquire`/`Release` around the call) is unbuilt.
+  This is the last hop to real end-to-end serialization of Hermes inference vs. overnight batch.
+- The **overnight batch lane / window trigger** (§6, Open questions) — Hermes' cron + kanban
+  drive the sequence; agentosd only enforces one-holder-at-a-time. Not yet scheduled.
 - **No revoke signal / wait-queue.** A losing acquirer is told `queued` and must retry; there is
   no D-Bus signal for cooperative holders and no FIFO wait (real backpressure comes from the
   gateway holding inference responses, ADR-0006). `LeaseDecision::Queue` is tested.
-- **Spawning ComfyUI specifically** — `coord` owns *any* `-- <cmd>` (defaults to a `sleep`
-  stand-in); wiring the actual ComfyUI invocation (ADR-0009) is next.
-- The **overnight batch lane / window trigger** (§6, Open questions) — Hermes' cron + kanban
-  drive the sequence; agentosd only enforces one-holder-at-a-time. Not yet scheduled.
-- The **Hermes plugin** itself (ADR-0006) — the lease server now exists for it to call; the
-  plugin (`llm_execution` acquire/release) is unbuilt.
+- **Lease-leak on a crashed cooperative holder** — a cooperative `Acquire`er that dies without
+  `Release` leaks the lease (D-Bus peer-disconnect auto-release is a future hardening). Owned
+  (`Spawn`) jobs don't have this — the supervisor reaps them.
+- **`coord` (standalone) is now superseded** by the daemon for production; it remains as a
+  no-D-Bus demo of single-PID supervision (SIGUSR1-triggered) and shares the same pure core.

@@ -30,8 +30,10 @@ out-of-band.
 - Priority is best-effort (Ollama FIFO + proxy ordering), not preemptive.
 
 ## Implementation status (2026-06-16)
-The **agentosd side of the D-Bus GPU lease now exists**: `agentosd lease` serves
-`org.agentos.Coordinator1` (`Acquire`/`Release`/`Status`) on the session bus — see ADR-0010's
-implementation-status section and `crates/agentosd/src/lease.rs`. The **Hermes plugin** that
-calls it (`llm_request` priority tag, `llm_execution` acquire/release, `pre_tool_call` veto) is
+The **agentosd side of the D-Bus GPU lease now exists and has teeth**: `agentosd lease` is the
+unified coordinator daemon — it serves `org.agentos.Coordinator1` (`Acquire` cooperative /
+`Spawn` owned / `Release` / `Status`) on the session bus AND owns the batch children, so a
+higher-tier acquire SIGKILLs the running job (validated live). See ADR-0010's implementation
+status and `crates/agentosd/src/lease.rs`. The **Hermes plugin** that calls it (`llm_request`
+priority tag, `llm_execution` `Acquire`/`Release` around the call, `pre_tool_call` veto) is
 still unbuilt — that is the remaining work for this ADR.
