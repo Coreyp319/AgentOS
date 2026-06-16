@@ -120,19 +120,22 @@ def story_context(tree, node_id):
 
 
 # ---------------- video (one beat) ----------------
-def extract_last_frame(mp4_path, name):
-    """Grab the true last frame into ComfyUI/input/ so LoadImage can read it."""
-    os.makedirs(INPUT_DIR, exist_ok=True)
-    out = os.path.join(INPUT_DIR, name)
+def extract_last_frame(mp4_path, name, out_path=None):
+    """Grab the true last frame. `out_path` (an absolute, caller-owned destination from
+    lucid_store) is written verbatim — the privacy layer owns the path, so the privacy-unaware
+    engine never re-derives a private location (privacy-review BLOCKER). Else INPUT_DIR/name."""
+    if out_path is None:
+        os.makedirs(INPUT_DIR, exist_ok=True)
+        out_path = os.path.join(INPUT_DIR, name)
     # -sseof -3 + -update: write every frame to one file; the last one survives.
     subprocess.run(
         ["ffmpeg", "-y", "-sseof", "-3", "-i", mp4_path,
-         "-update", "1", "-q:v", "2", out],
+         "-update", "1", "-q:v", "2", out_path],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return name
 
 
-def _set_widgets(wf, prompt, image_name, seed, w, h, length):
+def _set_widgets(wf, prompt, image_name, seed, w, h, length, output_prefix=None):
     for nd in wf["nodes"]:
         t, title = nd["type"], (nd.get("title") or "")
         wv = nd.get("widgets_values")
@@ -148,17 +151,18 @@ def _set_widgets(wf, prompt, image_name, seed, w, h, length):
             # %date% tokens only expand in ComfyUI's UI frontend; submitted via the API
             # they're taken literally (a dir named "%date:...%"). Use a clean, anchor-
             # derived prefix so clips land in output/lucid/ traceable to their parent.
-            wv["filename_prefix"] = "lucid/" + os.path.splitext(image_name)[0]
+            # output_prefix lets the caller redirect (e.g. a private subdir, ADR-0016).
+            wv["filename_prefix"] = output_prefix or ("lucid/" + os.path.splitext(image_name)[0])
 
 
 def run_beat(prompt, first_frame_name, seed=None,
-             w=DEFAULT_W, h=DEFAULT_H, length=DEFAULT_LEN, timeout=1800):
+             w=DEFAULT_W, h=DEFAULT_H, length=DEFAULT_LEN, timeout=1800, output_prefix=None):
     """Parameterize the Remix-i2v workflow and generate one clip. Returns mp4 path."""
     if seed is None:
         seed = random.randint(1, 2**31)
     with open(WORKFLOW) as f:
         wf = json.load(f)
-    _set_widgets(wf, prompt, first_frame_name, seed, w, h, length)
+    _set_widgets(wf, prompt, first_frame_name, seed, w, h, length, output_prefix)
     api = cc.ui_to_api(wf)
     files, _hist = cc.generate(api, timeout=timeout)
     if not files:

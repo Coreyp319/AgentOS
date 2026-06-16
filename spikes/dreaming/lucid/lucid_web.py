@@ -17,8 +17,10 @@ Endpoints:
 
 Run: python3 lucid_web.py   (port LUCID_WEB_PORT, default 8765; loopback only)
 """
+import hmac
 import json
 import os
+import secrets
 import subprocess
 import sys
 import urllib.request
@@ -32,6 +34,9 @@ HOST = os.environ.get("LUCID_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LUCID_WEB_PORT", "8765"))
 SESSION = os.environ.get("LUCID_WEB_SESSION", "web")
 ORIGIN_OK = {f"http://{HOST}:{PORT}", f"http://localhost:{PORT}"}
+# Per-process CSRF token: embedded in the page, required as a header on every state-changing POST.
+# A cross-origin page can't read it (same-origin policy), so it closes the missing-Origin CSRF gap.
+CSRF = secrets.token_hex(16)
 
 
 # ---------------- readiness probes (honest; never claim ready when blind) ----------------
@@ -83,12 +88,13 @@ def state():
             beats = L.propose(L.context_for(SESSION))   # live, schema-validated + red-lined
         except Exception:
             beats = []
-    return {"session": SESSION, "readiness": rd, "chain": chain, "beats": beats}
+    return {"session": SESSION, "readiness": rd, "chain": chain, "beats": beats,
+            "private": L.ST.is_private(SESSION) or bool(chain and chain.get("private"))}
 
 
 # ---------------- page (instrument glass; status panel / keyhole register) ----------------
 PAGE = """<!DOCTYPE html><html lang=en><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><meta name=color-scheme content=dark>
+<meta name=viewport content="width=device-width,initial-scale=1"><meta name=color-scheme content=dark><meta name=csrf content="__CSRF__">
 <title>Lucid · AgentOS</title><style>
 :root{--inst-base:#12141c;--inst-deep:#161a28;--inst-horizon:#1a2238;--inst-text:#e6e9f0;
 --inst-muted:#8a90a0;--inst-label:#7a8090;--inst-blue:#7aa2ff;--brand-warm:#e0884f;
@@ -124,6 +130,10 @@ async function load(){
    <span>${dot(r.ollama)}Ollama (narrator)</span></div>`;
  if(!r.can_dream)h+=`<div class=note style="margin-top:10px">Can't dream right now — ${r.why.join('; ')}. The loop fails open to the ambient shader.</div>`;
  h+=`</div>`;
+ if(s.private)h+=`<div class=card style="border-color:var(--brand-warm)">
+   <b style="color:var(--brand-warm)">🔒 Private session</b>
+   <div class=note style="margin-top:4px">Ephemeral — sealed in RAM (tmpfs), not saved, not shown on the status hub, no wallpaper. Burned on logout.</div>
+   <button class=beat style="margin-top:10px;border-color:var(--brand-warm)" onclick='burnit()'>🔥 Burn this dream now</button></div>`;
  if(!s.chain){h+=`<div class=card><b>No active dream.</b><div class=note style="margin-top:6px">
    Start one from a seed image (CLI, until upload + the face/likeness guard land — ADR-0015 B2):<br>
    <code>lucid_linear.py start ${s.session} --image &lt;opening.png&gt;</code></div></div>`;}
@@ -140,12 +150,16 @@ async function load(){
  }
  a.innerHTML=h;
 }
+const CSRF=document.querySelector('meta[name=csrf]').content;
 async function post(body){
- const res=await fetch('/api/dream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ const res=await fetch('/api/dream',{method:'POST',headers:{'Content-Type':'application/json','X-Lucid-Token':CSRF},body:JSON.stringify(body)});
  const j=await res.json();if(j.error)alert(j.error);load();
 }
 function dream(i){post({choose:i})}
 function dreamOwn(){const v=document.getElementById('own').value.trim();if(v)post({prompt:v,label:'custom'})}
+async function burnit(){if(!confirm('Burn this private dream now? This wipes every trace and cannot be undone.'))return;
+ const j=await (await fetch('/api/burn',{method:'POST',headers:{'X-Lucid-Token':CSRF}})).json();
+ alert('Burned '+(j.burned||0)+' sink(s).'+((j.failed&&j.failed.length)?' FAILED: '+j.failed.join('; '):''));load();}
 load();setInterval(load,5000);
 </script></body></html>"""
 
@@ -167,7 +181,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
-            self._send(200, PAGE, "text/html; charset=utf-8")
+            self._send(200, PAGE.replace("__CSRF__", CSRF), "text/html; charset=utf-8")
         elif path == "/healthz":
             self._send(200, "ok", "text/plain")
         elif path == "/api/state":
@@ -176,17 +190,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found", "text/plain")
 
     def do_POST(self):
-        if self.path.split("?", 1)[0] != "/api/dream":
+        path = self.path.split("?", 1)[0]
+        if path not in ("/api/dream", "/api/burn"):
             return self._send(404, "not found", "text/plain")
-        # same-origin guard (security review): reject a cross-origin POST that would drive the GPU.
+        # CSRF: a state-changing POST must carry the per-process token embedded in the page (a
+        # cross-origin page can't read it). Fail closed. Defense-in-depth: reject a bad Origin too.
+        if not hmac.compare_digest(self.headers.get("X-Lucid-Token", ""), CSRF):
+            return self._send(403, json.dumps({"error": "missing/invalid CSRF token"}), "application/json")
         origin = self.headers.get("Origin")
         if origin and origin not in ORIGIN_OK:
             return self._send(403, json.dumps({"error": "cross-origin refused"}), "application/json")
         try:
             n = int(self.headers.get("Content-Length", "0"))
-            req = json.loads(self.rfile.read(n) or "{}")
+            req = json.loads(self.rfile.read(n) or "{}") if n else {}
         except Exception:
             return self._send(400, json.dumps({"error": "bad request"}), "application/json")
+        if path == "/api/burn":   # wipe the private session's every sink (ADR-0016)
+            removed, failed = L.burn(SESSION)
+            return self._send(200, json.dumps({"ok": not failed, "burned": len(removed),
+                                               "failed": failed}), "application/json")
         rd = readiness()
         if not rd["can_dream"]:
             return self._send(200, json.dumps({"error": "not ready — " + "; ".join(rd["why"])}),
@@ -213,6 +235,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    try:  # sweep private clip/frame orphans whose tmpfs session is gone (crash/logout) — ADR-0016
+        reaped = L.ST.reap_orphans()
+        if reaped:
+            print(f"reaped {len(reaped)} orphaned private session(s): {reaped}", flush=True)
+    except Exception as e:
+        print(f"orphan reap skipped: {e}", flush=True)
     print(f"Lucid web → http://{HOST}:{PORT}  (session '{SESSION}')", flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 

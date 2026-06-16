@@ -33,6 +33,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lucid_engine as E   # noqa: E402  (generation backend + workflow parameterization)
 import lucid_safety as S   # noqa: E402  (the deterministic gates)
+import lucid_store as ST   # noqa: E402  (persistent vs private/ephemeral storage — ADR-0016)
 
 COORD_NAME = "org.agentos.Coordinator1"
 COORD_PATH = "/org/agentos/Coordinator1"
@@ -108,42 +109,33 @@ def seed_image_guard(path):
     return False
 
 
-# ---------------- linear chain state (append-only, atomic) ----------------
-def _chain_path(session):
-    return os.path.join(E.DREAMS_DIR, session, "chain.json")
-
-
+# ---------------- linear chain state (append-only, atomic; private-aware via lucid_store) -------
 def load_chain(session):
-    with open(_chain_path(session)) as f:
-        return json.load(f)
+    return ST.load_chain(session, ST.is_private(session))
 
 
 def save_chain(session, chain):
-    """Atomic: temp + os.replace (the feed.rs idiom) — a crash never leaves a torn chain.json."""
-    d = os.path.join(E.DREAMS_DIR, session)
-    os.makedirs(d, exist_ok=True)
-    tmp = os.path.join(d, f".chain.{os.getpid()}.tmp")
-    with open(tmp, "w") as f:
-        json.dump(chain, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, _chain_path(session))
+    ST.save_chain(session, ST.is_private(session), chain)
 
 
-def start(session, opening_image):
+def start(session, opening_image, private=False):
     if not seed_image_guard(opening_image):
         raise SystemExit("seed refused by likeness guard (B2)")
-    d = os.path.join(E.DREAMS_DIR, session)
-    os.makedirs(d, exist_ok=True)
-    anchor = f"{session}_n0.png"
+    ST.ensure_session(session, private)   # establishes privacy-ness; is_private(session) now true
     os.makedirs(E.INPUT_DIR, exist_ok=True)
+    ref_name, abs_path = ST.frame_ref(session, private, f"{session}_n0.png")
     import shutil
-    shutil.copy(opening_image, os.path.join(E.INPUT_DIR, anchor))
-    chain = {"session": session, "nodes": [
+    shutil.copy(opening_image, abs_path)
+    chain = {"session": session, "private": private, "nodes": [
         {"id": 0, "parent": None, "label": "opening", "prompt": None,
-         "seed": None, "clip": None, "out_frame": anchor}]}
+         "seed": None, "clip": None, "out_frame": ref_name}]}
     save_chain(session, chain)
     return chain
+
+
+def burn(session):
+    """Wipe a private session's every sink (ADR-0016). No-op set for a persistent session."""
+    return ST.burn(session)
 
 
 # ---------------- beat-gen (validated) ----------------
@@ -158,9 +150,11 @@ def propose(context, n=4):
 
 
 # ---------------- one leased, confirmed-evicted, gated video beat ----------------
-def generate_video(prompt, anchor_frame):
+def generate_video(session, prompt, anchor_frame):
     """B1 dance: confirm beat model evicted -> lease -> generate -> release. Returns clip path,
-    or None to skip the turn (fail open). The prompt MUST already have passed S.gate_prompt."""
+    or None to skip the turn (fail open). The prompt MUST already have passed S.gate_prompt.
+    Private sessions render to a sealed subdir and the clip is moved to tmpfs (ADR-0016)."""
+    private = ST.is_private(session)
     if not S.confirm_evicted(E.MODEL):
         log(f"could not confirm '{E.MODEL}' evicted — refusing to load video (B1 fail-closed)")
         return None
@@ -175,9 +169,11 @@ def generate_video(prompt, anchor_frame):
         if gen_cmd:                                   # test seam: prove the dance without a GPU
             if subprocess.run(gen_cmd, shell=True).returncode != 0:
                 return None
-            return _newest_clip()
-        clip, _seed = E.run_beat(prompt, anchor_frame)   # real i2v against the leased ComfyUI
-        return clip
+            scope = ST._priv_output_dir(session) if private else None  # never a global output walk
+            return ST.place_clip(session, private, _newest_clip(scope))
+        clip, _seed = E.run_beat(prompt, anchor_frame,
+                                 output_prefix=ST.output_prefix(session, private))
+        return ST.place_clip(session, private, clip)  # private: move out of shared output -> tmpfs
     except Exception as e:
         log(f"generation error ({e}) — likely preempted (SIGKILL); clip lost, loop yields")
         return None
@@ -185,8 +181,10 @@ def generate_video(prompt, anchor_frame):
         lease_release(token)
 
 
-def _newest_clip():
-    out = os.path.join(E.cc.COMFY_ROOT, "output")
+def _newest_clip(scope_dir=None):
+    out = scope_dir or os.path.join(E.cc.COMFY_ROOT, "output")
+    if not os.path.isdir(out):
+        return None
     best, best_m = None, -1
     for root, _d, files in os.walk(out):
         for fn in files:
@@ -203,14 +201,16 @@ def step(session, prompt, label):
     gated = S.gate_prompt(prompt)
     if gated is None:
         raise SystemExit("prompt refused by red-line gate (B3)")
+    private = ST.is_private(session)
     chain = load_chain(session)
     parent = chain["nodes"][-1]
-    clip = generate_video(gated, parent["out_frame"])
+    clip = generate_video(session, gated, parent["out_frame"])
     if clip is None:
         log("turn skipped (fail open) — chain unchanged")
         return None
     nid = parent["id"] + 1
-    out_frame = E.extract_last_frame(clip, f"{session}_n{nid}.png")
+    ref_name, abs_path = ST.frame_ref(session, private, f"{session}_n{nid}.png")
+    out_frame = E.extract_last_frame(clip, ref_name, out_path=abs_path)  # store owns the path
     node = {"id": nid, "parent": parent["id"], "label": label, "prompt": gated,
             "seed": None, "clip": clip, "out_frame": out_frame}
     chain["nodes"].append(node)
@@ -233,14 +233,26 @@ def _main():
     ap = argparse.ArgumentParser(description="Lucid MVP — linear chain through the lease (ADR-0015)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("start"); s.add_argument("session"); s.add_argument("--image", required=True)
+    s.add_argument("--private", action="store_true", help="ephemeral incognito dream — sealed, not saved, auto-burned (ADR-0016)")
     b = sub.add_parser("beats"); b.add_argument("session")
     st = sub.add_parser("step"); st.add_argument("session")
     st.add_argument("--choose", type=int); st.add_argument("--prompt"); st.add_argument("--label", default="custom")
+    bn = sub.add_parser("burn"); bn.add_argument("session")
     args = ap.parse_args()
 
     if args.cmd == "start":
-        c = start(args.session, args.image)
-        print(f"started '{args.session}' (anchor {c['nodes'][0]['out_frame']})")
+        c = start(args.session, args.image, private=args.private)
+        tag = " [PRIVATE — ephemeral, sealed, not saved]" if args.private else ""
+        print(f"started '{args.session}' (anchor {c['nodes'][0]['out_frame']}){tag}")
+    elif args.cmd == "burn":
+        removed, failed = burn(args.session)
+        if removed or failed:
+            msg = f"burned '{args.session}': {len(removed)} sink(s) removed"
+            if failed:
+                msg += f"; {len(failed)} FAILED (NOT wiped): {failed}"
+            print(msg)
+        else:
+            print(f"nothing private to burn for '{args.session}'")
     elif args.cmd == "beats":
         ctx = context_for(args.session)
         print("context:", ctx)
