@@ -1,0 +1,29 @@
+[Unit]
+Description=AgentOS Lucid — interactive dream-loop web surface (127.0.0.1:8765), opened from the status panel
+Documentation=file://%h/Documents/AgentOS/docs/adr/0015-lucid-mvp-linear-chain-through-the-lease.md
+After=graphical-session.target
+
+[Service]
+Type=simple
+# The dedicated lucid page the status panel (:9123) links to. Loopback-only, stdlib-only.
+# Backed by the SAFE MVP path (lucid_linear): gated prompts, coordinator lease, fail-open.
+ExecStart=/usr/bin/python3 %h/Documents/AgentOS/spikes/dreaming/lucid/lucid_web.py
+Environment="LUCID_WEB_HOST=127.0.0.1"
+Environment="LUCID_WEB_PORT=8765"
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=5
+KillMode=mixed
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+# Light hardening only: unlike the read-only status panel, lucid WRITES the dream cache,
+# shells `busctl` (the coordinator lease) and ffmpeg, so ProtectHome/ProtectSystem are not
+# applied. It stays loopback-only and drops privilege escalation.
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=default.target
