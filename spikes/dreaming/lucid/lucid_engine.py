@@ -50,7 +50,8 @@ OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 # the GPU is free for the video step (ADR-0009 §3 mutual exclusion).
 MODEL = os.environ.get("LUCID_MODEL", "gemma4:latest")
 
-DEFAULT_W, DEFAULT_H, DEFAULT_LEN = 720, 1280, 49  # ~3s portrait (ADR-0014 §6)
+DEFAULT_W, DEFAULT_H, DEFAULT_LEN = 720, 1280, 33  # ~2s portrait @16fps; matches the
+# workflow's baked WanImageToVideo length and stays under the VRAM-thrash line (ADR-0014 §6)
 
 SYS_SFW = (
     "You are the narrator of a SILENT, looping dream video. Given the story so far "
@@ -143,6 +144,11 @@ def _set_widgets(wf, prompt, image_name, seed, w, h, length):
             wv[0] = seed
         elif t == "WanImageToVideo":
             nd["widgets_values"] = [w, h, length, 1]
+        elif t == "VHS_VideoCombine" and isinstance(wv, dict):
+            # %date% tokens only expand in ComfyUI's UI frontend; submitted via the API
+            # they're taken literally (a dir named "%date:...%"). Use a clean, anchor-
+            # derived prefix so clips land in output/lucid/ traceable to their parent.
+            wv["filename_prefix"] = "lucid/" + os.path.splitext(image_name)[0]
 
 
 def run_beat(prompt, first_frame_name, seed=None,
