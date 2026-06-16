@@ -6,14 +6,18 @@
       "id": "b2-vision",
       "role": "Seed-likeness safety check (B2)",
       "purpose": "Looks at an opening image — uploaded or generated — to flag a real person (asks consent) or a possible minor (hard block) before it can be animated. The deterministic opencv face detector is the primary gate; this model is the real-vs-drawn / age second opinion.",
-      "model": "moondream",
+      "model": "qwen2.5vl:3b",
       "runtime": "ollama",
-      "size_gb": 1.7,
-      "source": "ollama library: moondream (vikhyatk/moondream2, 1.8B vision)",
+      "size_gb": 3.2,
+      "source": "ollama library: qwen2.5vl:3b (Qwen2.5-VL 3B vision)",
       "local": true,
       "safety_critical": true,
       "used_by": ["Lucid B2", "right-click Create Video from Image"],
-      "notes": "Small on purpose: it must load even when the GPU is busy, so the consent check never silently fails. opencv Haar (CPU) backstops it."
+      "alternatives": [
+        "moondream — 1.7GB, smaller, more age-conservative (more false minor-blocks)",
+        "gemma4:latest — 9.6GB, most accurate but won't load when the GPU is busy"
+      ],
+      "notes": "Sharper real-vs-drawn + age accuracy than moondream, still small enough to load when the GPU is busy. opencv Haar (CPU) is the deterministic primary; this is the second opinion."
     },
     {
       "id": "narrator",

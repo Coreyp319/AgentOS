@@ -112,7 +112,9 @@ function card(m){
   +`<span>${m.local?'🔒 local':'⚠ remote'}</span>`
   +`<span><b>from</b> ${E(m.source)}</span>`
   +(m.used_by&&m.used_by.length?`<span><b>used by</b> ${E(m.used_by.join(', '))}</span>`:'')
-  +`</div></div>`;}
+  +`</div>`
+  +(m.alternatives&&m.alternatives.length?`<div class=note style="margin-top:9px">swappable to: ${E(m.alternatives.join(' · '))}</div>`:'')
+  +`</div>`;}
 async function load(){let d;try{d=await(await fetch('/api/models')).json();}catch(e){return;}
  const v=d.vram, vr=document.getElementById('vram');
  vr.textContent=(v&&v.free_gb!=null)?`GPU: ${v.free_gb} GB free of ${v.total_gb} GB — a model only loads when there's room; otherwise the job waits.`:'';
