@@ -65,6 +65,13 @@ check("check_seed real person -> needs consent", (not real.ok) and real.requires
 clean = B2.check_seed("/nonexistent.png", _call=lambda p: {"has_face": False, "real_person": False, "possibly_minor": False})
 check("check_seed clean -> ok", clean.ok)
 
+# --- degrade(): VLM unavailable -> lean on the deterministic CV detector, honestly ---
+check("VLM-down + CV saw a face -> honest refuse (not silent), carries cv_faces",
+      (lambda v: (not v.ok) and (not v.requires_consent) and v.flags.get("cv_faces") == 2)(B2.degrade(2)))
+check("VLM-down + CV clean -> allow", B2.degrade(0).ok)
+check("VLM-down + no CV at all -> refuse", not B2.degrade(None).ok)
+
+
 def _boom(_):
     raise RuntimeError("model down")
 down = B2.check_seed("/nonexistent.png", _call=_boom)

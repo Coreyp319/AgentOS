@@ -104,6 +104,22 @@ def dispose(c, cv_faces=None):
     return Verdict(True, False, "ok", flags)
 
 
+def degrade(cv_faces):
+    """The VLM second-opinion couldn't run (usually the GPU is too busy to load it). Lean on the
+    deterministic CV detector, honestly. NOT cached — it's a transient failure."""
+    if cv_faces is None:
+        return Verdict(False, False, "Couldn't run the safety check (no detector available) — refused.",
+                       {"checked": False, "cv_faces": None})
+    if cv_faces > 0:
+        return Verdict(False, False,
+                       "A face was detected, but the full check couldn't run — the vision model "
+                       "couldn't load because the GPU is busy. (It would ask your consent for a real "
+                       "person.) Try again once the GPU frees.",
+                       {"checked": False, "cv_faces": cv_faces})
+    return Verdict(True, False, "ok — no face detected; the deeper vision check was unavailable.",
+                   {"checked": False, "cv_faces": cv_faces})
+
+
 _cache = {}  # content-hash -> Verdict, so a consent re-submit of the same image doesn't re-run the VLM
 
 
@@ -121,8 +137,8 @@ def check_seed(path, _call=None):
     cv = facecv.faces(path) if _call is None else None   # deterministic primary (skipped for mocked tests)
     try:
         c = _classify(path, _call=_call)
-    except Exception as e:
-        return Verdict(False, False, f"Couldn't verify the image safely ({e}) — refused.", {"checked": False})
+    except Exception:
+        return degrade(cv)   # VLM unavailable (often VRAM) — lean on the deterministic CV detector
     v = dispose(c, cv)
     if h:
         if len(_cache) > 32:
