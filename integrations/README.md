@@ -8,10 +8,16 @@ including what comes up **at boot** as `--user` systemd services.
 
 | Service | Unit | Endpoint | Status |
 |---|---|---|---|
+| **AgentOS status panel** (boot-health view; opens at login) | `status-panel/agentos-status-panel.service` | http://127.0.0.1:9123 | `status-panel/apply.sh` |
 | **Hermes agent** (gateway daemon: kanban, cron, delegation, messaging) | `hermes/gateway/hermes-gateway.service` | — | already installed ✓ |
 | **Hermes web dashboard** (config, sessions, kanban board) | `hermes/dashboard/hermes-dashboard.service` | http://127.0.0.1:9119 | `hermes/dashboard/apply.sh` |
 | **ComfyUI** (dreaming backend) | `comfyui/comfyui.service` | http://127.0.0.1:8188 | `comfyui/apply.sh` |
 | Ollama (model runtime) | system unit (`ollama.service`) | http://127.0.0.1:11434 | already installed ✓ |
+
+The **status panel** is the front door: it opens in the browser at login and shows the
+live state of *every* service below (plus the Nimbus desktop services from the WhiteSur
+pack — wallpaper, reactivity bridges, notifications, theming), with quick links into the
+Hermes dashboard and ComfyUI. Its service catalog is editable — see `status-panel/README.md`.
 
 `hermes/gpu-coordinator/` is a Hermes *plugin* (not a systemd unit): it holds the
 agentosd interactive VRAM lease around Hermes inference so live AI preempts the

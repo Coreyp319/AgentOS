@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<title>AgentOS · system status</title>
+<style>
+  :root {
+    /* ── Instrument palette — the deep-navy "glass" register shared with the keyhole tray
+       (ADR-0012). Canonical values + the cross-surface contract: integrations/design/
+       instrument-tokens.md. Aligned to keyhole's StateToken/FullRepresentation values so a
+       re-theme is one change across both surfaces. ── */
+    --inst-base:    #12141c;            /* keyhole panel base */
+    --inst-deep:    #161a28;
+    --inst-horizon: #1a2238;            /* keyhole horizon */
+    --inst-text:    #e6e9f0;            /* keyhole fg */
+    --inst-muted:   #8a90a0;            /* keyhole dimFg */
+    --inst-label:   #7a8090;            /* keyhole labelFg — clears WCAG 4.5:1 on glass */
+    --inst-blue:    #7aa2ff;            /* cool accent / links */
+    --inst-warm:    #ff9957;            /* keyhole warmFg — RESERVED for a future "needs you" cue; not spent on chrome */
+    --brand-warm:   #e0884f;            /* lower-sat copper for brand decoration, so the dawn-glow hue stays reserved */
+    --glass:        rgba(38,42,54,0.46);
+    --hairline:     rgba(255,255,255,0.07);
+    --hairline-hi:  rgba(255,255,255,0.12);
+    --tint-hover:   rgba(255,255,255,0.025);
+
+    /* role aliases consumed through the sheet */
+    --bg-0: var(--inst-base); --bg-1: var(--inst-deep); --bg-2: var(--inst-horizon);
+    --text: var(--inst-text); --muted: var(--inst-muted); --faint: var(--inst-label);
+    --blue: var(--inst-blue);
+    --card: var(--glass); --card-line: var(--hairline); --card-line-hi: var(--hairline-hi);
+
+    /* ── Status ramp — 5 live hues + 1 reserved. fg (text-on-glass), ring (halo) and line
+       (border) are DERIVED via color-mix, so re-hueing a base carries its whole family. ── */
+    --st-up:      #74d39a;
+    --st-amber:   #f2c879;
+    --st-red:     #ec7676;
+    --st-idle:    #757c8e;              /* lifted so the down/absent dot clears 3:1 non-text contrast */
+    --st-unknown: #6f7894;              /* cooler grey: "can't determine", distinct from idle "down" */
+    --st-acting:  var(--inst-blue);     /* reserved: computer-use "acting" — ships dark */
+    --st-up-fg:    color-mix(in srgb, var(--st-up) 60%, var(--text));
+    --st-amber-fg: color-mix(in srgb, var(--st-amber) 62%, var(--text));
+    --st-red-fg:   color-mix(in srgb, var(--st-red) 58%, var(--text));
+    --st-up-ring:    color-mix(in srgb, var(--st-up) 16%, transparent);
+    --st-amber-ring: color-mix(in srgb, var(--st-amber) 16%, transparent);
+    --st-red-ring:   color-mix(in srgb, var(--st-red) 20%, transparent);
+    --st-idle-ring:  color-mix(in srgb, var(--st-idle) 15%, transparent);
+    --st-up-line:    color-mix(in srgb, var(--st-up) 32%, transparent);
+    --st-amber-line: color-mix(in srgb, var(--st-amber) 34%, transparent);
+    --st-red-line:   color-mix(in srgb, var(--st-red) 35%, transparent);
+    --blue-line:     color-mix(in srgb, var(--inst-blue) 30%, transparent);
+    --blue-wash:     color-mix(in srgb, var(--inst-blue) 12%, transparent);
+    --amber-wash:    color-mix(in srgb, var(--st-amber) 9%, transparent);
+
+    /* ── Type scale (rem → honors user font-size / Plasma HiDPI) ── */
+    --fs-display: 1.1875rem;  /* 19 */
+    --fs-lg: 0.9rem;          /* ~14 (row name) */
+    --fs-md: 0.8125rem;       /* 13 (pill) */
+    --fs-sm: 0.78125rem;      /* 12.5 (state / link) */
+    --fs-xs: 0.75rem;         /* 12 (desc) */
+    --fs-2xs: 0.71875rem;     /* 11.5 (labels) */
+    --fs-3xs: 0.65625rem;     /* 10.5 (badge) */
+    --fw-regular: 400; --fw-medium: 560; --fw-semibold: 640;
+
+    /* ── Space scale (4px base) ── */
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px;
+    --sp-6: 24px; --sp-7: 32px; --sp-8: 40px; --sp-10: 64px;
+
+    /* ── Radius / elevation / glass ── */
+    --radius-sm: 9px; --radius-md: 16px; --radius-pill: 999px;
+    --blur-raised: 14px; --blur-overlay: 18px; --glass-saturate: 1.2;
+    --shadow: 0 12px 40px -16px rgba(0,0,0,0.7);
+    font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Graphics-yield / low-VRAM fallback: backdrop-blur is GPU work; when transparency is
+     reduced (or a compositor budget event trips this), drop the blur and lean on solid glass. */
+  @media (prefers-reduced-transparency: reduce) {
+    :root { --glass: rgba(24,28,40,0.94); }
+    .card, .pill { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(1200px 700px at 78% -8%, color-mix(in srgb, var(--inst-blue) 10%, transparent), transparent 60%),
+      radial-gradient(1000px 600px at 8% 108%, color-mix(in srgb, var(--brand-warm) 9%, transparent), transparent 55%),
+      linear-gradient(160deg, var(--bg-0), var(--bg-1) 45%, var(--bg-2));
+    background-attachment: fixed;
+    min-height: 100%;
+    letter-spacing: 0.1px;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: var(--sp-8) var(--sp-6) var(--sp-10); }
+
+  /* ── header ─────────────────────────────────────────── */
+  header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-5); flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: var(--sp-3); }
+  .mark {
+    width: 34px; height: 34px; border-radius: 10px; flex: none;
+    background: linear-gradient(150deg, var(--blue), var(--brand-warm));
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.10) inset, 0 6px 18px -8px var(--blue);
+    position: relative;
+  }
+  .mark::after {
+    content: ""; position: absolute; inset: 9px; border-radius: 4px;
+    background: var(--bg-0); opacity: 0.55;
+  }
+  .brand h1 { font-size: var(--fs-display); font-weight: var(--fw-semibold); margin: 0; line-height: 1.1; }
+  .brand .sub { font-size: var(--fs-sm); color: var(--muted); margin-top: 2px; }
+
+  .health { display: flex; flex-direction: column; align-items: flex-end; gap: var(--sp-2); }
+  .pill {
+    display: inline-flex; align-items: center; gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-4); border-radius: var(--radius-pill);
+    font-size: var(--fs-md); font-weight: var(--fw-semibold);
+    border: 1px solid var(--card-line); background: var(--card);
+    backdrop-filter: blur(var(--blur-raised)); -webkit-backdrop-filter: blur(var(--blur-raised));
+    transition: color .4s ease, border-color .4s ease, background .4s ease;
+  }
+  .pill .bead { width: 9px; height: 9px; border-radius: 50%; background: var(--st-up); box-shadow: 0 0 10px var(--st-up); }
+  .pill.nominal { color: var(--st-up-fg); border-color: var(--st-up-line); }
+  .pill.nominal .bead { background: var(--st-up); box-shadow: 0 0 10px var(--st-up); }
+  .pill.attention { color: var(--st-amber-fg); border-color: var(--st-amber-line); }
+  .pill.attention .bead { background: var(--st-amber); box-shadow: 0 0 10px var(--st-amber); }
+  .pill.degraded { color: #c2c7d2; border-color: var(--card-line-hi); }
+  .pill.degraded .bead { background: var(--st-unknown); box-shadow: none; }
+  /* When the data is stale or the server is unreachable, dim the (possibly wrong) list so
+     the panel never looks confidently live while it's actually blind. */
+  body.stale main { opacity: .5; filter: saturate(.6); transition: opacity .3s, filter .3s; }
+  .updated { font-size: var(--fs-2xs); color: var(--faint); display: flex; align-items: center; gap: var(--sp-2); }
+  .updated .live { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); opacity: .9; }
+  body.refreshing .updated .live { animation: ping .9s ease-out; }
+  @keyframes ping { 0% { transform: scale(1); opacity: .9; } 100% { transform: scale(2.6); opacity: 0; } }
+
+  /* ── groups ─────────────────────────────────────────── */
+  .group { margin-top: var(--sp-7); }
+  .group > h2 {
+    font-size: var(--fs-2xs); font-weight: var(--fw-semibold); text-transform: uppercase;
+    letter-spacing: 1.4px; color: var(--faint); margin: 0 0 var(--sp-3) var(--sp-1);
+  }
+  .card {
+    border: 1px solid var(--card-line); border-radius: var(--radius-md);
+    background: var(--card);
+    backdrop-filter: blur(var(--blur-overlay)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--blur-overlay)) saturate(var(--glass-saturate));
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .row {
+    display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-4) var(--sp-5);
+    border-top: 1px solid var(--card-line); transition: background .3s ease;
+  }
+  .row:first-child { border-top: none; }
+  .row:hover { background: var(--tint-hover); }
+  .row.attention { box-shadow: inset 3px 0 0 var(--st-red); }
+  .row.warn { box-shadow: inset 3px 0 0 var(--st-amber); }
+
+  /* ── Dot grammar (3 axes): FILL = a process is/was present (solid) vs none (hollow);
+     GLOW = reserved for attention (failed / live-but-unreachable), never decoration;
+     STROKE colour/style separates the hollow trio (ok=green, absent=idle, unknown=dashed). ── */
+  .dot { width: 11px; height: 11px; border-radius: 50%; flex: none; background: var(--st-idle);
+         box-shadow: 0 0 0 4px var(--st-idle-ring); transition: background .4s, box-shadow .4s; }
+  .dot.up      { background: var(--st-up);    box-shadow: 0 0 0 4px var(--st-up-ring); }
+  .dot.ok      { background: transparent;     box-shadow: inset 0 0 0 2px var(--st-up); opacity: .82; }
+  .dot.starting{ background: var(--st-amber); box-shadow: 0 0 0 4px var(--st-amber-ring); animation: breathe 1.6s ease-in-out infinite; }
+  .dot.stopping{ background: var(--st-amber); box-shadow: 0 0 0 4px var(--st-amber-ring); animation: breathe 1.6s ease-in-out infinite; }
+  .dot.failed  { background: var(--st-red);   box-shadow: 0 0 0 4px var(--st-red-ring), 0 0 7px color-mix(in srgb, var(--st-red) 38%, transparent); }
+  .dot.down    { background: var(--st-idle);  box-shadow: 0 0 0 4px var(--st-idle-ring); }
+  .dot.absent  { background: transparent;     box-shadow: inset 0 0 0 2px var(--st-idle); opacity: .7; }
+  .dot.unknown { background: transparent;     border: 1.5px dashed var(--st-unknown); }
+  @keyframes breathe { 0%,100% { opacity: 1; } 50% { opacity: .42; } }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none !important; } body.refreshing .updated .live { animation: none; } }
+
+  .meta { min-width: 0; flex: 1; }
+  .meta .name { font-size: var(--fs-lg); font-weight: var(--fw-medium); line-height: 1.25; min-width: 0; }
+  .meta .desc { font-size: var(--fs-xs); color: var(--muted); margin-top: 2px;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .right { display: flex; align-items: center; gap: var(--sp-3); flex: none; }
+  .state { font-size: var(--fs-sm); color: var(--muted); font-variant-numeric: tabular-nums;
+           text-align: right; min-width: 64px; }
+  .row.attention .state { color: var(--st-red-fg); }
+  .badge { font-size: var(--fs-3xs); font-weight: var(--fw-semibold); padding: 3px var(--sp-2);
+           border-radius: var(--radius-pill); border: 1px solid var(--card-line-hi); color: var(--muted); white-space: nowrap; }
+  .badge.reach { color: var(--st-up-fg); border-color: var(--st-up-line); }
+  .badge.unreach { color: var(--st-red-fg); border-color: var(--st-red-line); }
+  a.open {
+    color: var(--blue); text-decoration: none; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+    padding: 5px var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--blue-line);
+    transition: background .2s, border-color .2s; white-space: nowrap;
+  }
+  a.open:hover { background: var(--blue-wash); border-color: color-mix(in srgb, var(--inst-blue) 50%, transparent); }
+  a.open:focus-visible, button.fix:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  button.fix {
+    font: inherit; font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--st-amber-fg); cursor: pointer;
+    padding: 5px var(--sp-3); border-radius: var(--radius-sm); white-space: nowrap;
+    background: var(--amber-wash); border: 1px solid var(--st-amber-line);
+    transition: background .2s, border-color .2s;
+  }
+  button.fix:hover { background: color-mix(in srgb, var(--st-amber) 16%, transparent); border-color: color-mix(in srgb, var(--st-amber) 55%, transparent); }
+
+  footer { margin-top: var(--sp-7); text-align: center; color: var(--faint); font-size: var(--fs-2xs); line-height: 1.7; }
+  footer code { color: var(--muted); background: rgba(255,255,255,0.05); padding: 1.5px 6px; border-radius: 5px; }
+
+  @media (max-width: 560px) {
+    .wrap { padding: var(--sp-7) var(--sp-4) var(--sp-8); }
+    .meta .desc { white-space: normal; }
+    .state { min-width: 0; }
+    .right { gap: var(--sp-2); }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="mark" aria-hidden="true"></div>
+        <div>
+          <h1>AgentOS</h1>
+          <div class="sub">system status · the boot stack at a glance</div>
+        </div>
+      </div>
+      <div class="health">
+        <span id="pill" class="pill nominal" role="status" aria-live="polite">
+          <span class="bead"></span><span id="pill-text">checking…</span>
+        </span>
+        <span class="updated"><span class="live"></span><span id="updated">connecting…</span></span>
+      </div>
+    </header>
+
+    <!-- No aria-live here: it re-renders on a timer, and announcing the whole list every
+         few seconds would be hostile to screen readers. The summary pill (aria-live) carries
+         the at-a-glance state; per-row changes are visual. -->
+    <main id="groups"></main>
+
+    <footer>
+      Live view of <code>systemctl</code> + port reachability · refreshes every few seconds<br />
+      AgentOS substrate over Hermes · served locally on <code id="origin">127.0.0.1</code>
+    </footer>
+  </div>
+
+<script>
+  const STATE_RANK = { failed: 0, starting: 1, stopping: 1, down: 2, unknown: 3, up: 4, ok: 5, absent: 6 };
+  let lastSig = "";  // only re-render when the service set actually changes (avoids focus/aria churn)
+
+  // Escape every value that reaches innerHTML — names/descs/states come from systemd + the
+  // catalog and must not be able to inject markup into the login-time panel.
+  const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ESC[c]);
+  const safeUrl = (u) => (/^https?:\/\//i.test(u || "") ? u : "");
+  const isAttention = (s) =>
+    s.status === "failed" ||
+    (s.status === "down" && (s.kind || "daemon") === "daemon") ||
+    ((s.status === "up" || s.status === "starting") && s.reach === "unreachable");
+
+  function relTime(ts) {
+    // ts is systemd's ActiveEnterTimestamp string; Date.parse handles most locales.
+    const t = Date.parse(ts);
+    if (isNaN(t)) return "";
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 60) return "just now";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    if (s < 86400) return Math.floor(s / 3600) + "h";
+    return Math.floor(s / 86400) + "d";
+  }
+
+  function row(s) {
+    const attention = isAttention(s);
+    const warn = !attention && (s.status === "starting" || s.status === "stopping" || s.status === "down");
+    const cls = "row" + (attention ? " attention" : warn ? " warn" : "");
+    // Show uptime only for a genuinely-running daemon; respect the server's nuanced label
+    // ("ready", "ran ✓", "failed (…)") for everything else rather than flattening to "up · …".
+    const since = s.status === "up" && s.since ? relTime(s.since) : "";
+    const running = s.state === "running" || s.state === "listening";
+    const stateText = s.status === "up" && running && since ? `up · ${since}` : (s.state || s.status);
+
+    let badge = "";
+    if (s.reach === "reachable")        badge = `<span class="badge reach">reachable</span>`;
+    else if (s.reach === "unreachable") badge = `<span class="badge unreach">no response</span>`;
+
+    const url = safeUrl(s.url);
+    const open = url
+      ? `<a class="open" href="${esc(url)}" target="_blank" rel="noopener" aria-label="Open ${esc(s.name)} (opens in a new tab)">Open ↗</a>`
+      : "";
+
+    // Read-only recovery: copies the exact systemctl reset+restart for a failed/down unit.
+    // The server never mutates anything; the user runs the one-liner. No write endpoint.
+    const fix = attention && s.unit
+      ? `<button class="fix" data-unit="${esc(s.unit)}" data-scope="${esc(s.scope)}">Copy fix</button>`
+      : "";
+
+    const aria = `${s.name}: ${stateText}` + (s.reach ? `, ${s.reach === "reachable" ? "reachable" : "no response"}` : "");
+    return `<div class="${cls}" role="listitem" aria-label="${esc(aria)}">
+      <span class="dot ${esc(s.status)}" aria-hidden="true"></span>
+      <div class="meta">
+        <div class="name">${esc(s.name)}${s.scope === "system" ? ' <span class="badge">system</span>' : ""}</div>
+        <div class="desc">${esc(s.desc)}</div>
+      </div>
+      <div class="right">
+        <span class="state">${esc(stateText)}</span>
+        ${badge}${fix}${open}
+      </div>
+    </div>`;
+  }
+
+  function setPill(mode, text) {
+    document.getElementById("pill").className = "pill " + mode;
+    document.getElementById("pill-text").textContent = text;
+  }
+
+  function render(data) {
+    const groupsEl = document.getElementById("groups");
+    const byGroup = {};
+    for (const s of data.services) (byGroup[s.group] ||= []).push(s);
+
+    const order = data.groups && data.groups.length ? data.groups : Object.keys(byGroup);
+    let html = "";
+    for (const g of order) {
+      const list = (byGroup[g] || []).slice().sort((a, b) => STATE_RANK[a.status] - STATE_RANK[b.status]);
+      if (!list.length) continue;
+      html += `<section class="group"><h2 id="g-${esc(g).replace(/\W+/g, "-")}">${esc(g)}</h2>` +
+              `<div class="card" role="list" aria-labelledby="g-${esc(g).replace(/\W+/g, "-")}">${list.map(row).join("")}</div></section>`;
+    }
+    groupsEl.innerHTML = html || `<section class="group"><div class="card"><div class="row"><div class="meta"><div class="desc">No services in the catalog.</div></div></div></div></section>`;
+  }
+
+  function paintHeader(data, stale) {
+    const att = (data && data.summary && data.summary.attention) || 0;
+    if (stale)            setPill("degraded", "data is stale");
+    else if (data && data.error) setPill("degraded", "status error");
+    else if (att > 0)     setPill("attention", `${att} need${att === 1 ? "s" : ""} attention`);
+    else                  setPill("nominal", "all systems nominal");
+    document.title = (att > 0 ? `(${att}) ` : "") + "AgentOS · system status";
+  }
+
+  async function tick() {
+    try {
+      const r = await fetch("/status.json", { cache: "no-store" });
+      const data = await r.json();
+      // Re-render rows only when something meaningful changed (state/reach), so a focused
+      // "Open" link isn't yanked away, screen readers aren't disturbed, and an unchanged
+      // system stays visually still (the refresh pulse fires only on a real change).
+      const sig = (data.services || []).map((s) => `${s.id}:${s.status}:${s.reach}`).join("|") +
+                  "|" + (data.error || "") + "|" + ((data.services || []).length);
+      if (sig !== lastSig) {
+        document.body.classList.add("refreshing");
+        setTimeout(() => document.body.classList.remove("refreshing"), 950);
+        render(data);
+        lastSig = sig;
+      }
+      // Trust the server's own freshness stamp: if the payload is old, the panel has gone
+      // blind — show that honestly rather than a confidently-current clock.
+      const age = data.generated_at ? Math.max(0, Date.now() / 1000 - data.generated_at) : 0;
+      const stale = age > 12;
+      document.body.classList.toggle("stale", stale);
+      paintHeader(data, stale);
+      document.getElementById("updated").textContent = stale
+        ? `stale — last updated ${Math.round(age)}s ago`
+        : "updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    } catch (e) {
+      // The status server itself is unreachable — never keep showing a calm green pill.
+      document.body.classList.add("stale");
+      setPill("degraded", "status unavailable");
+      document.getElementById("updated").textContent = "status server unreachable — retrying…";
+    }
+  }
+
+  // Read-only recovery: copy the exact systemctl reset+restart for a failed/down unit to the
+  // clipboard. The server never mutates state; the user runs the one-liner where they choose.
+  document.getElementById("groups").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button.fix");
+    if (!btn) return;
+    const unit = btn.dataset.unit;
+    const sc = btn.dataset.scope === "system" ? "sudo systemctl" : "systemctl --user";
+    const cmd = `${sc} reset-failed ${unit} && ${sc} restart ${unit}`;
+    try { await navigator.clipboard.writeText(cmd); btn.textContent = "copied ✓"; }
+    catch { btn.textContent = "copy failed"; }
+    setTimeout(() => { btn.textContent = "Copy fix"; }, 1800);
+  });
+
+  document.getElementById("origin").textContent = location.host || "127.0.0.1";
+  tick();
+  setInterval(tick, 4000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+</script>
+</body>
+</html>

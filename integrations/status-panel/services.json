@@ -1,0 +1,26 @@
+{
+  "groups": ["AI core", "AgentOS substrate", "Ambient desktop", "Notifications", "Desktop QoL", "Dreaming"],
+  "services": [
+    { "id": "hermes-gateway",   "name": "Hermes agent",            "group": "AI core",            "scope": "user",   "unit": "hermes-gateway.service",                                  "desc": "Gateway daemon — kanban, cron, delegation, messaging" },
+    { "id": "hermes-dashboard", "name": "Hermes web UI",           "group": "AI core",            "scope": "user",   "unit": "hermes-dashboard.service",   "url": "http://127.0.0.1:9119",   "health": "http://127.0.0.1:9119/",            "desc": "Config, sessions, kanban board" },
+    { "id": "comfyui",          "name": "ComfyUI",                 "group": "AI core",            "scope": "user",   "unit": "comfyui.service",            "url": "http://127.0.0.1:8188",   "health": "http://127.0.0.1:8188/system_stats", "desc": "Dreaming backend — local video/image gen" },
+    { "id": "ollama",           "name": "Ollama runtime",          "group": "AI core",            "scope": "system", "unit": "ollama.service",                                           "health": "http://127.0.0.1:11434/api/version", "desc": "Local model server" },
+
+    { "id": "aurora-agent",     "name": "Fleet → wallpaper feed",  "group": "AgentOS substrate",  "scope": "user",   "unit": "nimbus-aurora-agent.service",                              "desc": "agentosd feed → agent.json (wallpaper mood)" },
+    { "id": "aurora-keyhole",   "name": "Keyhole tray feed",       "group": "AgentOS substrate",  "scope": "user",   "unit": "nimbus-aurora-keyhole.service",                            "desc": "agentosd keyhole → keyhole.json (tray instrument)" },
+
+    { "id": "wallpaper",        "name": "Reactive wallpaper",      "group": "Ambient desktop",    "scope": "user",   "kind": "task",  "match": "app-*hexen*wallpaper*@autostart.service",                 "desc": "Ray-traced Hexen wallpaper (launched at login)" },
+    { "id": "aurora-audio",     "name": "Music reactivity",        "group": "Ambient desktop",    "scope": "user",   "unit": "nimbus-aurora-audio.service",                              "desc": "Audio monitor → FFT → state file" },
+    { "id": "aurora-bridge",    "name": "Window reactivity",       "group": "Ambient desktop",    "scope": "user",   "unit": "nimbus-aurora-bridge.service",                             "desc": "Window-state reactivity bridge" },
+
+    { "id": "swaync",           "name": "Notifications",           "group": "Notifications",      "scope": "user",   "unit": "swaync.service",                                           "desc": "swaync — the desktop's nervous system" },
+    { "id": "swaync-scheme",    "name": "Notif. theme sync",       "group": "Notifications",      "scope": "user",   "kind": "watch", "unit": "swaync-apply-scheme.path",                                 "desc": "Re-theme swaync on colour-scheme change" },
+
+    { "id": "appunify",         "name": "App-scheme unify",        "group": "Desktop QoL",        "scope": "user",   "kind": "watch", "unit": "nimbus-appunify-scheme.path",                              "desc": "Unify app colour scheme on change" },
+    { "id": "quicklook",        "name": "Quick Look",              "group": "Desktop QoL",        "scope": "user",   "kind": "task",  "unit": "nimbus-quicklook-ensure.service",                          "desc": "Dolphin Quick Look integration" },
+    { "id": "refine-icons",     "name": "Icon refine",             "group": "Desktop QoL",        "scope": "user",   "kind": "watch", "unit": "nimbus-refine-icons.path",                                 "desc": "Polish icons when the theme changes" },
+    { "id": "theme-toggle",     "name": "Theme toggle",            "group": "Desktop QoL",        "scope": "user",   "kind": "watch", "unit": "nimbus-theme-toggle-button.path",                          "desc": "Light/dark toggle button watcher" },
+
+    { "id": "dream",            "name": "Nightly dreaming",        "group": "Dreaming",           "scope": "user",   "kind": "watch", "unit": "nimbus-dream.timer",                                       "desc": "Compose a journey leg each night (23:30)" }
+  ]
+}

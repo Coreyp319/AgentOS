@@ -1,0 +1,32 @@
+[Unit]
+Description=AgentOS status panel — boot-health web view of the AgentOS + Nimbus stack (127.0.0.1:9123)
+Documentation=file://%h/Documents/AgentOS/integrations/status-panel/README.md
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Read-only: serves panel.html + a /status.json computed from `systemctl show` and short
+# port probes. Loopback-only, stdlib-only (no venv/deps). %h-relative so it's portable.
+ExecStart=/usr/bin/python3 %h/Documents/AgentOS/integrations/status-panel/status_panel.py
+Environment="AGENTOS_STATUS_HOST=127.0.0.1"
+Environment="AGENTOS_STATUS_PORT=9123"
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=5
+KillMode=mixed
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+# Hardening — it only reads unit state + its own files and serves on loopback; it never writes.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=default.target
