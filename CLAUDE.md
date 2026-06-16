@@ -39,6 +39,10 @@ not silently drift from one.
   preempt (send SIGUSR1 to simulate the interactive request; D-Bus lease is ADR-0006).
   With no `-- <cmd>` it supervises a `sleep` stand-in to smoke-test the lease plumbing.
   This is the first destructive (kill) mode and the first on `tokio`.
+- `agentosd lease` — D-Bus GPU lease server (ADR-0006/0010): serves
+  `org.agentos.Coordinator1` (`Acquire`/`Release`/`Status`) on the session bus, same
+  admission + priority core. Drive it with `busctl --user call …`. Not yet unified with
+  `coord` (lease decides; `coord` evicts — merging them is the next step).
 
 ## Relationship map
 ```

@@ -28,3 +28,10 @@ out-of-band.
 ## Consequences
 - Survives Hermes upgrades; no core patches to rebase.
 - Priority is best-effort (Ollama FIFO + proxy ordering), not preemptive.
+
+## Implementation status (2026-06-16)
+The **agentosd side of the D-Bus GPU lease now exists**: `agentosd lease` serves
+`org.agentos.Coordinator1` (`Acquire`/`Release`/`Status`) on the session bus — see ADR-0010's
+implementation-status section and `crates/agentosd/src/lease.rs`. The **Hermes plugin** that
+calls it (`llm_request` priority tag, `llm_execution` acquire/release, `pre_tool_call` veto) is
+still unbuilt — that is the remaining work for this ADR.

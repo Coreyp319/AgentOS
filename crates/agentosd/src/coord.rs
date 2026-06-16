@@ -48,6 +48,27 @@ pub enum Tier {
     Interactive = 2,
 }
 
+impl Tier {
+    /// Parse a tier name (shared by the `coord` CLI and the D-Bus lease server).
+    pub fn from_arg(s: &str) -> Result<Tier, String> {
+        match s.to_ascii_lowercase().as_str() {
+            "interactive" | "live" => Ok(Tier::Interactive),
+            "batch" | "overnight" => Ok(Tier::Batch),
+            "best-effort" | "besteffort" | "idle" => Ok(Tier::BestEffort),
+            other => Err(format!("unknown tier `{other}` (interactive|batch|best-effort)")),
+        }
+    }
+
+    /// Lowercase canonical name (for D-Bus `Status` and logs).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Interactive => "interactive",
+            Tier::Batch => "batch",
+            Tier::BestEffort => "best-effort",
+        }
+    }
+}
+
 /// The single exclusive lease's current holder (ADR-0010 §1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Holder {
@@ -188,12 +209,7 @@ fn next<'a>(args: &'a [String], i: &mut usize, flag: &str) -> Result<&'a str, St
 }
 
 fn parse_tier(s: &str) -> Result<Tier, String> {
-    match s.to_ascii_lowercase().as_str() {
-        "interactive" | "live" => Ok(Tier::Interactive),
-        "batch" | "overnight" => Ok(Tier::Batch),
-        "best-effort" | "besteffort" | "idle" => Ok(Tier::BestEffort),
-        other => Err(format!("coord: unknown tier `{other}` (interactive|batch|best-effort)")),
-    }
+    Tier::from_arg(s).map_err(|e| format!("coord: {e}"))
 }
 
 fn parse_u64(s: &str) -> Result<u64, String> {
@@ -222,7 +238,8 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Read free VRAM (MiB) off GPU0. NVML is blocking FFI, so it runs on the blocking
 /// pool (ADR-0010 §7) — never on the async executor. `None` on any NVML error.
-async fn free_mib(nvml: &Arc<Nvml>) -> Option<u64> {
+/// Shared with the D-Bus lease server (admission control).
+pub(crate) async fn free_mib(nvml: &Arc<Nvml>) -> Option<u64> {
     let nvml = Arc::clone(nvml);
     tokio::task::spawn_blocking(move || {
         let dev = nvml.device_by_index(0).ok()?;

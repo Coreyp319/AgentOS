@@ -111,19 +111,29 @@ floor under ADR-0009/0010/0011 — the load-bearing mechanism is now real code, 
   the interactive request that ADR-0006's D-Bus lease will carry) drives the full preempt path:
   `arbitrate(Batch, Interactive) → Preempt → SIGKILL → before/after VRAM read → release`.
 - **Priority arbitration (§1/§2)** — `Tier` (`Interactive > Batch > BestEffort`) + `arbitrate`,
-  exhaustively unit-tested (14 new tests; whole crate 25 green).
+  exhaustively unit-tested.
 - **Async-runtime shift (§7)** — `tokio` introduced; the supervisor is a `select!` over the NVML
   interval tick, owned-child exit, the preempt signal, and shutdown (SIGINT/SIGTERM). NVML runs
-  behind `spawn_blocking`. `monitor`/`feed` keep their blocking loops untouched. This is the
-  runtime shape the proxy and the D-Bus lease server will slot into.
+  behind `spawn_blocking`. `monitor`/`feed` keep their blocking loops untouched.
+- **D-Bus lease server (ADR-0006)** — `agentosd lease` (`crates/agentosd/src/lease.rs`) serves
+  `org.agentos.Coordinator1` on the session bus (zbus, tokio reactor): `Acquire(tier, est)`,
+  `Release(token)`, `Status()`. Backed by the *same* `admit` + `arbitrate` core plus a pure,
+  tested `LeaseState` (single exclusive lease, monotonic tokens so a preempted holder's stale
+  `Release` can't free its successor). Validated live via `busctl`: grant → queue (equal tier)
+  → preempt (interactive over batch) → stale-release rejected → release → deny (oversized est).
+  Whole crate: **33 tests green, clippy clean.**
 
-**Deliberately NOT in this slice (still pending / `[SUBSTRATE-BLOCKED]` elsewhere):**
+**Deliberately NOT yet (the next unification step / `[SUBSTRATE-BLOCKED]` elsewhere):**
 
-- The **D-Bus lease server** (ADR-0006) — the preempt trigger is SIGUSR1 for now, not a real
-  Hermes-plugin lease call. `arbitrate` is the decision core it will call.
+- **`coord` ⨉ `lease` are not unified into one daemon.** `coord` evicts on SIGUSR1; `lease`'s
+  preempt outcome says "owner SIGKILLs it" but is not yet wired to SIGKILL `coord`'s owned child.
+  Merging them — one process that serves the lease *and* owns/evicts the batch PID — is next.
+- **No revoke signal / wait-queue.** A losing acquirer is told `queued` and must retry; there is
+  no D-Bus signal for cooperative holders and no FIFO wait (real backpressure comes from the
+  gateway holding inference responses, ADR-0006). `LeaseDecision::Queue` is tested.
 - **Spawning ComfyUI specifically** — `coord` owns *any* `-- <cmd>` (defaults to a `sleep`
-  stand-in for plumbing smoke-tests); wiring the actual ComfyUI invocation (ADR-0009) is next.
+  stand-in); wiring the actual ComfyUI invocation (ADR-0009) is next.
 - The **overnight batch lane / window trigger** (§6, Open questions) — Hermes' cron + kanban
-  drive the sequence; `coord` only enforces one-holder-at-a-time. Not yet scheduled.
-- **Multi-holder queueing** — one lease, one holder this slice; `LeaseDecision::Queue` is tested
-  but there is no queue/wait loop yet (no second acquirer to queue until the D-Bus server lands).
+  drive the sequence; agentosd only enforces one-holder-at-a-time. Not yet scheduled.
+- The **Hermes plugin** itself (ADR-0006) — the lease server now exists for it to call; the
+  plugin (`llm_execution` acquire/release) is unbuilt.
