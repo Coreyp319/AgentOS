@@ -50,11 +50,11 @@ def _systemctl_base(scope: str) -> list[str]:
     return ["systemctl"] if scope == "system" else ["systemctl", "--user"]
 
 
-def _state_from_list_units(scope: str, pattern: str) -> dict:
+def _state_from_list_units(scope: str, pattern: str, run=_run) -> dict:
     """Read LOAD/ACTIVE/SUB straight from `list-units` for a glob `match` entry — used for
     the xdg-autostart wallpaper unit, whose escaped \\x2d name doesn't round-trip through
     `systemctl show`. Columns: UNIT LOAD ACTIVE SUB DESCRIPTION."""
-    out = _run(_systemctl_base(scope) + ["list-units", "--all", "--plain", "--no-legend", pattern])
+    out = run(_systemctl_base(scope) + ["list-units", "--all", "--plain", "--no-legend", pattern])
     for line in out.splitlines():
         tok = line.split()
         if len(tok) >= 4 and "." in tok[0]:
@@ -62,8 +62,8 @@ def _state_from_list_units(scope: str, pattern: str) -> dict:
     return {}
 
 
-def _show_props(scope: str, unit: str) -> dict:
-    raw = _run(
+def _show_props(scope: str, unit: str, run=_run) -> dict:
+    raw = run(
         _systemctl_base(scope)
         + ["show", unit, "-p", "LoadState", "-p", "ActiveState", "-p", "SubState",
            "-p", "Result", "-p", "ActiveEnterTimestamp"]
@@ -76,11 +76,13 @@ def _show_props(scope: str, unit: str) -> dict:
     return props
 
 
-def _unit_status(svc: dict) -> dict:
+def _unit_status(svc: dict, run=_run) -> dict:
+    """Pure-ish: with `run` injected (a fn taking an argv list → stdout string) this has no
+    side effects, so the status branching is unit-testable without shelling out."""
     scope = svc.get("scope", "user")
     # kind shapes what "healthy" means:
     #   daemon — expected to stay active (inactive ⇒ down)
-    #   watch  — a .path/.timer; active/waiting ⇒ "armed"
+    #   watch  — a .path/.timer; active/waiting ⇒ "ready"
     #   task   — a oneshot/launcher that exits after doing its job; clean exit ⇒ "ran ✓", not down
     kind = svc.get("kind", "daemon")
 
@@ -90,14 +92,14 @@ def _unit_status(svc: dict) -> dict:
     if svc.get("unit"):
         unit = svc["unit"]
     elif svc.get("match"):
-        listed = _state_from_list_units(scope, svc["match"])
+        listed = _state_from_list_units(scope, svc["match"], run=run)
         unit = listed.get("unit", "")
     else:
         unit = ""
     if not unit:
         return {"status": "absent", "state": "not installed"}
 
-    props = _show_props(scope, unit)
+    props = _show_props(scope, unit, run=run)
     # If show couldn't resolve the escaped name but list-units saw it, trust list-units.
     if props.get("LoadState", "") in ("", "not-found") and listed.get("ActiveState"):
         props = {**listed, "Result": "exit-code" if listed.get("ActiveState") == "failed" else "success"}
@@ -128,6 +130,8 @@ def _unit_status(svc: dict) -> dict:
     # Friendly, honest label.
     if status == "failed":
         label = f"failed ({result})" if result and result != "success" else "failed"
+    elif status == "absent":
+        label = "not installed"
     elif status == "ok":
         label = "ran ✓"
     elif status == "up" and kind == "watch":
@@ -176,20 +180,21 @@ def _is_attention(s: dict) -> bool:
     return False
 
 
-def build_status() -> dict:
-    try:
-        catalog = json.loads(CATALOG_PATH.read_text())
-    except Exception as e:  # a broken catalog shouldn't 500 the panel — say so honestly
-        return {"groups": [], "services": [], "generated_at": time.time(),
-                "summary": {"total": 0, "healthy": 0, "attention": 1}, "error": f"catalog: {e}"}
+def build_status(catalog=None, run=_run, reach=_reachable) -> dict:
+    if catalog is None:
+        try:
+            catalog = json.loads(CATALOG_PATH.read_text())
+        except Exception as e:  # a broken catalog shouldn't 500 the panel — say so honestly
+            return {"groups": [], "services": [], "generated_at": time.time(),
+                    "summary": {"total": 0, "healthy": 0, "attention": 1}, "error": f"catalog: {e}"}
 
     services = []
     for svc in catalog.get("services", []):
         try:
-            st = _unit_status(svc)
+            st = _unit_status(svc, run=run)
             # Probe reachability whenever a health URL exists (not just when "up"): a
             # failed-but-still-serving service is a split-brain worth surfacing, not hiding.
-            reach = _reachable(svc.get("health", "")) if svc.get("health") and st["status"] != "absent" else ""
+            reach_state = reach(svc.get("health", "")) if svc.get("health") and st["status"] != "absent" else ""
             services.append({
                 "id": svc.get("id", "?"),
                 "name": svc.get("name", "(unnamed)"),
@@ -198,7 +203,7 @@ def build_status() -> dict:
                 "url": svc.get("url", ""),
                 "scope": svc.get("scope", "user"),
                 "kind": svc.get("kind", "daemon"),
-                "reach": reach,
+                "reach": reach_state,
                 **st,
             })
         except Exception as e:  # one bad row becomes one error row, never a blank panel

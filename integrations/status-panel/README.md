@@ -51,5 +51,14 @@ dims — the panel never looks confidently green while it can't actually see.
 Status is never conveyed by colour alone — every row carries a text label and an
 `aria-label`, rows are a semantic list, and it honors `prefers-reduced-motion`.
 
+## Tests
+The kind-aware status logic is pinned by a stdlib `unittest` suite (`run`/`reach` are
+injected, so nothing shells out). Covers daemon up/down, task `ran ✓` vs nonzero-exit
+failure, watcher `ready`, the escaped-name list-units fallback, `absent`, the attention
+rollup, the bad-row-doesn't-blank-the-panel guarantee, and the `/status.json` data contract:
+```
+python3 -m unittest discover -s integrations/status-panel/tests
+```
+
 ## Logs
 `journalctl --user -u agentos-status-panel.service -f`
