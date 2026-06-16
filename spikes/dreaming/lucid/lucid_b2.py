@@ -27,6 +27,8 @@ import json
 import os
 import urllib.request
 
+import lucid_facecv as facecv   # deterministic opencv face detection (ADR-0017 primary gate)
+
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 # A vision-capable model. Default to gemma4 (smallest vision model on this box); override to a
 # dedicated detector when one is installed. NOT used for narration's output — external input only.
@@ -69,11 +71,13 @@ def _classify(path, _call=None):
         return json.loads(json.load(r)["message"]["content"])
 
 
-def dispose(c):
-    """The deterministic gate over the model's proposed flags (pure; unit-testable)."""
+def dispose(c, cv_faces=None):
+    """The deterministic gate over two signals — the CV face count (`cv_faces`, the primary,
+    deterministic detector; int, or None if it couldn't run) and the VLM's proposed flags (`c`,
+    the second opinion). Pure; unit-testable."""
     if not isinstance(c, dict):
         return Verdict(False, False, "couldn't read the safety check — refused (fail-closed).", {"checked": False})
-    # The classifier must actually answer all three booleans. A keyless / refusal-shaped JSON
+    # The VLM must actually answer all three booleans. A keyless / refusal-shaped JSON
     # (e.g. {} or a hedge) must BLOCK, not default-allow via .get() falsiness (responsible-ai review).
     if not all(isinstance(c.get(k), bool) for k in ("has_face", "real_person", "possibly_minor")):
         return Verdict(False, False,
@@ -82,13 +86,18 @@ def dispose(c):
     has_face = c["has_face"]
     real = c["real_person"]
     minor = c["possibly_minor"]
+    cv_face = isinstance(cv_faces, int) and cv_faces > 0
     flags = {"has_face": has_face, "real_person": real, "possibly_minor": minor,
-             "desc": str(c.get("desc", ""))[:60], "checked": True}
+             "cv_faces": cv_faces, "desc": str(c.get("desc", ""))[:60], "checked": True}
     if minor:
         return Verdict(False, False,
                        "Blocked: the image may depict a minor. This is a hard red-line and cannot be overridden.",
                        flags)
-    if has_face and real:
+    # A face from EITHER detector requires consent: CV is deterministic and catches a VLM
+    # false-negative on a real face; the VLM's real_person catches a non-frontal face CV misses.
+    # (CV can flag a drawn face too — a conservative over-block that is a one-click consent, not a
+    # hard refusal; documented in ADR-0017.)
+    if cv_face or (has_face and real):
         return Verdict(False, True,
                        "This looks like a real person. To continue, confirm you are this person or have the "
                        "right to use this image.", flags)
@@ -109,11 +118,12 @@ def check_seed(path, _call=None):
             h = None
     if h and h in _cache:
         return _cache[h]
+    cv = facecv.faces(path) if _call is None else None   # deterministic primary (skipped for mocked tests)
     try:
         c = _classify(path, _call=_call)
     except Exception as e:
         return Verdict(False, False, f"Couldn't verify the image safely ({e}) — refused.", {"checked": False})
-    v = dispose(c)
+    v = dispose(c, cv)
     if h:
         if len(_cache) > 32:
             _cache.clear()

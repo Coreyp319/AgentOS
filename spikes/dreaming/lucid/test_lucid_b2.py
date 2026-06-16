@@ -37,6 +37,18 @@ check("possible minor -> NOT overridable (hard red-line)", not v.requires_consen
 v = B2.dispose({"has_face": False, "real_person": False, "possibly_minor": True, "desc": "unsure"})
 check("minor-flag alone -> BLOCK hard (fail-closed on age)", not v.ok and not v.requires_consent)
 
+# --- CV detector as the deterministic primary signal (catches a VLM false-negative) ---
+v = B2.dispose({"has_face": False, "real_person": False, "possibly_minor": False}, cv_faces=2)
+check("CV sees a face the VLM missed -> consent (false-negative caught)", (not v.ok) and v.requires_consent)
+v = B2.dispose({"has_face": True, "real_person": True, "possibly_minor": False}, cv_faces=0)
+check("VLM real-person, CV miss -> still consent", (not v.ok) and v.requires_consent)
+v = B2.dispose({"has_face": False, "real_person": False, "possibly_minor": True}, cv_faces=9)
+check("minor wins over CV faces -> hard block", (not v.ok) and (not v.requires_consent))
+v = B2.dispose({"has_face": False, "real_person": False, "possibly_minor": False}, cv_faces=0)
+check("no face from either detector -> allow", v.ok)
+v = B2.dispose({"has_face": False, "real_person": False, "possibly_minor": False}, cv_faces=None)
+check("CV unavailable + VLM clean -> allow (VLM-only fallback)", v.ok)
+
 # --- malformed model output -> fail-closed BLOCK ---
 check("non-dict classify -> block, not checked", (lambda r: not r.ok and r.flags.get("checked") is False)(B2.dispose("garbage")))
 check("None classify -> block", not B2.dispose(None).ok)

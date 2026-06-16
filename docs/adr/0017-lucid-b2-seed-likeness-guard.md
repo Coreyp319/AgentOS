@@ -41,13 +41,29 @@ Surfaces:
 - **CLI:** `lucid_linear.py start … --image X [--consent]`; the guard runs unless
   `LUCID_ALLOW_UNVETTED_SEED=1` (a **test-only** escape for CI without a vision model).
 - A **server-generated** abstract opening (no upload) is trusted — there's no real person to vet.
+- **Right-click "Create Video from Image"** (added 2026-06-16) — two new public entry surfaces onto
+  the i2v path, both routed through one governed launcher (`spikes/dreaming/lucid/create_from_image.py`):
+  the **Dolphin ServiceMenu** (right-click an image file → *Create* submenu) and a **browser
+  WebExtension** (right-click an image on a web page → native-messaging host). Each is the seed-from-a-
+  user-image case B2 exists for — a right-click consents to *trying*, not to who is depicted — so the
+  launcher runs B2 **exactly once at the surface** (then `start(_trusted_seed=True)`, mirroring the web
+  path), strips EXIF by re-encoding to a clean PNG, surfaces the real-person consent via a `kdialog`
+  modal (default Cancel) and a possible-minor verdict as a hard refusal, and **fails open** (calm
+  skip) when the coordinator is down. Browser images are the *higher-risk* seed (a stranger's photo
+  off the web) — the consent gate is doing real work there. `LUCID_ALLOW_UNVETTED_SEED` stays a
+  test-only escape, **never set by the shipped launcher**. `--private` keeps the ADR-0016 guarantees
+  (tmpfs, not saved, not on the hub, auto-burned); private mode *contains* a real-person dream but is
+  never an excuse to relax this gate.
 
 ## Honest residuals / still owed
 
-- **The VLM is not deterministic** and is a starting gate, not the last word. A deterministic CV
-  detector (opencv Haar / mediapipe / a small ONNX face model) is the **owed hardening** — it should
-  become the primary gate with the VLM as a second opinion. `LUCID_B2_MODEL` is configurable; a
-  dedicated detector model is preferable to a general VLM.
+- B2 now runs a **deterministic CV face detector (opencv Haar, frontal+profile) as the PRIMARY
+  gate** (`lucid_facecv.py`, shelled to ComfyUI's venv — no new system dependency), with the VLM as
+  the second opinion for real-vs-drawn and age. **A face from EITHER detector requires consent**, so
+  a VLM false-negative on a real face is still caught by CV. Residuals: Haar misses some
+  angles/occlusions (the VLM backstops), it can over-flag a drawn face (a one-click consent, not a
+  hard refusal), and **age remains the VLM's call** (CV can't estimate age) — a dedicated
+  age/real-person model is the further hardening. `LUCID_B2_MODEL` / `LUCID_CV_PYTHON` are configurable.
 - Age estimation from an image is unreliable; `possibly_minor` is deliberately conservative
   (unsure ⇒ true ⇒ block) but is **not** a guarantee.
 - Consent is asserted, not verified — it records the user's claim of right; it cannot prove it.
