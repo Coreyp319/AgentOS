@@ -79,17 +79,38 @@ def chain_or_none():
         return None
 
 
+def _synthetic_opening():
+    """A server-generated abstract opening frame — no user upload, so no real-person B2 concern.
+    A placeholder seed until upload + the face/likeness guard (or text-to-opening) land."""
+    import tempfile
+    from PIL import Image, ImageDraw
+    fd, p = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    img = Image.new("RGB", (720, 1280), (18, 22, 38))
+    d = ImageDraw.Draw(img)
+    for y in range(0, 1280, 5):
+        d.line([(0, y), (720, y)],
+               fill=(min(255, 18 + y // 12), min(255, 28 + y // 20), min(255, 60 + y // 9)))
+    img.save(p)
+    return p
+
+
 def state():
-    rd = readiness()
+    """Fast — readiness + chain + private. The slow beat proposal (Ollama) is a SEPARATE endpoint
+    (/api/beats) so the page renders instantly and never blocks on a model load."""
     chain = chain_or_none()
-    beats = []
-    if chain is not None and rd["ollama"]:
-        try:
-            beats = L.propose(L.context_for(SESSION))   # live, schema-validated + red-lined
-        except Exception:
-            beats = []
-    return {"session": SESSION, "readiness": rd, "chain": chain, "beats": beats,
+    return {"session": SESSION, "readiness": readiness(), "chain": chain,
             "private": L.ST.is_private(SESSION) or bool(chain and chain.get("private"))}
+
+
+def beats():
+    chain = chain_or_none()
+    if chain is None:
+        return []
+    try:
+        return L.propose(L.context_for(SESSION))   # live, schema-validated + red-lined
+    except Exception:
+        return []
 
 
 # ---------------- page (instrument glass; status panel / keyhole register) ----------------
@@ -134,29 +155,45 @@ async function load(){
    <b style="color:var(--brand-warm)">🔒 Private session</b>
    <div class=note style="margin-top:4px">Ephemeral — sealed in RAM (tmpfs), not saved, not shown on the status hub, no wallpaper. Burned on logout.</div>
    <button class=beat style="margin-top:10px;border-color:var(--brand-warm)" onclick='burnit()'>🔥 Burn this dream now</button></div>`;
- if(!s.chain){h+=`<div class=card><b>No active dream.</b><div class=note style="margin-top:6px">
-   Start one from a seed image (CLI, until upload + the face/likeness guard land — ADR-0015 B2):<br>
-   <code>lucid_linear.py start ${s.session} --image &lt;opening.png&gt;</code></div></div>`;}
+ if(!s.chain){h+=`<div class=card><b>Start a dream</b>
+   <div class=note style="margin-top:6px">Begin an interactive dream — then choose what happens next, one beat at a time.</div>
+   <label style="display:flex;gap:9px;align-items:flex-start;margin:14px 0;cursor:pointer">
+     <input type=checkbox id=priv style="margin-top:3px">
+     <span><b style="color:var(--brand-warm)">🔒 Private session</b>
+     <span class=note>— ephemeral, sealed in RAM, not saved, not on the status hub, auto-burned on logout.</span></span></label>
+   <button class=beat onclick='startDream()'>✦ Begin a dream</button>
+   <div class=note style="margin-top:10px">Opens from an abstract frame for now — seed upload + the face/likeness guard (ADR-0015 B2) are owed.</div></div>`;}
  else{
    const n=s.chain.nodes;
    h+=`<div class=card><b>Your dream so far</b> · ${n.length} frame(s)`;
    n.forEach(x=>{h+=`<div class=clip>#${x.id} ${x.label}${x.clip?' · '+x.clip.split('/').pop():''}</div>`});
-   h+=`</div><div class=card><b>What happens next?</b>`;
-   if(s.beats.length){s.beats.forEach((b,i)=>{h+=`<button class=beat onclick='dream(${i})'><b>${b.label}</b><small>${b.prompt}</small></button>`});}
-   else h+=`<div class=note>No suggestions right now — type your own.</div>`;
+   h+=`</div><div class=card><b>What happens next?</b>
+     <div id=beats><div class=note>considering the next moves…</div></div>`;
    h+=`<input id=own type=text placeholder="…or type what happens next" onkeydown="if(event.key==='Enter')dreamOwn()">`;
    if(!r.can_dream)h+=`<div class=note warn style="margin-top:8px">Choosing is disabled until the loop is ready (above).</div>`;
    h+=`</div>`;
  }
  a.innerHTML=h;
+ if(s.chain&&r.can_dream)loadBeats();
+}
+let BEATS=[];
+async function loadBeats(){
+ const el=document.getElementById('beats');if(!el)return;
+ const j=await (await fetch('/api/beats')).json();BEATS=j.beats||[];
+ if(!BEATS.length){el.innerHTML='<div class=note>No suggestions — type your own.</div>';return;}
+ el.innerHTML=BEATS.map((b,i)=>`<button class=beat onclick='dream(${i})'><b>${b.label}</b><small>${b.prompt}</small></button>`).join('');
 }
 const CSRF=document.querySelector('meta[name=csrf]').content;
 async function post(body){
  const res=await fetch('/api/dream',{method:'POST',headers:{'Content-Type':'application/json','X-Lucid-Token':CSRF},body:JSON.stringify(body)});
  const j=await res.json();if(j.error)alert(j.error);load();
 }
-function dream(i){post({choose:i})}
+function dream(i){const b=BEATS[i];if(b)post({prompt:b.prompt,label:b.label})}  // send the shown prompt, not a stale index
 function dreamOwn(){const v=document.getElementById('own').value.trim();if(v)post({prompt:v,label:'custom'})}
+async function startDream(){
+ const priv=document.getElementById('priv').checked;
+ const j=await (await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json','X-Lucid-Token':CSRF},body:JSON.stringify({private:priv})})).json();
+ if(j.error)alert(j.error);load();}
 async function burnit(){if(!confirm('Burn this private dream now? This wipes every trace and cannot be undone.'))return;
  const j=await (await fetch('/api/burn',{method:'POST',headers:{'X-Lucid-Token':CSRF}})).json();
  alert('Burned '+(j.burned||0)+' sink(s).'+((j.failed&&j.failed.length)?' FAILED: '+j.failed.join('; '):''));load();}
@@ -186,12 +223,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "ok", "text/plain")
         elif path == "/api/state":
             self._send(200, json.dumps(state()), "application/json")
+        elif path == "/api/beats":   # slow (Ollama) — fetched separately so the page never blocks
+            self._send(200, json.dumps({"beats": beats()}), "application/json")
         else:
             self._send(404, "not found", "text/plain")
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
-        if path not in ("/api/dream", "/api/burn"):
+        if path not in ("/api/dream", "/api/burn", "/api/start"):
             return self._send(404, "not found", "text/plain")
         # CSRF: a state-changing POST must carry the per-process token embedded in the page (a
         # cross-origin page can't read it). Fail closed. Defense-in-depth: reject a bad Origin too.
@@ -209,6 +248,20 @@ class Handler(BaseHTTPRequestHandler):
             removed, failed = L.burn(SESSION)
             return self._send(200, json.dumps({"ok": not failed, "burned": len(removed),
                                                "failed": failed}), "application/json")
+        if path == "/api/start":  # begin a dream (optionally private) from a synthetic opening
+            private = bool(req.get("private"))
+            L.ST.clear(SESSION)   # clean any prior session of this name before a fresh start
+            seed = _synthetic_opening()
+            try:
+                L.start(SESSION, seed, private=private, _trusted_seed=True)
+            except Exception as e:
+                return self._send(200, json.dumps({"error": f"start failed: {e}"}), "application/json")
+            finally:
+                try:
+                    os.remove(seed)
+                except OSError:
+                    pass
+            return self._send(200, json.dumps({"ok": True, "private": private}), "application/json")
         rd = readiness()
         if not rd["can_dream"]:
             return self._send(200, json.dumps({"error": "not ready — " + "; ".join(rd["why"])}),

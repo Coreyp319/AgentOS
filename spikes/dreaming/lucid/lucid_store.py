@@ -200,6 +200,18 @@ def burn(session):
     return removed, failed
 
 
+def clear(session):
+    """Remove a session entirely before a fresh start — burn it if private, else drop the
+    persistent dir. Returns the paths removed."""
+    _require(session)
+    removed, _failed = burn(session)
+    pdir = session_dir(session, False)
+    if os.path.isdir(pdir) and not os.path.islink(pdir):
+        shutil.rmtree(pdir, ignore_errors=True)
+        removed.append(pdir)
+    return removed
+
+
 def list_private():
     """Live private sessions: those with a tmpfs session dir."""
     root = _runtime_root()
