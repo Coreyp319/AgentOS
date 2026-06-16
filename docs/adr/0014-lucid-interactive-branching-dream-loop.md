@@ -12,6 +12,11 @@
   trust — the loop's heartbeat), ADR-0012 (keyhole: a dream-in-flight is a visible job).
 - Evidence (spike): [`spikes/dreaming/lucid`](../../spikes/dreaming/lucid/README.md) — the thin
   "click → the story continues" slice (throwaway, runs generation directly, **no lease yet**).
+- Reviewed: [`docs/research/0008-lucid-review-scorecard.md`](../research/0008-lucid-review-scorecard.md)
+  — 8-dimension design council (2026-06-16). **Verdict: HOLD as ship design / ITERATE as spike**;
+  blockers in resource-safety (co-residency OOM), responsible-ai (unguarded real-person seed → i2v),
+  reversibility (non-atomic tree). MVP steer: build a *linear* chain through the coordinator lease
+  first; defer branching, the QML panel, §6 grounding, and "set as wallpaper" behind that gate.
 
 ## Context
 
