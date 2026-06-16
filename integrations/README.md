@@ -12,6 +12,7 @@ including what comes up **at boot** as `--user` systemd services.
 | **Hermes agent** (gateway daemon: kanban, cron, delegation, messaging) | `hermes/gateway/hermes-gateway.service` | — | already installed ✓ |
 | **Hermes web dashboard** (config, sessions, kanban board) | `hermes/dashboard/hermes-dashboard.service` | http://127.0.0.1:9119 | `hermes/dashboard/apply.sh` |
 | **ComfyUI** (dreaming backend) | `comfyui/comfyui.service` | http://127.0.0.1:8188 | `comfyui/apply.sh` |
+| **Lucid** (interactive dream-loop surface, ADR-0015) | `lucid/agentos-lucid.service` | http://127.0.0.1:8765 | `lucid/apply.sh` |
 | Ollama (model runtime) | system unit (`ollama.service`) | http://127.0.0.1:11434 | already installed ✓ |
 
 The **status panel** is the front door: it opens in the browser at login and shows the
@@ -25,10 +26,10 @@ overnight dream/batch lane (ADR-0006/0010).
 
 ## Bring up everything not yet running
 ```
-./apply-all.sh        # installs the dashboard + ComfyUI services (idempotent)
+./apply-all.sh        # installs dashboard + ComfyUI + Lucid + status-panel services (idempotent)
 ```
 The Hermes gateway and Ollama are already installed and enabled, so `apply-all.sh`
-leaves them alone and just ensures the two missing pieces are up.
+leaves them alone and just ensures the remaining pieces are up.
 
 ## VRAM note
 ComfyUI is a heavy VRAM consumer, but idle it loads no weights (just the CUDA context),

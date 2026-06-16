@@ -21,6 +21,7 @@
     { "id": "refine-icons",     "name": "Icon refine",             "group": "Desktop QoL",        "scope": "user",   "kind": "watch", "unit": "nimbus-refine-icons.path",                                 "desc": "Polish icons when the theme changes" },
     { "id": "theme-toggle",     "name": "Theme toggle",            "group": "Desktop QoL",        "scope": "user",   "kind": "watch", "unit": "nimbus-theme-toggle-button.path",                          "desc": "Light/dark toggle button watcher" },
 
-    { "id": "dream",            "name": "Nightly dreaming",        "group": "Dreaming",           "scope": "user",   "kind": "watch", "unit": "nimbus-dream.timer",                                       "desc": "Compose a journey leg each night (23:30)" }
+    { "id": "dream",            "name": "Nightly dreaming",        "group": "Dreaming",           "scope": "user",   "kind": "watch", "unit": "nimbus-dream.timer",                                       "desc": "Compose a journey leg each night (23:30)" },
+    { "id": "lucid",            "name": "Lucid (dream loop)",      "group": "Dreaming",           "scope": "user",   "unit": "agentos-lucid.service",      "url": "http://127.0.0.1:8765", "health": "http://127.0.0.1:8765/healthz", "desc": "Interactive dream loop — watch a clip, choose what happens next (spike, ADR-0015)" }
   ]
 }
