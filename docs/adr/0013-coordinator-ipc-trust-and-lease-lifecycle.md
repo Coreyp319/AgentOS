@@ -1,6 +1,7 @@
 # ADR-0013: Coordinator IPC trust model + lease lifecycle
 
-- Status: Proposed (needs Corey's decision — changes the ADR-0006 plugin call contract)
+- Status: Accepted — **A2 + B4 + B5 + C7 implemented + GPU/bus-validated 2026-06-16** (Corey
+  approved). Only **A1 (private socket)** + same-uid authz remain. See Implementation status.
 - Date: 2026-06-16
 - Relates to: ADR-0003 (fail-open), ADR-0006 (Hermes plugin → D-Bus lease), ADR-0010 (the daemon)
 - Driver: [review scorecard 0005](../research/0005-coordinator-review-scorecard.md) findings
@@ -72,3 +73,39 @@ never installed bus-wide, we could accept S1 as a documented risk and ship the l
 - The lease becomes crash-safe (no permanent lockout of the batch lane).
 - `Spawn(argv)` as a general exec primitive over IPC is **removed** — the daemon owns its command
   vectors. Profiles are the new extension point (a profile is config the daemon reads, not an ADR).
+
+## Implementation status (2026-06-16) — A2 + B4 landed + validated
+
+Built in `crates/agentosd/src/lease.rs` (47 tests, clippy clean; live-proven via `busctl`):
+
+- **A2 — launch-profile allowlist (closes S1, the RCE).** `Spawn(tier, est, argv)` is **gone**;
+  `Spawn(tier, est, profile, params)` resolves `profile` against a daemon-owned static `PROFILES`
+  map (`comfyui`, `sleep`) to an **absolute** command; `params` are appended as literal argv (execv,
+  no shell). *Proven*: `Spawn … sh …` → `unknown profile` (rejected); `Spawn … sleep 600` → granted +
+  owned. A D-Bus caller can no longer make agentosd run arbitrary commands.
+- **B4 — peer-disconnect auto-release (closes H4).** The daemon records the **cooperative** holder's
+  D-Bus unique name; the supervisor polls `name_has_owner` and frees the lease when that peer
+  vanishes. *Proven*: a cooperative `interactive` holder whose caller exits is auto-released within a
+  tick; an **owned** (`Spawn`) job is **not** (its lifecycle is the child, not the caller's
+  connection — so `busctl`-per-call clients like `dream.sh` keep working across `Spawn`→`Release`).
+- The dreaming client (`spikes/dreaming/dream.sh`) now calls `Spawn` with `profile=comfyui`; the
+  `comfyui` profile points at `start-comfyui.sh` (which now defaults `--preview-method latent2rgb`).
+
+- **B5 — lease TTL + `Renew` heartbeat.** A holder past `lease_ttl()` (default 90 min; env
+  `AGENTOSD_LEASE_TTL_SECS`) without a `Renew` is auto-expired by the supervisor — backstops a
+  live-but-buggy holder *and* the owned-job-whose-caller-crashed gap that B4 deliberately leaves.
+  `Renew(token)` extends it. *Proven*: TTL=2s → an owned job auto-released + SIGKILLed after expiry.
+- **C7 — anti-strobe dwell.** A just-preempted tier can't re-acquire for `preempt_dwell()` (default
+  8 s; env `AGENTOSD_PREEMPT_DWELL_SECS`); interactive is exempt. Stops spawn→preempt→spawn churn.
+  *Proven*: dwell=3s → `Spawn batch` during the window → "cooling down"; granted again after it.
+
+**Still remaining (the deferred deck):**
+- **A1 — private peer socket + `SO_PEERCRED`.** The parallel keyhole work writes its `lease.json`
+  mirror assuming the session bus; A2 already removed the *RCE*, so the residual is the in-session
+  confused-deputy (a same-uid peer can spawn an *allowlisted* profile or hold the lease — no RCE). A
+  same-uid `GetConnectionUnixUser` authz check is marginal on a single-user box and was skipped. The
+  real closer is the `0600` peer socket — sequence it with the Hermes plugin (ADR-0006), which needs
+  a socket-aware client anyway (it would also break `busctl`/`dream.sh`, so it's a deliberate later step).
+
+**Commit note:** these changes are interleaved with the in-flight keyhole work in `lease.rs`/`main.rs`/
+`CLAUDE.md`, so they were left uncommitted at the time of writing (Corey commits the combined set).
