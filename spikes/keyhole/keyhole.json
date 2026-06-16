@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "state": "working",
+  "gateway": "running",
+  "floats": { "busy": 0.85, "warm": 0.0, "snag": 0.0 },
+  "fleet": { "running": 3, "queued": 2, "snagged": 0 },
+  "lease": {
+    "tier": "interactive",
+    "holder": "Hermes",
+    "preempt": "wallpaper yielded ~1.5GB → qwen2.5 loaded"
+  },
+  "vram": { "used_mib": 6240, "total_mib": 8192 },
+  "residency": [ { "name": "qwen2.5:14b", "loaded_secs": 240 } ],
+  "tokens_per_sec": null
+}
