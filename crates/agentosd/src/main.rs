@@ -3,6 +3,8 @@
 //! Modes:
 //!   * `monitor` — v0 read-only VRAM monitor (below).
 //!   * `feed`    — P1 producer: Hermes fleet state → `agent.json` (see `feed.rs`).
+//!   * `coord`   — VRAM coordinator slice: own a GPU job's PID, NVML-gated
+//!     admission, SIGKILL on preempt (ADR-0010; see `coord.rs`).
 //!
 //! `monitor` proves the load-bearing pieces of the VRAM coordinator WITHOUT doing
 //! anything destructive:
@@ -22,6 +24,7 @@ use nvml_wrapper::enums::device::UsedGpuMemory;
 use nvml_wrapper::Nvml;
 use serde::Deserialize;
 
+mod coord;
 mod feed;
 
 const OLLAMA_PS: &str = "http://127.0.0.1:11434/api/ps";
@@ -82,10 +85,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match mode.as_str() {
         "monitor" => run_monitor(),
         "feed" => feed::run(std::env::args().any(|a| a == "--once")),
+        "coord" => coord::run(std::env::args().skip(2).collect()),
         other => {
             eprintln!(
                 "agentosd: unknown mode `{other}`. Modes: monitor (read-only VRAM), \
-                 feed (emit agent.json). See docs/adr/."
+                 feed (emit agent.json), coord (VRAM lease + SIGKILL evict). See docs/adr/."
             );
             std::process::exit(2);
         }

@@ -11,3 +11,6 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
+# Async runtime for the VRAM coordinator (ADR-0010 §7): select! over the NVML tick,
+# owned-child supervision, and signals. monitor/feed keep their blocking loops.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time"] }

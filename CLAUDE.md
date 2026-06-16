@@ -34,6 +34,11 @@ not silently drift from one.
   (`kanban.db` + `gateway_state.json`) → `$XDG_RUNTIME_DIR/nimbus-aurora/agent.json`
   for the reactive wallpaper. Install as a `--user` service via
   `crates/agentosd/dist/{apply,restore}.sh`.
+- `agentosd coord [--tier …] [--estimate-mib N] [-- <cmd>]` — VRAM coordinator slice
+  (ADR-0010): predict-before-load admission, owns the spawned job's PID, SIGKILL on
+  preempt (send SIGUSR1 to simulate the interactive request; D-Bus lease is ADR-0006).
+  With no `-- <cmd>` it supervises a `sleep` stand-in to smoke-test the lease plumbing.
+  This is the first destructive (kill) mode and the first on `tokio`.
 
 ## Relationship map
 ```
