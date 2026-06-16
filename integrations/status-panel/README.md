@@ -2,8 +2,16 @@
 
 A calm, read-only web panel that shows the live state of the whole AgentOS + Nimbus
 boot stack: each systemd unit's status (user + system) plus a quick port/HTTP
-reachability check for the services that expose one. It opens in the browser at login
-so the first thing you see is *"did everything come up?"*.
+reachability check for the services that expose one. Per the surface-labor contract
+(ADR-0017), the all-clear is silence: it opens at login **only when something needs
+attention** — a clean boot stays quiet (the keyhole tray carries the calm). Open it from
+the tray, or `http://127.0.0.1:9123`, any time.
+
+On an attention row you can **"Why?"** (a read-only `journalctl` tail, inline — no terminal)
+and **"Copy fix"** (the exact `systemctl reset-failed && restart`); a header **"bring stack
+up"** copies `apply-all.sh`. A service that *falls over after boot* fires one calm swaync
+toast (disable with `AGENTOS_STATUS_NOTIFY=0`). When a service recovers, its row exhales
+green — delight made of true state. The server stays strictly read-only; the human disposes.
 
 `http://127.0.0.1:9123`
 

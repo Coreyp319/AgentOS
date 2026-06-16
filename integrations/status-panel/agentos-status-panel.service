@@ -10,6 +10,9 @@ Type=simple
 ExecStart=/usr/bin/python3 %h/Documents/AgentOS/integrations/status-panel/status_panel.py
 Environment="AGENTOS_STATUS_HOST=127.0.0.1"
 Environment="AGENTOS_STATUS_PORT=9123"
+# Route a single debounced swaync toast on a NEW post-boot service failure (surface-labor
+# contract: swaync owns the interrupt). Set to 0 to silence.
+Environment="AGENTOS_STATUS_NOTIFY=1"
 Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=120

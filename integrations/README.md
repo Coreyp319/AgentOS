@@ -15,10 +15,12 @@ including what comes up **at boot** as `--user` systemd services.
 | **Lucid** (interactive dream-loop surface, ADR-0015) | `lucid/agentos-lucid.service` | http://127.0.0.1:8765 | `lucid/apply.sh` |
 | Ollama (model runtime) | system unit (`ollama.service`) | http://127.0.0.1:11434 | already installed ✓ |
 
-The **status panel** is the front door: it opens in the browser at login and shows the
-live state of *every* service below (plus the Nimbus desktop services from the WhiteSur
-pack — wallpaper, reactivity bridges, notifications, theming), with quick links into the
-Hermes dashboard and ComfyUI. Its service catalog is editable — see `status-panel/README.md`.
+The **status panel** is the front door: it shows the live state of *every* service below
+(plus the Nimbus desktop services from the WhiteSur pack — wallpaper, reactivity bridges,
+notifications, theming), with quick links, inline "Why?" logs, and copy-don't-execute
+recovery. Per ADR-0017 it opens at login **only when something needs attention** (clean
+boots stay silent; the keyhole tray carries the calm). Its catalog is editable — see
+`status-panel/README.md`; the cross-surface division of labor is in `design/surface-labor.md`.
 
 `hermes/gpu-coordinator/` is a Hermes *plugin* (not a systemd unit): it holds the
 agentosd interactive VRAM lease around Hermes inference so live AI preempts the

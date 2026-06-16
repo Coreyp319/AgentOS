@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -223,6 +225,69 @@ def build_status(catalog=None, run=_run, reach=_reachable) -> dict:
             "summary": summary, "generated_at": time.time()}
 
 
+def why(svc_id: str, run=_run) -> dict:
+    """Read-only `journalctl` tail for a *catalog* service. The unit is looked up from the
+    trusted catalog by id — the query string id only selects a row, it is never used as a
+    unit name — so there's no journalctl-arg injection surface."""
+    try:
+        catalog = json.loads(CATALOG_PATH.read_text())
+    except Exception as e:
+        return {"error": f"catalog: {e}"}
+    svc = next((s for s in catalog.get("services", []) if s.get("id") == svc_id), None)
+    if not svc:
+        return {"error": "unknown service"}
+    scope = svc.get("scope", "user")
+    unit = svc.get("unit") or _state_from_list_units(scope, svc.get("match", ""), run=run).get("unit")
+    if not unit:
+        return {"error": "no unit for this service"}
+    base = ["journalctl"] if scope == "system" else ["journalctl", "--user"]
+    out = run(base + ["-u", unit, "-n", "14", "--no-pager", "-o", "short-iso"])
+    return {"unit": unit, "lines": out.strip() or "(no recent journal lines)"}
+
+
+def _toast(svc: dict) -> None:
+    """Fire one calm swaync notification for a service that fell over. swaync owns the
+    interrupt (surface-labor contract); the panel only proposes the recovery."""
+    name, state = svc.get("name", svc.get("id", "A service")), svc.get("state", "failed")
+    try:
+        subprocess.run(
+            ["notify-send", "-a", "AgentOS", "-u", "normal", "-i", "dialog-warning",
+             f"{name} — {state}",
+             "Came up at boot, now stopped. Open the status panel to see why and copy the fix."],
+            check=False, timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def _notify_loop(interval: float = 15.0) -> None:
+    """Edge-detect *new* post-boot failures and route one debounced swaync toast each.
+    Silent during the boot window and silent on recovery — only an earned interruption.
+    Disable with AGENTOS_STATUS_NOTIFY=0."""
+    if os.environ.get("AGENTOS_STATUS_NOTIFY", "1") == "0" or not shutil.which("notify-send"):
+        return
+    notified: set = set()
+    settled = False
+    started = time.monotonic()
+    while True:
+        time.sleep(interval)
+        try:
+            attn = {s["id"]: s for s in build_status()["services"] if _is_attention(s)}
+        except Exception:
+            continue
+        if not settled:
+            # Boot churn is not a failure: wait until the stack first reads clean, or 90s.
+            if not attn or (time.monotonic() - started) > 90:
+                settled = True
+                notified = set(attn)  # pre-settled failures were already surfaced at login
+            continue
+        for sid, svc in attn.items():
+            if sid not in notified:
+                _toast(svc)
+                notified.add(sid)
+        notified &= set(attn)  # a recovered service may earn a fresh toast if it fails again
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):  # quiet; journal handles logging
         pass
@@ -248,11 +313,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, body, "application/json")
             except Exception as e:  # never 500 the whole panel over one bad probe
                 self._send(200, json.dumps({"error": str(e)}).encode(), "application/json")
+        elif path == "/why":
+            from urllib.parse import parse_qs, urlsplit
+            sid = parse_qs(urlsplit(self.path).query).get("id", [""])[0]
+            self._send(200, json.dumps(why(sid)).encode(), "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
 
 def main():
+    threading.Thread(target=_notify_loop, daemon=True).start()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"AgentOS status panel → http://{HOST}:{PORT}", flush=True)
     try:
