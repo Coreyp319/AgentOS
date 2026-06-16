@@ -10,26 +10,33 @@
 //
 // Cross-browser: Firefox exposes `browser`, Chromium exposes `chrome`. Same MV3 APIs.
 const api = globalThis.browser ?? globalThis.chrome;
+// Firefox exposes `browser` (promise-based APIs); Chromium exposes `chrome` (callback-based).
+// This one difference matters: a callback passed to `browser.*` is IGNORED, so callback-style
+// code silently no-ops on Firefox. Detect once and branch where it counts.
+const isFirefox = typeof globalThis.browser !== "undefined" && !!globalThis.browser.runtime;
 
 const HOST = "org.agentos.create_video";
+const PARENT = "agentos-create";
 const ITEMS = [
   { id: "create-video", title: "Create Video from Image", private: false },
   { id: "create-video-private", title: "Create Video from Image (Private)", private: true },
 ];
 
-// Recreate the menu items idempotently on install/update/startup.
-function buildMenus() {
-  api.contextMenus.removeAll(() => {
-    // Reading lastError here just drains it; removeAll on a fresh profile has none.
-    void api.runtime.lastError;
-    for (const it of ITEMS) {
-      api.contextMenus.create({
-        id: it.id,
-        title: it.title,
-        contexts: ["image"],
-      });
-    }
-  });
+// Recreate the menus idempotently. async/await works on BOTH browsers: on Firefox removeAll()
+// returns a promise we await; on Chromium it returns undefined and `await undefined` is a no-op —
+// either way the create() calls run AFTER the clear. (The old code nested create() inside a
+// removeAll(callback); Firefox never fired that callback, so no items appeared.)
+async function buildMenus() {
+  try {
+    await api.contextMenus.removeAll();
+  } catch (_e) {
+    /* fresh profile / nothing to remove */
+  }
+  // A "Create" submenu so the browser mirrors the Dolphin "Create" section.
+  api.contextMenus.create({ id: PARENT, title: "Create", contexts: ["image"] });
+  for (const it of ITEMS) {
+    api.contextMenus.create({ id: it.id, parentId: PARENT, title: it.title, contexts: ["image"] });
+  }
 }
 
 api.runtime.onInstalled.addListener(buildMenus);
@@ -69,33 +76,43 @@ api.contextMenus.onClicked.addListener((info) => {
   }
   const payload = { url, private: isPrivateItem(info.menuItemId) };
 
-  // sendNativeMessage returns a Promise on Firefox and takes a callback on Chromium.
-  // The callback form works on both (Firefox supports it too), so use it and read lastError.
+  // One response handler for both browsers. err is non-null only on failure.
+  const handle = (response, err) => {
+    if (err) {
+      // Most common cause: the native host manifest isn't installed (run apply.sh),
+      // or (Chrome) the manifest's allowed_origins doesn't list THIS extension's ID.
+      toast(
+        "AgentOS native helper not reachable",
+        "Run integrations/browser-create-video/apply.sh, then reload this extension. " +
+          "On Chrome, also paste this extension's ID into the native host manifest.",
+      );
+      console.error("[AgentOS Create Video] native messaging error:", err.message || err);
+      return;
+    }
+    if (response && response.ok) {
+      toast(
+        payload.private ? "Creating your private video…" : "Creating your video…",
+        "The launcher is handling it — watch for a desktop notification. " +
+          "A real-person image will ask for consent first.",
+      );
+    } else {
+      const reason = (response && response.error) || "the helper refused the request";
+      toast("AgentOS — Create Video", `Not started: ${reason}.`);
+    }
+  };
+
+  // Firefox: promise-based (a trailing callback is ignored). Chromium: callback-based.
   try {
-    api.runtime.sendNativeMessage(HOST, payload, (response) => {
-      const err = api.runtime.lastError;
-      if (err) {
-        // Most common cause: the native host manifest isn't installed (run apply.sh),
-        // or (Chrome) the manifest's allowed_origins doesn't list THIS extension's ID.
-        toast(
-          "AgentOS native helper not reachable",
-          "Run integrations/browser-create-video/apply.sh, then reload this extension. " +
-            "On Chrome, also paste this extension's ID into the native host manifest.",
-        );
-        console.error("[AgentOS Create Video] native messaging error:", err.message || err);
-        return;
-      }
-      if (response && response.ok) {
-        toast(
-          payload.private ? "Creating your private video…" : "Creating your video…",
-          "The launcher is handling it — watch for a desktop notification. " +
-            "A real-person image will ask for consent first.",
-        );
-      } else {
-        const reason = (response && response.error) || "the helper refused the request";
-        toast("AgentOS — Create Video", `Not started: ${reason}.`);
-      }
-    });
+    if (isFirefox) {
+      api.runtime
+        .sendNativeMessage(HOST, payload)
+        .then((response) => handle(response, null))
+        .catch((e) => handle(null, e));
+    } else {
+      api.runtime.sendNativeMessage(HOST, payload, (response) =>
+        handle(response, api.runtime.lastError),
+      );
+    }
   } catch (e) {
     toast("AgentOS native helper not reachable", "Is the native host installed? See apply.sh.");
     console.error("[AgentOS Create Video] sendNativeMessage threw:", e);
