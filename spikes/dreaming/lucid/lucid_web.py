@@ -17,12 +17,15 @@ Endpoints:
 
 Run: python3 lucid_web.py   (port LUCID_WEB_PORT, default 8765; loopback only)
 """
+import base64
 import hmac
+import io
 import json
 import os
 import secrets
 import subprocess
 import sys
+import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -37,6 +40,12 @@ ORIGIN_OK = {f"http://{HOST}:{PORT}", f"http://localhost:{PORT}"}
 # Per-process CSRF token: embedded in the page, required as a header on every state-changing POST.
 # A cross-origin page can't read it (same-origin policy), so it closes the missing-Origin CSRF gap.
 CSRF = secrets.token_hex(16)
+# Bound the expensive start path (each upload = an image decode + a ~13s vision model load) so a
+# burst of /api/start can't exhaust memory / thrash the GPU the coordinator arbitrates (security).
+_START_SEM = threading.BoundedSemaphore(2)
+MAX_BODY = 30 * 1024 * 1024     # hard request-body ceiling (before reading)
+MAX_IMG = 20 * 1024 * 1024      # decoded-image-bytes ceiling
+MAX_PIXELS = 24_000_000         # ~6000x4000 — reject decompression bombs
 
 
 # ---------------- readiness probes (honest; never claim ready when blind) ----------------
@@ -92,6 +101,28 @@ def _synthetic_opening():
         d.line([(0, y), (720, y)],
                fill=(min(255, 18 + y // 12), min(255, 28 + y // 20), min(255, 60 + y // 9)))
     img.save(p)
+    return p
+
+
+def _decode_seed(raw):
+    """Validate uploaded bytes are a real image and re-encode to a clean PNG — strips EXIF
+    (GPS / camera / identity metadata, a privacy win) and normalizes the format for ComfyUI.
+    Guards against decompression bombs: a tiny PNG can claim gigapixels (security review)."""
+    from PIL import Image
+    import tempfile
+    import warnings
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)  # warn-band -> hard reject
+        Image.open(io.BytesIO(raw)).verify()             # raises if not a valid image
+        img = Image.open(io.BytesIO(raw))                # re-open (verify() leaves it unusable)
+        w, h = img.size
+        if w > 8192 or h > 8192 or w * h > MAX_PIXELS:
+            raise ValueError(f"image dimensions too large ({w}x{h})")
+        img = img.convert("RGB")                         # allocation happens here — now bounded
+    fd, p = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    img.save(p, "PNG")                                   # no EXIF carried into the PNG
     return p
 
 
@@ -157,12 +188,14 @@ async function load(){
    <button class=beat style="margin-top:10px;border-color:var(--brand-warm)" onclick='burnit()'>🔥 Burn this dream now</button></div>`;
  if(!s.chain){h+=`<div class=card><b>Start a dream</b>
    <div class=note style="margin-top:6px">Begin an interactive dream — then choose what happens next, one beat at a time.</div>
-   <label style="display:flex;gap:9px;align-items:flex-start;margin:14px 0;cursor:pointer">
+   <label style="display:block;margin:12px 0">Opening image <span class=note>(optional — an abstract frame is used if you don't pick one)</span><br>
+     <input type=file id=img accept="image/*" style="margin-top:6px;color:var(--inst-muted);max-width:100%"></label>
+   <label style="display:flex;gap:9px;align-items:flex-start;margin:12px 0;cursor:pointer">
      <input type=checkbox id=priv style="margin-top:3px">
      <span><b style="color:var(--brand-warm)">🔒 Private session</b>
      <span class=note>— ephemeral, sealed in RAM, not saved, not on the status hub, auto-burned on logout.</span></span></label>
-   <button class=beat onclick='startDream()'>✦ Begin a dream</button>
-   <div class=note style="margin-top:10px">Opens from an abstract frame for now — seed upload + the face/likeness guard (ADR-0015 B2) are owed.</div></div>`;}
+   <button class=beat onclick='startDream()' id=startbtn>✦ Begin a dream</button>
+   <div id=startmsg class=note style="margin-top:10px">An uploaded image is checked for real-person likeness before use (ADR-0017); its EXIF metadata is stripped.</div></div>`;}
  else{
    const n=s.chain.nodes;
    h+=`<div class=card><b>Your dream so far</b> · ${n.length} frame(s)`;
@@ -190,10 +223,21 @@ async function post(body){
 }
 function dream(i){const b=BEATS[i];if(b)post({prompt:b.prompt,label:b.label})}  // send the shown prompt, not a stale index
 function dreamOwn(){const v=document.getElementById('own').value.trim();if(v)post({prompt:v,label:'custom'})}
-async function startDream(){
- const priv=document.getElementById('priv').checked;
- const j=await (await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json','X-Lucid-Token':CSRF},body:JSON.stringify({private:priv})})).json();
- if(j.error)alert(j.error);load();}
+function fileB64(f){return new Promise(r=>{const rd=new FileReader();rd.onload=()=>r(rd.result.split(',')[1]);rd.readAsDataURL(f);});}
+async function startDream(consent){
+ const priv=document.getElementById('priv').checked, f=document.getElementById('img').files[0];
+ const msg=document.getElementById('startmsg'), btn=document.getElementById('startbtn');
+ const body={private:priv};
+ if(f){body.image_b64=await fileB64(f);body.consent=!!consent;msg.textContent='🔎 checking your image for real-person likeness…';btn.disabled=true;}
+ const j=await (await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json','X-Lucid-Token':CSRF},body:JSON.stringify(body)})).json();
+ btn.disabled=false;
+ if(j.blocked){
+   if(j.requires_consent){if(confirm(j.reason+'\\n\\nContinue?'))return startDream(true);msg.textContent='Cancelled.';return;}
+   msg.textContent='🚫 '+j.reason;return;  // hard block (e.g. possible minor) — not overridable
+ }
+ if(j.error){msg.textContent=j.error;return;}
+ load();
+}
 async function burnit(){if(!confirm('Burn this private dream now? This wipes every trace and cannot be undone.'))return;
  const j=await (await fetch('/api/burn',{method:'POST',headers:{'X-Lucid-Token':CSRF}})).json();
  alert('Burned '+(j.burned||0)+' sink(s).'+((j.failed&&j.failed.length)?' FAILED: '+j.failed.join('; '):''));load();}
@@ -241,6 +285,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, json.dumps({"error": "cross-origin refused"}), "application/json")
         try:
             n = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            n = 0
+        if n > MAX_BODY:   # reject an oversized body BEFORE reading it into memory (security)
+            return self._send(413, json.dumps({"error": "payload too large"}), "application/json")
+        try:
             req = json.loads(self.rfile.read(n) or "{}") if n else {}
         except Exception:
             return self._send(400, json.dumps({"error": "bad request"}), "application/json")
@@ -248,20 +297,50 @@ class Handler(BaseHTTPRequestHandler):
             removed, failed = L.burn(SESSION)
             return self._send(200, json.dumps({"ok": not failed, "burned": len(removed),
                                                "failed": failed}), "application/json")
-        if path == "/api/start":  # begin a dream (optionally private) from a synthetic opening
+        if path == "/api/start":  # begin a dream; uploaded image (B2-gated in start) or synthetic frame
             private = bool(req.get("private"))
-            L.ST.clear(SESSION)   # clean any prior session of this name before a fresh start
-            seed = _synthetic_opening()
+            consent = bool(req.get("consent"))
+            img_b64 = req.get("image_b64")
+            if not _START_SEM.acquire(blocking=False):   # bound concurrent decode + vision-model loads
+                return self._send(429, json.dumps({"error": "busy — try again in a moment"}), "application/json")
             try:
-                L.start(SESSION, seed, private=private, _trusted_seed=True)
-            except Exception as e:
-                return self._send(200, json.dumps({"error": f"start failed: {e}"}), "application/json")
-            finally:
+                L.ST.clear(SESSION)   # clean any prior session of this name before a fresh start
+                if img_b64:
+                    if not readiness()["ollama"]:   # B2 needs the vision model; fail fast, don't hang
+                        return self._send(200, json.dumps({"error": "can't check the image — the narrator (Ollama) is unavailable"}), "application/json")
+                    try:
+                        raw = base64.b64decode(img_b64, validate=True)
+                        if len(raw) > MAX_IMG:
+                            raise ValueError("image too large (max 20 MB)")
+                        seed = _decode_seed(raw)
+                    except Exception as e:
+                        return self._send(200, json.dumps({"error": f"invalid image: {e}"}), "application/json")
+                    try:
+                        L.start(SESSION, seed, private=private, consent=consent)  # B2 runs INSIDE start()
+                    except L.SeedBlocked as e:
+                        return self._send(200, json.dumps({"blocked": True, **e.verdict.as_dict()}), "application/json")
+                    except Exception as e:
+                        return self._send(200, json.dumps({"error": f"start failed: {e}"}), "application/json")
+                    finally:
+                        try:
+                            os.remove(seed)
+                        except OSError:
+                            pass
+                    return self._send(200, json.dumps({"ok": True, "private": private}), "application/json")
+                # no image -> a server-generated abstract opening (trusted; no real person)
+                seed = _synthetic_opening()
                 try:
-                    os.remove(seed)
-                except OSError:
-                    pass
-            return self._send(200, json.dumps({"ok": True, "private": private}), "application/json")
+                    L.start(SESSION, seed, private=private, _trusted_seed=True)
+                except Exception as e:
+                    return self._send(200, json.dumps({"error": f"start failed: {e}"}), "application/json")
+                finally:
+                    try:
+                        os.remove(seed)
+                    except OSError:
+                        pass
+                return self._send(200, json.dumps({"ok": True, "private": private}), "application/json")
+            finally:
+                _START_SEM.release()
         rd = readiness()
         if not rd["can_dream"]:
             return self._send(200, json.dumps({"error": "not ready — " + "; ".join(rd["why"])}),
