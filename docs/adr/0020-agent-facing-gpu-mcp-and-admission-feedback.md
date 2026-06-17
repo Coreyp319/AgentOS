@@ -98,10 +98,11 @@ Tool surface, in two tiers of trust:
 
 Adopt CONCUR as **design inspiration, not a dependency** (it is a Jan-2026 research preprint, not an
 MIT crate). The current admission gate is a static predict-before-load check against the learned
-footprint. Phase 2 adds a **feedback controller** that modulates how many agent-tier leases are
-admitted concurrently, using runtime **KV-cache pressure** as the signal, AIMD-style (additive
-increase while pressure is low, multiplicative back-off when it spikes), at **agent granularity**
-(admit/hold the agent, not the individual request — matching Hermes/Claude Code's natural unit).
+footprint. Phase 2 would add a **feedback controller** that modulates how many agent-tier leases are
+admitted concurrently, using a runtime **congestion** signal, AIMD-style (additive increase while
+pressure is low, multiplicative back-off when it spikes), at **agent granularity** (admit/hold the
+agent, not the individual request — matching Hermes/Claude Code's natural unit). CONCUR frames that
+signal as KV-cache pressure; which signal is actually reachable here is resolved below.
 
 Two guard rails make this compatible with the existing decisions:
 
@@ -110,11 +111,20 @@ Two guard rails make this compatible with the existing decisions:
   `lease.rs` deliberately declined a wait-queue. A CONCUR controller that only gates *how many*
   agents are admitted at once — leaving ordering untouched — is **compatible**. If a future design
   needs ordering/priority, it must **supersede ADR-0019 explicitly**, not smuggle it in here.
-- **It is conditional on a usable feedback signal.** Open question from research 0011: does
-  Ollama/llama.cpp expose a *runtime* KV-cache-pressure/utilization signal, vs only the static
-  `/api/ps size_vram`? **If no live signal exists, Phase 2 does not ship** — we keep the static
-  learned-footprint admission (already correct) rather than build a controller on a guessed input.
-  This is the fail-open default.
+- **It is conditional on a usable feedback signal — and the literal KV signal is NOT available
+  (resolved 2026-06-16).** Investigation (probe of the live Ollama 0.30.7 + primary sources): Ollama
+  exposes **no** runtime KV-cache-pressure signal — `/api/ps` is static (`size_vram`, `expires_at`),
+  there is no `/metrics` (Ollama issue #3144, open since 2024), and it does not surface llama.cpp's
+  `/slots` (issue #6670, closed undelivered). llama.cpp itself has no merged `kv_cache_usage_ratio`
+  metric yet (PR #24010, unmerged as of 2026-06). The only path to a true KV signal is running
+  `llama-server` standalone — an architectural move that cuts against ADR-0002 (Ollama owns the
+  runtime) and is explicitly **out of scope**.
+  **Decision:** Phase 2, if it ever ships, keys its AIMD loop on signals already reachable *without
+  reinventing anything* — **in-flight request count at the existing axum proxy** (congestion depth)
+  and **NVML free-VRAM headroom** (the resource KV pressure ultimately consumes, already read by
+  `keyhole`/`telemetry`) — a CONCUR-*shaped* controller on observable congestion, not the literal KV
+  ratio. Absent even that, the fail-open default stands: keep the static learned-footprint admission
+  (already correct). **No controller is built now.**
 
 ### 3. Sequencing
 
@@ -174,8 +184,11 @@ is a feedback wrapper around the existing static gate and falls back to it.
 
 ## Open questions (carried from research 0011)
 
-1. Does Ollama/llama.cpp expose a runtime KV-cache-pressure signal usable as the AIMD feedback input?
-   (Blocks Phase 2.)
+1. ~~Does Ollama/llama.cpp expose a runtime KV-cache-pressure signal usable as the AIMD feedback
+   input?~~ **Answered (2026-06-16): no.** Ollama exposes no `/metrics` (issue #3144) and no `/slots`
+   (issue #6670); `/api/ps` is static; llama.cpp's `kv_cache_usage_ratio` is unmerged (PR #24010). A
+   true KV signal needs standalone `llama-server` (out of scope, anti-ADR-0002). Phase 2's signal
+   therefore pivots to proxy in-flight count + NVML VRAM headroom, or stays deferred (§2).
 2. Identity model for the MCP `act` verbs: how does the server scope a token to a caller across the
    Claude Code ↔ Hermes ↔ agentosd boundary so one agent can't `Release` another's lease?
 3. Is the `gpu_why` telemetry event log rich enough to explain a specific caller's last wait, or does
