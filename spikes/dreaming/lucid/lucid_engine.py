@@ -35,6 +35,7 @@ import urllib.request
 # import the shared ComfyUI client from the parent spike dir
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import comfy_client as cc  # noqa: E402
+import lucid_models  # noqa: E402  (registry: the beat model is an editable affiliation, not hardcoded)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_WF = os.path.join(HERE, "..", "workflows", "Wan2.2-Remix-NSFW-i2v-v3.0.json")
@@ -46,9 +47,11 @@ DREAMS_DIR = os.environ.get(
         "agentos", "dreams"))
 
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-# beat-gen is a tiny task; use whatever's available. keep_alive:0 evicts it so
-# the GPU is free for the video step (ADR-0009 §3 mutual exclusion).
-MODEL = os.environ.get("LUCID_MODEL", "gemma4:latest")
+# beat-gen is a tiny text task — resolve the model from the registry ("narrator" role) so it is an
+# editable affiliation, not hardcoded. A SMALL model (qwen2.5vl:3b, 3.2 GB) frees in ~3s under
+# force_evict and can coexist with the lighter video models; gemma4 (9.6 GB) was slow/wedge-prone to
+# evict and blocked the video step every turn (ADR-0015 §3 force-evict / ADR-0018 small-model lane).
+MODEL = os.environ.get("LUCID_MODEL") or lucid_models.get("narrator", "qwen2.5vl:3b")
 
 DEFAULT_W, DEFAULT_H, DEFAULT_LEN = 720, 1280, 33  # ~2s portrait @16fps; matches the
 # workflow's baked WanImageToVideo length and stays under the VRAM-thrash line (ADR-0014 §6)

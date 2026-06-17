@@ -1,0 +1,164 @@
+<!DOCTYPE html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Lucid · the dreaming moment (design exploration)</title>
+<!--
+  THROWAWAY design exploration (frontend-design pass, 2026-06-16). NOT the shipping surface.
+  Proposes a distinctive, in-register direction for Lucid's ONE signature moment: the dream
+  *developing* while the GPU generates the next clip over minutes. Stays calm + honest (no fake
+  %, ADR-0014's "the waiting must be designed, not a spinner") and stays in the deep-navy
+  instrument register — but earns character through an editorial type pairing, atmospheric grain,
+  and one slow hypnotic "developing frame" instead of a 9px pulsing dot.
+  Open in a browser. Buttons at the bottom flip between the three honest turn states.
+-->
+<link rel=preconnect href="https://fonts.googleapis.com">
+<link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..500&display=swap" rel=stylesheet>
+<style>
+:root{
+ /* instrument register (canon) + a darker void for the hero frame */
+ --void:#090b11; --base:#12141c; --deep:#161a28; --horizon:#1a2238;
+ --text:#e9ecf3; --muted:#8a90a0; --label:#7a8090; --hair:rgba(255,255,255,.07);
+ --blue:#7aa2ff;
+ /* cool dream hues — deliberately NOT magenta/purple slop */
+ --aur-1:#5fd0c8; --aur-2:#8aa6ff; --aur-3:#6f7bd6; --aur-4:#4a7fd0;
+ --display:"Fraunces",Georgia,serif;
+ --data:ui-sans-serif,system-ui,"SF Pro Text",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;color:var(--text);font-family:var(--data);font-size:15px;line-height:1.55;
+ background:
+  radial-gradient(120% 80% at 82% -12%, color-mix(in srgb,var(--blue) 9%,transparent), transparent 55%),
+  radial-gradient(90% 70% at 8% 108%, color-mix(in srgb,var(--aur-1) 7%,transparent), transparent 55%),
+  linear-gradient(168deg, var(--base), var(--deep) 46%, var(--horizon));
+ min-height:100vh;display:flex;flex-direction:column;align-items:center;
+ -webkit-font-smoothing:antialiased}
+/* fine film grain — atmosphere, not a flat fill */
+body::after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.04;mix-blend-mode:overlay;
+ background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+.wrap{width:100%;max-width:680px;padding:40px 24px 28px;display:flex;flex-direction:column;gap:22px;flex:1}
+
+/* wordmark — the editorial signature, low-contrast and unhurried */
+.brand{display:flex;align-items:baseline;gap:14px;animation:rise .9s cubic-bezier(.2,.7,.2,1) both}
+.brand .mark{font-family:var(--display);font-optical-sizing:auto;font-weight:340;font-size:2.5rem;
+ letter-spacing:-.01em;line-height:1;background:linear-gradient(180deg,#fff,#aeb7cf);
+ -webkit-background-clip:text;background-clip:text;color:transparent}
+.brand .tag{font-family:var(--display);font-style:italic;font-weight:340;font-size:1rem;color:var(--muted)}
+
+/* the hero: a frame developing out of the dark */
+.stage{position:relative;border-radius:20px;overflow:hidden;border:1px solid var(--hair);
+ aspect-ratio:16/10;background:var(--void);box-shadow:0 30px 80px -40px #000, inset 0 0 0 1px rgba(255,255,255,.02);
+ animation:rise 1s .08s cubic-bezier(.2,.7,.2,1) both}
+/* drifting aurora — three slow blurred lobes; the dream taking shape */
+.aurora{position:absolute;inset:-25%;filter:blur(46px) saturate(115%);opacity:.0;
+ animation:develop 7s 1s ease forwards}
+.aurora i{position:absolute;border-radius:50%;mix-blend-mode:screen}
+.aurora i:nth-child(1){width:46%;height:60%;left:8%;top:14%;background:radial-gradient(circle,var(--aur-1),transparent 62%);animation:drift1 19s ease-in-out infinite}
+.aurora i:nth-child(2){width:54%;height:64%;right:4%;top:6%;background:radial-gradient(circle,var(--aur-2),transparent 62%);animation:drift2 23s ease-in-out infinite}
+.aurora i:nth-child(3){width:50%;height:56%;left:24%;bottom:0%;background:radial-gradient(circle,var(--aur-3),transparent 62%);animation:drift3 27s ease-in-out infinite}
+/* a slow horizontal "scan" that reads as the frame resolving, not a progress bar */
+.scan{position:absolute;inset:0;background:linear-gradient(100deg,transparent 38%,rgba(255,255,255,.05) 50%,transparent 62%);
+ background-size:280% 100%;animation:scan 6.5s linear infinite;opacity:.0;animation-delay:1.2s}
+.aurora.on,.scan.on{}
+.stage .caption{position:absolute;left:0;right:0;bottom:0;padding:26px 26px 22px;z-index:2;
+ background:linear-gradient(0deg,rgba(9,11,17,.86),transparent)}
+.beat{font-family:var(--display);font-style:italic;font-weight:380;font-size:1.5rem;line-height:1.25;
+ letter-spacing:.005em;color:#eef1f8;text-wrap:balance;margin:0;max-width:32ch}
+.beat::before{content:"“";opacity:.45}.beat::after{content:"”";opacity:.45}
+
+/* the honest readout under the frame */
+.meta{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;
+ animation:rise 1s .16s cubic-bezier(.2,.7,.2,1) both}
+.state{display:flex;align-items:center;gap:11px}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--blue);box-shadow:0 0 0 0 color-mix(in srgb,var(--blue) 60%,transparent);
+ animation:pulse 2.6s ease-in-out infinite}
+.state b{font-weight:500;letter-spacing:.01em}
+.state .sub{color:var(--label);font-size:.82rem}
+.elapsed{font-family:var(--display);font-optical-sizing:auto;font-weight:300;font-variant-numeric:tabular-nums;
+ font-size:2.4rem;line-height:1;color:#cfd6e6;letter-spacing:.01em}
+.line{color:var(--label);font-size:.82rem;max-width:60ch;animation:rise 1s .24s cubic-bezier(.2,.7,.2,1) both}
+.line a{color:var(--blue);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--blue) 40%,transparent)}
+
+/* the OTHER two states, for honest contrast */
+.done .stage{background:linear-gradient(160deg,#10131d,#0c0e15)}
+.done .aurora{opacity:.55;animation:none}
+.done .aurora i{animation-duration:34s}
+.skipped .stage .aurora,.skipped .scan{opacity:0;animation:none}
+.skipped .stage{background:repeating-linear-gradient(135deg,#0c0e15 0 12px,#0e1118 12px 24px)}
+
+.switch{display:flex;gap:8px;padding:14px 0 4px;border-top:1px solid var(--hair);margin-top:auto}
+.switch button{font:inherit;font-size:.82rem;color:var(--muted);background:transparent;border:1px solid var(--hair);
+ padding:8px 13px;border-radius:9px;cursor:pointer;transition:.15s}
+.switch button:hover{border-color:var(--blue);color:var(--text)}
+.switch button[aria-current=true]{color:var(--text);border-color:color-mix(in srgb,var(--blue) 45%,transparent);
+ background:color-mix(in srgb,var(--blue) 9%,transparent)}
+.foot{font-size:.72rem;color:var(--label);padding-bottom:24px}
+
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes develop{0%{opacity:0}100%{opacity:.62}}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--blue) 55%,transparent)}
+ 50%{box-shadow:0 0 0 7px transparent}}
+@keyframes scan{0%{background-position:160% 0}100%{background-position:-160% 0}}
+@keyframes drift1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(12%,-8%) scale(1.12)}}
+@keyframes drift2{0%,100%{transform:translate(0,0) scale(1.05)}50%{transform:translate(-10%,9%) scale(.92)}}
+@keyframes drift3{0%,100%{transform:translate(0,0) scale(.95)}50%{transform:translate(8%,-12%) scale(1.1)}}
+@media (prefers-reduced-motion:reduce){
+ .aurora,.scan,.pulse,.brand,.stage,.meta,.line{animation:none!important}
+ .aurora{opacity:.5}
+}
+</style></head>
+<body>
+<div class=wrap id=root>
+ <div class=brand><span class=mark>Lucid</span><span class=tag>— a dream, one beat at a time</span></div>
+
+ <div class=stage>
+  <div class="aurora"><i></i><i></i><i></i></div>
+  <div class=scan></div>
+  <div class=caption><p class=beat id=beat>she steps off the path, into the bright dark of the trees</p></div>
+ </div>
+
+ <div class=meta>
+  <div class=state>
+   <span class=pulse></span>
+   <span><b id=stateb>Dreaming this beat</b><br><span class=sub id=statesub>the next clip is forming</span></span>
+  </div>
+  <div class=elapsed id=elapsed>1:48</div>
+ </div>
+
+ <div class=line id=line>Generated through the graphics lease, so it never crowds out your other apps —
+  you can watch the turn in the <a href="#">keyhole</a>. A clip takes a few minutes; nothing else waits on it.</div>
+
+ <div class=switch>
+  <button aria-current=true onclick="setState('dreaming',this)">Dreaming</button>
+  <button onclick="setState('done',this)">Done</button>
+  <button onclick="setState('skipped',this)">Skipped (fail-open)</button>
+ </div>
+ <div class=foot>Design exploration · not the shipping surface · open the real one at :8765</div>
+</div>
+<script>
+ const root=document.getElementById('root');
+ let secs=108, timer=null;
+ const el=id=>document.getElementById(id);
+ function tick(){secs++;const m=Math.floor(secs/60),s=secs%60;el('elapsed').textContent=m+':'+String(s).padStart(2,'0');}
+ function setState(name,btn){
+  document.querySelectorAll('.switch button').forEach(b=>b.setAttribute('aria-current', b===btn));
+  root.className='wrap '+name; clearInterval(timer);
+  if(name==='dreaming'){
+   el('stateb').textContent='Dreaming this beat'; el('statesub').textContent='the next clip is forming';
+   el('elapsed').style.visibility='visible'; el('beat').textContent='she steps off the path, into the bright dark of the trees';
+   el('line').innerHTML='Generated through the graphics lease, so it never crowds out your other apps — you can watch the turn in the <a href="#">keyhole</a>. A clip takes a few minutes; nothing else waits on it.';
+   timer=setInterval(tick,1000);
+  }else if(name==='done'){
+   el('stateb').textContent='This beat is yours'; el('statesub').textContent='the story moved forward';
+   el('elapsed').style.visibility='hidden'; el('beat').textContent='she steps off the path, into the bright dark of the trees';
+   el('line').innerHTML='Choose what happens next — the next clip picks up from this last frame.';
+  }else{
+   el('stateb').textContent='This beat was skipped'; el('statesub').textContent='the graphics card was needed elsewhere';
+   el('elapsed').style.visibility='hidden'; el('beat').textContent='the dream waits — your desktop is untouched';
+   el('line').innerHTML='Lucid fails open: when the GPU is needed for something live, the dream steps back rather than fighting for it. Choose again when you\'re ready.';
+  }
+ }
+ setState('dreaming',document.querySelector('.switch button'));
+</script>
+</body></html>

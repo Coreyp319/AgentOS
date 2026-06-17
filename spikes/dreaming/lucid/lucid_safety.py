@@ -10,7 +10,8 @@ Gates:
   validate_beats(raw_json_text, n)  -> list[{"label","prompt"}]   (B3 schema; total, never raises)
   red_line_ok(text)                 -> bool                        (B3/B2-text; fail-closed filter)
   gate_prompt(text)                 -> str | None                  (the single chokepoint, both paths)
-  confirm_evicted(model, ...)       -> bool                        (B1 eviction-confirm, no keep_alive hope)
+  force_evict(model, ...)           -> bool                        (B1 ACTIVE evict: `ollama stop`, then confirm)
+  confirm_evicted(model, ...)       -> bool                        (B1 eviction-confirm half; fail-closed verify)
 
 The red-line TERM LIST is a conservative starting set; the real content (and a classifier) is owed
 to responsible-ai-privacy-skeptic + security-reviewer (ADR-0015 "still owed"). What is NOT owed and
@@ -126,3 +127,32 @@ def _resident_models(ollama_host):
         return {m.get("name") for m in data.get("models", [])}
     except Exception:
         return None
+
+
+# --- B1 (active half): gracefully EVICT the beat model before the video lease (ADR-0015 §3) ---
+def force_evict(model, ollama_host="http://127.0.0.1:11434", timeout=30, poll=1.0,
+                _now=None, _sleep=None, _stop=None):
+    """Actively release `model` from VRAM, THEN confirm it is gone. Returns True iff confirmed
+    evicted. `keep_alive:0` alone is only a hint — it was observed NOT to land while the web surface
+    keeps the beat model warm (every page view reloads it via /api/beats), so the confirm-only gate
+    timed out every turn and the dream perpetually skipped. ADR-0018 measured `ollama stop` as the
+    lever that actually frees VRAM, so B1 now MAKES the eviction happen instead of hoping for it.
+    Still fail-closed: an unreachable Ollama, a refused stop, or a model another consumer keeps
+    reloading all return False — the video must not acquire VRAM on unconfirmed state (ADR-0015 §3).
+    `_stop` is injectable for tests (no real daemon)."""
+    (_stop or _ollama_stop)(model, ollama_host)   # graceful; best-effort; confirm_evicted is the arbiter
+    return confirm_evicted(model, ollama_host, timeout=timeout, poll=poll, _now=_now, _sleep=_sleep)
+
+
+def _ollama_stop(model, ollama_host):
+    """`ollama stop <model>` over HTTP — an unload request (`keep_alive:0`, no prompt → no
+    generation), the ADR-0018 graceful evictor (`POST /free` freed 0 MiB; this code path works).
+    Best-effort: any failure is swallowed (confirm_evicted is the fail-closed arbiter of whether VRAM
+    actually freed)."""
+    try:
+        body = json.dumps({"model": model, "keep_alive": 0}).encode()
+        req = urllib.request.Request(ollama_host + "/api/generate", data=body,
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception:
+        pass

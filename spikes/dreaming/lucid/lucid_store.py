@@ -212,6 +212,56 @@ def clear(session):
     return removed
 
 
+def purge_persistent(session):
+    """Delete a PERSISTENT dream's EVERY sink — its chain dir, its clips (output/lucid/) AND its
+    anchor/seed frames (flat in ComfyUI input/). `clear()`/the old delete only dropped the chain
+    dir, leaving clips + frames on disk (privacy-review: "delete must reach all three sinks").
+    Reads the chain for the exact file set, with an allowlist-bounded prefix sweep as a safety net
+    for orphans. Symlink-aware, verifies removal. Returns (removed, failed). Private sinks are the
+    job of burn(); this only ever touches persistent paths, so it's a no-op on a private session."""
+    _require(session)
+    import lucid_engine as E
+    removed, failed = [], []
+
+    def _rm(p):
+        if not p or not os.path.lexists(p):
+            return
+        if os.path.islink(p):                          # never delete THROUGH a planted symlink
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+            failed.append(f"{p} (symlink — target NOT wiped)")
+            return
+        try:
+            shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else os.remove(p)
+        except OSError:
+            pass
+        (removed if not os.path.lexists(p) else failed).append(p)  # verify before counting deleted
+
+    # 1. the precise, complete set named in the chain (clips + every anchor/seed frame)
+    try:
+        chain = load_chain(session, False)
+    except Exception:
+        chain = None
+    if chain:
+        for nd in chain.get("nodes", []):
+            _rm(nd.get("clip"))
+            of = nd.get("out_frame")
+            if of and valid_name(os.path.basename(of)):
+                _rm(os.path.join(E.INPUT_DIR, os.path.basename(of)))
+    # 2. safety-net sweep for orphans — `session` is allowlist-validated, so the '{session}_' prefix
+    #    can't traverse, and the trailing '_' keeps session "web" from ever matching "web2_*".
+    for base in (E.INPUT_DIR, os.path.join(E.cc.COMFY_ROOT, "output", "lucid")):
+        if os.path.isdir(base):
+            for fn in os.listdir(base):
+                if fn.startswith(f"{session}_"):
+                    _rm(os.path.join(base, fn))
+    # 3. the chain dir itself
+    _rm(session_dir(session, False))
+    return removed, failed
+
+
 def list_private():
     """Live private sessions: those with a tmpfs session dir."""
     root = _runtime_root()

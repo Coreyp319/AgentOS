@@ -1,0 +1,119 @@
+/* AgentOS instrument register (canon: integrations/design/instrument-tokens.md) + the Lucid-only
+   authored-narrative serif. Data stays system-font; serif (Fraunces) is legal ONLY on the wordmark,
+   the beat caption, and the elapsed timer (per the visual-systems + brand reviews). */
+:root{
+  --inst-base:#12141c; --inst-deep:#161a28; --inst-horizon:#1a2238;
+  --inst-text:#e6e9f0; --inst-muted:#8a90a0; --inst-label:#878c9b; /* G7/ADR-0019 F1b: #7a8090→#878c9b clears AA 4.53:1 on glass card */
+  --inst-blue:#7aa2ff; --inst-warm:#ff9957; --brand-warm:#e0884f;
+  --glass:rgba(38,42,54,.46); --hairline:rgba(255,255,255,.07);
+  --st-up:#74d39a; --st-idle:#757c8e; --st-unknown:#6f7894; --st-red:#ec7676; --st-amber:#f2c879;
+  --st-red-line:color-mix(in srgb,var(--st-red) 40%,transparent);
+  --blue-wash:color-mix(in srgb,var(--inst-blue) 11%,transparent);
+  --display:"Fraunces Variable",Georgia,"Times New Roman",serif; /* serif never rendered in a warm token */
+  --fs-sm:.8125rem; --fs-xs:.75rem;
+  --radius-sm:9px; --radius-md:16px; --blur-raised:14px;
+}
+@media (prefers-reduced-transparency:reduce){ :root{ --glass:rgba(24,28,40,.94) } .card,.stage{ backdrop-filter:none } }
+
+*{ box-sizing:border-box }
+body{
+  margin:0; color:var(--inst-text); font:15px/1.55 system-ui,sans-serif; min-height:100vh;
+  background:
+    radial-gradient(1000px 600px at 80% -10%, color-mix(in srgb,var(--inst-blue) 8%,transparent), transparent 60%),
+    linear-gradient(160deg, var(--inst-base), var(--inst-deep) 45%, var(--inst-horizon));
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{ max-width:760px; margin:0 auto; padding:36px 20px 72px; display:flex; flex-direction:column; gap:14px }
+
+/* wordmark — the editorial signature (flat ink, per brand review; not the gradient) */
+.brand{ display:flex; align-items:baseline; gap:12px; margin-bottom:6px }
+.mark{ font-family:var(--display); font-optical-sizing:auto; font-weight:360; font-size:2.4rem;
+  line-height:1; letter-spacing:-.01em; color:var(--inst-text) }
+.tag{ font-family:var(--display); font-style:italic; font-weight:360; font-size:1rem; color:var(--inst-muted) }
+
+.card{ background:var(--glass); border:1px solid var(--hairline); border-radius:var(--radius-md);
+  padding:18px 20px; backdrop-filter:blur(var(--blur-raised)) }
+.card.private{ border-color:var(--hairline) }
+.card-title{ font-weight:600 }
+
+/* readiness — function-named dots with a screen-reader text equivalent (never colour alone) */
+.ready{ display:flex; gap:18px; flex-wrap:wrap; font-size:var(--fs-sm); color:var(--inst-muted) }
+.item{ display:inline-flex; align-items:center; gap:7px }
+.dot{ width:9px; height:9px; border-radius:50%; flex:0 0 auto }
+.dot.on{ background:var(--st-up) }
+.dot.off{ background:transparent; border:1.5px solid var(--st-idle) }
+
+.banner{ margin-top:10px; color:var(--inst-text); font-size:var(--fs-sm) }
+.banner.bad{ color:var(--st-red) } .banner.good{ color:var(--st-up) }
+.note{ color:var(--inst-label); font-size:var(--fs-xs) }
+.lock{ color:var(--inst-text); font-weight:600 }
+
+button{ font:inherit }
+.beat{ display:block; width:100%; text-align:left; background:var(--blue-wash); border:1px solid var(--hairline);
+  color:var(--inst-text); border-radius:var(--radius-sm); padding:12px 14px; margin:8px 0; cursor:pointer }
+.beat:hover{ border-color:var(--inst-blue) }
+.beat b{ display:block; color:var(--inst-blue); margin-bottom:2px }
+.beat small{ color:var(--inst-muted) }
+.beat.danger{ background:transparent; border-color:var(--st-red-line) }
+.beat.danger:hover{ border-color:var(--st-red) }
+.ghost{ background:transparent; border:1px solid var(--hairline); color:var(--inst-muted);
+  border-radius:var(--radius-sm); padding:12px 14px; cursor:pointer }
+.ghost:hover{ border-color:var(--inst-muted) }
+.row{ display:flex; gap:8px; margin-top:10px; flex-wrap:wrap }
+/* likeness consent — the one "needs you" warm cue (B2/ADR-0017): a real-person seed needs the user
+   to assert they have the right. Warm accent, never alarming red (that stays reserved for danger). */
+.consent{ margin-top:12px; padding:12px 14px; border-radius:var(--radius-sm);
+  border:1px solid color-mix(in srgb,var(--brand-warm) 50%,transparent); border-left:3px solid var(--brand-warm);
+  background:color-mix(in srgb,var(--brand-warm) 8%,transparent) }
+.beat.warm{ background:color-mix(in srgb,var(--brand-warm) 15%,transparent);
+  border-color:color-mix(in srgb,var(--brand-warm) 45%,transparent) }
+.beat.warm b{ color:var(--brand-warm) }
+.beat.warm:hover{ border-color:var(--brand-warm) }
+input[type=text]{ width:100%; background:var(--inst-deep); border:1px solid var(--hairline); color:var(--inst-text);
+  border-radius:var(--radius-sm); padding:11px 14px; font:inherit; margin-top:10px }
+input[type=file]{ color:var(--inst-muted); margin-top:6px; max-width:100% }
+label.block{ display:block; margin:12px 0 }
+label.check{ display:flex; gap:9px; align-items:flex-start; margin:14px 0; cursor:pointer }
+:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:2px }
+a{ color:var(--inst-blue) }
+
+/* ---- the dreaming hero: a frame developing out of the dark (ADR-0014: "the clip developing, not a spinner") ---- */
+.stage{ position:relative; border-radius:var(--radius-md); overflow:hidden; border:1px solid var(--hairline);
+  aspect-ratio:16/10; background:#090b11; box-shadow:0 24px 64px -42px #000 }
+.aurora{ position:absolute; inset:-24%; filter:blur(42px) saturate(115%); opacity:0; animation:develop 7s 1s ease forwards }
+.aurora i{ position:absolute; border-radius:50%; mix-blend-mode:screen; display:block }
+.aurora i:nth-child(1){ width:46%; height:60%; left:8%; top:14%; background:radial-gradient(circle,#5fd0c8,transparent 62%); animation:drift1 19s ease-in-out infinite }
+.aurora i:nth-child(2){ width:54%; height:64%; right:4%; top:6%; background:radial-gradient(circle,#8aa6ff,transparent 62%); animation:drift2 23s ease-in-out infinite }
+.aurora i:nth-child(3){ width:50%; height:56%; left:24%; bottom:0; background:radial-gradient(circle,#6f7bd6,transparent 62%); animation:drift3 27s ease-in-out infinite }
+.grain{ position:absolute; inset:0; opacity:.05; mix-blend-mode:overlay; pointer-events:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") }
+.cap{ position:absolute; left:0; right:0; bottom:0; padding:22px; z-index:2;
+  background:linear-gradient(0deg,rgba(9,11,17,.86),transparent) }
+.beat-q{ font-family:var(--display); font-style:italic; font-weight:380; font-size:1.4rem; line-height:1.28;
+  color:#eef1f8; margin:0; max-width:34ch }
+.dreamrow{ display:flex; align-items:baseline; justify-content:space-between; gap:14px; flex-wrap:wrap }
+.elapsed-xl{ font-family:var(--display); font-weight:400; font-variant-numeric:tabular-nums;
+  font-size:2rem; line-height:1; color:#cfd6e6 }
+
+/* ---- clip player — keep portrait clips from dominating the column ---- */
+.vid,.still{ width:100%; max-height:56vh; object-fit:contain; display:block; background:#090b11;
+  border-radius:var(--radius-md); border:1px solid var(--hairline) }
+.strip{ display:flex; gap:8px; overflow-x:auto; padding:10px 0 2px }
+.thumb{ flex:0 0 auto; width:64px; border:1px solid var(--hairline); border-radius:8px; overflow:hidden;
+  cursor:pointer; background:#090b11; padding:0 }
+.thumb.sel{ border-color:var(--inst-blue) }
+.thumb img{ width:100%; aspect-ratio:9/16; object-fit:cover; display:block }
+.thumb .cap2{ font-size:10px; color:var(--inst-muted); padding:3px 4px; text-align:left;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+
+.flash{ position:fixed; left:50%; top:14px; transform:translateX(-50%); z-index:50; max-width:90vw;
+  background:var(--inst-deep); border:1px solid var(--st-red-line); color:var(--st-red);
+  padding:10px 16px; border-radius:var(--radius-sm); font-size:var(--fs-sm); box-shadow:0 12px 40px -16px #000 }
+.sr{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0 }
+
+@keyframes develop{ from{ opacity:0 } to{ opacity:.6 } }
+@keyframes drift1{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(12%,-8%) scale(1.12) } }
+@keyframes drift2{ 0%,100%{ transform:translate(0,0) scale(1.05) } 50%{ transform:translate(-10%,9%) scale(.92) } }
+@keyframes drift3{ 0%,100%{ transform:translate(0,0) scale(.95) } 50%{ transform:translate(8%,-12%) scale(1.1) } }
+@media (prefers-reduced-motion:reduce){ .aurora,.aurora i{ animation:none } .aurora{ opacity:.5 } }
+@media (prefers-reduced-transparency:reduce){ .grain{ display:none } }

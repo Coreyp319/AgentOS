@@ -75,6 +75,20 @@ S._resident_models = lambda host: None  # Ollama unreachable = unknown residency
 check("unknown residency -> False (fail-closed, never admits video)",
       S.confirm_evicted("gemma4:latest", timeout=30, _now=lambda: next(_clock2), _sleep=lambda *_: None) is False)
 
+# --- force_evict (B1 active half): attempts the stop, THEN gates on confirm_evicted ---
+_stops = []
+S._resident_models = lambda host: {"some-other:model"}   # beat model absent after the stop
+check("force_evict stops then confirms gone -> True",
+      S.force_evict("gemma4:latest", _now=lambda: 0, _sleep=lambda *_: None,
+                    _stop=lambda m, h: _stops.append(m)) is True)
+check("force_evict actually issued the stop (teeth, not hope)", _stops == ["gemma4:latest"])
+
+_clock3 = iter([0, 0, 31])
+S._resident_models = lambda host: {"gemma4:latest"}      # stop didn't free it (another consumer holds it)
+check("force_evict still fail-closed when stop doesn't free VRAM -> False",
+      S.force_evict("gemma4:latest", timeout=30, _now=lambda: next(_clock3), _sleep=lambda *_: None,
+                    _stop=lambda m, h: None) is False)
+
 # --- report ---
 print(f"lucid_safety: {ok} passed, {len(fail)} failed")
 for f in fail:

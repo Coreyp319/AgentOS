@@ -23,6 +23,7 @@ import io
 import json
 import os
 import secrets
+import signal
 import subprocess
 import sys
 import threading
@@ -34,11 +35,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lucid_linear as L   # noqa: E402  (safe MVP path: gate -> confirm-evict -> lease -> generate)
 import lucid_safety as S   # noqa: E402
 import lucid_t2i as T2I    # noqa: E402  (text-to-opening seed source — ADR-0015)
+import lucid_hub as H      # noqa: E402  (ADR-0019: the held/needs-review board + retry/dismiss/approve)
 
 HOST = os.environ.get("LUCID_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LUCID_WEB_PORT", "8765"))
 SESSION = os.environ.get("LUCID_WEB_SESSION", "web")
 ORIGIN_OK = {f"http://{HOST}:{PORT}", f"http://localhost:{PORT}"}
+# the built React bundle (self-hosted, no CDN); served as the primary surface when present
+WEB_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
+HAS_DIST = os.path.isdir(WEB_DIST)   # fixed at startup — avoid a stat() on every (polled) GET
+_MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css",
+         ".json": "application/json", ".woff2": "font/woff2", ".woff": "font/woff",
+         ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+         ".webp": "image/webp", ".mp4": "video/mp4", ".webm": "video/webm", ".ico": "image/x-icon",
+         ".map": "application/json"}
 # Per-process CSRF token: embedded in the page, required as a header on every state-changing POST.
 # A cross-origin page can't read it (same-origin policy), so it closes the missing-Origin CSRF gap.
 CSRF = secrets.token_hex(16)
@@ -52,20 +62,76 @@ MAX_PIXELS = 24_000_000         # ~6000x4000 — reject decompression bombs
 # ---------------- in-flight turn record (the honest "dreaming" state) ----------------
 # A video beat takes MINUTES, so /api/dream starts a worker and returns at once; the page renders
 # this. phase: idle | dreaming | done | skipped (fail-open) | refused (gate) | error
-TURN = {"phase": "idle", "label": None, "error": None, "started": None}
+# `epoch` is a monotonic turn-generation counter: /api/start, /api/delete, and /api/burn bump it to
+# SUPERSEDE any in-flight worker, so a stale beat that finishes after the session was restarted/wiped
+# can neither clobber the fresh TURN state nor resurrect a deleted chain (see _supersede_turn).
+TURN = {"phase": "idle", "label": None, "error": None, "started": None, "epoch": 0}
 TURN_LOCK = threading.Lock()
+# Serializes the per-frame beat roll+persist so two concurrent /api/beats reads (e.g. two tabs)
+# can't both roll the LLM for the same tip — the first rolls + seals it, the rest re-serve it.
+BEATS_LOCK = threading.Lock()
+
+# ---------------- WARM-KEEP: one ComfyUI lease held across a session (ADR-0015) ----------------
+# ComfyUI is no longer always-on — the coordinator Spawns+owns it under a BATCH lease, so the lease
+# is real (the keyhole reads "batch (comfyui)") and a live-inference preempt can SIGKILL it. To
+# avoid a per-beat 17 GB cold-start we hold ONE lease across the session: spawn on the first ComfyUI
+# op (the text-opening render OR the first dream beat), reuse it for every later beat, and release on
+# session end / idle / shutdown. The lease lives with the coordinator-owned ComfyUI process (not our
+# D-Bus connection), so warm-keep is just "don't Release between beats." LEASE_LOCK guards the two
+# fields and serializes ensure/release so two requests can't double-spawn.
+CURRENT_TOKEN = None           # the held batch-lease token, or None when no lease is held
+TOKEN_DEADLINE = None          # time.monotonic() after which an IDLE session's lease is reaped
+LEASE_LOCK = threading.Lock()
+IDLE_SECS = int(os.environ.get("LUCID_LEASE_IDLE_SECS", "600"))  # release a walked-away session's GPU
 
 
-def _run_turn(prompt, label):
-    """Worker: drive ONE leased turn, then record an honest outcome (never a silent no-op)."""
+def _epoch_current(epoch):
+    """True iff `epoch` is still the live turn generation — i.e. no /api/start, /api/delete, or burn
+    has superseded this worker since it started. A lock-free read would be GIL-atomic, but we take the
+    lock so the check is ordered against _supersede_turn's bump."""
+    with TURN_LOCK:
+        return TURN["epoch"] == epoch
+
+
+def _supersede_turn():
+    """Invalidate any in-flight beat worker — a /api/start, /api/delete, or burn arrived. Bumping the
+    epoch makes the worker's terminal writes no-ops: step() sees `is_current()` go False and skips its
+    chain persist (no resurrection of a deleted/restarted chain), and _run_turn skips its TURN update
+    (no clobbering the fresh idle state). Also resets the visible turn to idle."""
+    with TURN_LOCK:
+        TURN["epoch"] += 1
+        TURN.update(phase="idle", label=None, error=None, started=None)
+
+
+def _run_turn(prompt, label, epoch=None):
+    """Worker: drive ONE leased turn, then record an honest outcome (never a silent no-op).
+    Warm-keep: ensure the session's batch lease (spawn ComfyUI once, reuse after) and hand it to
+    step() as external — step neither Spawns nor Releases, so ComfyUI stays warm across beats.
+    `epoch` (the turn generation captured at /api/dream) gates every state mutation: if a
+    start/delete/burn supersedes this turn mid-beat, both step's chain persist and the terminal TURN
+    update are discarded. `epoch=None` (tests / untracked callers) keeps the legacy unguarded path."""
+    global TOKEN_DEADLINE
     try:
-        node = L.step(SESSION, prompt, label)
-        phase, err = ("done" if node else "skipped"), None
+        if epoch is not None and not _epoch_current(epoch):  # superseded before we even spawned — skip
+            return
+        if _ensure_lease(epoch) is None:  # coordinator down / GPU busy / ComfyUI cold / superseded — fail open
+            phase, err = "skipped", None
+        else:
+            is_current = (lambda: _epoch_current(epoch)) if epoch is not None else None
+            node = L.step(SESSION, prompt, label, external_lease=True, is_current=is_current)
+            phase, err = ("done" if node else "skipped"), None
     except SystemExit as e:        # red-line gate refused the prompt (B3)
         phase, err = "refused", str(e)
     except Exception as e:         # noqa: BLE001  — fail open, but SAY SO
         phase, err = "error", str(e)
+    with LEASE_LOCK:               # beat done — restart the idle countdown from now, but only while this
+        if CURRENT_TOKEN and (epoch is None or TURN["epoch"] == epoch):  # turn still owns the session: a
+            TOKEN_DEADLINE = time.monotonic() + IDLE_SECS               # superseded turn must not push a
+                                                                        # NEW session's deadline forward
+                                                                        # (lock-free epoch read: GIL-atomic)
     with TURN_LOCK:
+        if epoch is not None and TURN["epoch"] != epoch:
+            return                 # superseded mid-beat — don't clobber the fresh state
         TURN.update(phase=phase, error=err, started=None)
 
 
@@ -100,15 +166,93 @@ def readiness():
     comfy = _http_ok(f"http://{L.COMFY_HOST}/system_stats")
     ollama = _http_ok(f"{L.E.OLLAMA}/api/version")
     coord = _coordinator_up()
-    # The loop can actually DREAM only when all three are present (lease + backend + narrator).
+    # ComfyUI is now ON-DEMAND (coordinator-spawned per session, ADR-0015 warm-keep), so it is NOT a
+    # precondition to dream — the dream is what spawns it. The loop can dream when the coordinator can
+    # arbitrate the GPU AND the narrator (Ollama) is up. `comfyui` stays reported (honest: up only
+    # during an active dream), but does not gate `can_dream`.
     return {
-        "coordinator": coord, "comfyui": comfy, "ollama": ollama,
-        "can_dream": coord and comfy and ollama,
+        "coordinator": coord, "comfyui": comfy, "comfyui_on_demand": True, "ollama": ollama,
+        "can_dream": coord and ollama,
         # the user's truth, in their words — not the daemon's component names
         "why": ([] if coord else ["graphics turn-taking isn't running"])
-               + ([] if comfy else ["the video generator isn't responding"])
                + ([] if ollama else ["story suggestions aren't responding"]),
     }
+
+
+def _ensure_lease(epoch=None):
+    """Warm-keep: hold ONE batch lease across the session's ComfyUI ops (text-opening + i2v beats).
+    Reuse the held lease if ComfyUI still answers; otherwise (none, or stale because a preempt
+    SIGKILLed ComfyUI and the daemon auto-released) Spawn+own a fresh ComfyUI and wait until it's
+    ready. Returns the token, or None = FAIL OPEN (coordinator down / admission refused / ComfyUI
+    never came up) — the caller skips the turn, never forces VRAM. Serialized by LEASE_LOCK so two
+    requests can't double-spawn; the cold-start wait_ready is held under the lock on purpose (a
+    second caller then reuses the one ComfyUI rather than racing a second Spawn).
+
+    `epoch` (passed by the beat worker) makes the spawn epoch-aware: if a start/burn/delete supersedes
+    the turn before we commit a token, we must NOT leave a lease held for a dead session — that was a
+    real ~17 GB leak in the bare warm-keep (a worker that cleared the epoch check, then had burn's
+    _release_lease run past it, would Spawn a ComfyUI nothing could reclaim until the idle reaper). We
+    re-check at every commit point. The epoch is read lock-free (a GIL-atomic int) ON PURPOSE: taking
+    TURN_LOCK here would nest it under LEASE_LOCK, which the flat-lock design forbids."""
+    global CURRENT_TOKEN, TOKEN_DEADLINE
+    def _superseded():
+        return epoch is not None and TURN["epoch"] != epoch
+    with LEASE_LOCK:
+        if _superseded():                                   # dead session — neither reuse nor spawn for it
+            return None
+        if CURRENT_TOKEN and _http_ok(f"http://{L.COMFY_HOST}/system_stats"):
+            TOKEN_DEADLINE = time.monotonic() + IDLE_SECS   # touch: not idle
+            return CURRENT_TOKEN
+        if CURRENT_TOKEN:                                   # stale token (ComfyUI gone) — clear it
+            L.lease_release(CURRENT_TOKEN)                  # harmless no-op if already auto-released
+            CURRENT_TOKEN, TOKEN_DEADLINE = None, None
+        token = L.lease_spawn("batch")                      # admission: predict-before-load (fail open)
+        if token is None:
+            return None
+        if _superseded() or not L.wait_ready():             # superseded during admission, OR spawned but
+            L.lease_release(token)                          # never bound :8188 — release + fail open
+            return None
+        if _superseded():                                   # superseded DURING the cold-start wait — undo
+            L.lease_release(token)
+            return None
+        CURRENT_TOKEN, TOKEN_DEADLINE = token, time.monotonic() + IDLE_SECS
+        return token
+
+
+def _release_lease():
+    """Release any held ComfyUI lease (-> coordinator SIGKILLs ComfyUI, VRAM reclaimed). Idempotent;
+    called on a fresh /api/start, burn/delete, idle-reap, and shutdown. A no-op if nothing is held."""
+    global CURRENT_TOKEN, TOKEN_DEADLINE
+    with LEASE_LOCK:
+        if CURRENT_TOKEN:
+            L.lease_release(CURRENT_TOKEN)
+            CURRENT_TOKEN, TOKEN_DEADLINE = None, None
+
+
+def _end_session():
+    """Tear down the current session: invalidate any in-flight beat (epoch bump) BEFORE reclaiming the
+    GPU, so a stale worker can neither resurrect the chain nor (now that _ensure_lease is epoch-aware)
+    re-spawn a lease for a dead session. One home for the burn/delete teardown invariant — the order
+    (supersede THEN release) must not be reordered: the worker reads the epoch to decide both."""
+    _supersede_turn()
+    _release_lease()
+
+
+def _lease_reaper():
+    """Release a walked-away session's lease so an idle dream never pins ~17 GB. NEVER reaps while a
+    beat is in flight (phase 'dreaming' — a long beat refreshes the deadline only on completion, so
+    reaping mid-beat would SIGKILL ComfyUI under the generation)."""
+    global CURRENT_TOKEN, TOKEN_DEADLINE
+    while True:
+        time.sleep(30)
+        with TURN_LOCK:
+            dreaming = TURN["phase"] == "dreaming"
+        with LEASE_LOCK:
+            if (CURRENT_TOKEN and not dreaming and TOKEN_DEADLINE
+                    and time.monotonic() > TOKEN_DEADLINE):
+                print(f"[lucid] idle {IDLE_SECS}s — releasing ComfyUI lease {CURRENT_TOKEN}", flush=True)
+                L.lease_release(CURRENT_TOKEN)
+                CURRENT_TOKEN, TOKEN_DEADLINE = None, None
 
 
 def chain_or_none():
@@ -166,11 +310,18 @@ def state():
 
 
 def beats():
-    chain = chain_or_none()
-    if chain is None:
+    """The HELD per-frame menu (ADR-0015 §1: "no reroll"). The model proposes once per chain tip and
+    the proposal is persisted on the node (lucid_linear.beats_for_tip); every later read re-serves it
+    verbatim, so the suggestions can't change under the user on a reload / second tab / a skipped
+    fail-open turn. Frozen while a beat is in flight — the tip can't change mid-turn, so the held menu
+    stands and we never roll a fresh one against a frame the user already picked from."""
+    if chain_or_none() is None:
         return []
+    with TURN_LOCK:
+        rolling = TURN["phase"] != "dreaming"   # in-flight: serve what's held, never roll a new menu
     try:
-        return L.propose(L.context_for(SESSION))   # live, schema-validated + red-lined
+        with BEATS_LOCK:                        # one roll per tip even under concurrent reads
+            return L.beats_for_tip(SESSION, roll=rolling)
     except Exception:
         return []
 
@@ -223,15 +374,33 @@ input[type=text]{width:100%;background:var(--inst-deep);border:1px solid var(--h
 a{color:var(--inst-blue)}
 .clip{font-size:var(--fs-xs);color:var(--inst-muted);margin:4px 0}.clip.here{color:var(--inst-text)}
 .private .lock,.lock{color:var(--inst-text);font-weight:600}
-.breathe{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--inst-blue);
- vertical-align:middle;margin:0 5px;animation:breathe 2.4s ease-in-out infinite}
-.elapsed{font-variant-numeric:tabular-nums;color:var(--inst-muted)}
 .flash{max-width:760px;margin:0 auto 6px;color:var(--st-red);font-size:var(--fs-sm);opacity:0;transition:opacity .2s}
 .flash.show{opacity:1}
 .sr,.live{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 :focus-visible{outline:2px solid var(--inst-blue);outline-offset:2px}
-@keyframes breathe{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.1)}}
-@media (prefers-reduced-motion:reduce){.breathe{animation:none;opacity:.7}}
+/* the dreaming hero — the dream developing out of the dark (ADR-0014: "the clip developing, not a spinner") */
+.stage{position:relative;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--hairline);
+ aspect-ratio:16/10;background:#090b11;box-shadow:0 24px 64px -42px #000;margin:6px 0 0}
+.aurora{position:absolute;inset:-24%;filter:blur(42px) saturate(115%);opacity:0;animation:develop 7s 1s ease forwards}
+.aurora i{position:absolute;border-radius:50%;mix-blend-mode:screen}
+.aurora i:nth-child(1){width:46%;height:60%;left:8%;top:14%;background:radial-gradient(circle,#5fd0c8,transparent 62%);animation:drift1 19s ease-in-out infinite}
+.aurora i:nth-child(2){width:54%;height:64%;right:4%;top:6%;background:radial-gradient(circle,#8aa6ff,transparent 62%);animation:drift2 23s ease-in-out infinite}
+.aurora i:nth-child(3){width:50%;height:56%;left:24%;bottom:0;background:radial-gradient(circle,#6f7bd6,transparent 62%);animation:drift3 27s ease-in-out infinite}
+.stage .grain{position:absolute;inset:0;opacity:.05;mix-blend-mode:overlay;pointer-events:none;
+ background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.stage .cap{position:absolute;left:0;right:0;bottom:0;padding:22px 22px 20px;z-index:2;
+ background:linear-gradient(0deg,rgba(9,11,17,.86),transparent)}
+.beat-q{font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:1.4rem;line-height:1.28;
+ color:#eef1f8;margin:0;max-width:34ch}
+.dreamrow{display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.elapsed-xl{font-family:Georgia,'Times New Roman',serif;font-weight:400;font-variant-numeric:tabular-nums;
+ font-size:2rem;line-height:1;color:#cfd6e6}
+@keyframes develop{from{opacity:0}to{opacity:.6}}
+@keyframes drift1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(12%,-8%) scale(1.12)}}
+@keyframes drift2{0%,100%{transform:translate(0,0) scale(1.05)}50%{transform:translate(-10%,9%) scale(.92)}}
+@keyframes drift3{0%,100%{transform:translate(0,0) scale(.95)}50%{transform:translate(8%,-12%) scale(1.1)}}
+@media (prefers-reduced-motion:reduce){.aurora{animation:none;opacity:.5}.aurora i{animation:none}}
+@media (prefers-reduced-transparency:reduce){.stage .grain{display:none}}
 </style></head><body><div class=wrap>
 <h1>Lucid <span class=subtle>· interactive dream loop</span></h1>
 <div class=sub>Watch a clip, choose what happens next — the story picks up from the last frame.
@@ -243,8 +412,17 @@ Each clip is made one at a time, so it never crowds out your other apps for the 
 const CSRF=document.querySelector('meta[name=csrf]').content;
 const E=s=>(s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let LAST=null,lastSig='',BEATS=[],BEATS_FOR=-1,burnArmed=false,burnMsg='',delArmed=false,delMsg='',lastAnn='',flashT=null;
+let dreamTimer=null,dreamStartMs=0;
 
 function fmt(t){const m=Math.floor(t/60),s=t%60;return m+':'+String(s).padStart(2,'0');}
+// tick the elapsed time locally so the dreaming stage DOM (its aurora animation) persists between polls
+function manageTicker(t){
+ if(t.phase==='dreaming'){
+  dreamStartMs=Date.now()-((t.elapsed||0)*1000);
+  if(!dreamTimer)dreamTimer=setInterval(()=>{const e=document.getElementById('elapsed-xl');
+   if(e)e.textContent=fmt(Math.max(0,Math.floor((Date.now()-dreamStartMs)/1000)));},1000);
+ }else if(dreamTimer){clearInterval(dreamTimer);dreamTimer=null;}
+}
 function flash(m){const f=document.getElementById('flash');if(!f)return;f.textContent=m;f.classList.add('show');
  clearTimeout(flashT);flashT=setTimeout(()=>{f.classList.remove('show');f.textContent='';},6000);}
 // status dots carry meaning by FILL+colour AND a screen-reader text equivalent (never colour alone)
@@ -254,7 +432,7 @@ function dotEl(on,name){return `<span class=item><span class="dot ${on?'on':'off
 function sig(s){const r=s.readiness,t=s.turn,c=s.chain;
  return [r.coordinator,r.comfyui,r.ollama,r.can_dream,s.private,
   c?c.nodes.length:-1,c?c.nodes[c.nodes.length-1].id:-1,
-  t.phase,t.phase==='dreaming'?(t.elapsed||0):0,burnArmed,burnMsg,delArmed,delMsg].join('|');}
+  t.phase,burnArmed,burnMsg,delArmed,delMsg].join('|');}   // elapsed is ticked locally, not via sig
 
 function chainCard(n){let h=`<div class=card><b>Your dream so far</b> · ${n.length} frame(s)`;
  n.forEach((x,i)=>{const last=i===n.length-1;
@@ -308,12 +486,16 @@ function build(s){const r=s.readiness,t=s.turn;let h='';
    +`likeness first, and its location/camera metadata is stripped.</div></div>`;
  }else if(t.phase==='dreaming'){
   h+=chainCard(s.chain.nodes);
-  h+=`<div class=card aria-busy=true><b>✦ Dreaming this beat…</b>`
-   +(t.label&&t.label!=='custom'?`<div class="clip here">“${E(t.label)}”</div>`:'')
-   +`<div class=note style="margin-top:6px">Making the next clip — this usually takes a few minutes. `
-   +`<span class=breathe></span> <span class=elapsed>${fmt(t.elapsed||0)}</span></div>`
-   +`<div class=note>It runs through the graphics lease, so it never crowds out your other apps — `
-   +`you can watch it in the keyhole tray.</div></div>`;
+  h+=`<div class=stage aria-busy=true><div class=aurora><i></i><i></i><i></i></div><div class=grain></div>`
+   +`<div class=cap>`
+   +(t.label&&t.label!=='custom'?`<p class=beat-q>“${E(t.label)}”</p>`
+     :`<p class=beat-q style="opacity:.6">the next moment is forming…</p>`)
+   +`</div></div>`
+   +`<div class=card><div class=dreamrow><span><b>✦ Dreaming this beat…</b>`
+   +`<div class=note style="margin-top:2px">Making the next clip — this usually takes a few minutes.</div></span>`
+   +`<span class=elapsed-xl id=elapsed-xl>${fmt(t.elapsed||0)}</span></div>`
+   +`<div class=note style="margin-top:8px">It runs through the graphics lease, so it never crowds out your `
+   +`other apps — you can watch it in the keyhole tray.</div></div>`;
  }else{
   h+=chainCard(s.chain.nodes);
   if(!s.private)h+=libraryCard();   // private dreams use Burn (above); persistent get Delete + retention
@@ -350,6 +532,7 @@ function paint(s){LAST=s;lastSig=sig(s);
  const o2=document.getElementById('own');
  if(sv&&o2){o2.value=sv.v;try{o2.setSelectionRange(sv.a,sv.b);}catch(e){}o2.focus();}
  if(s.chain&&s.readiness.can_dream&&s.turn.phase!=='dreaming')loadBeats();
+ manageTicker(s.turn);
  announce(s);}
 
 async function load(){let s;try{s=await(await fetch('/api/state')).json();}catch(e){return;}
@@ -357,12 +540,15 @@ async function load(){let s;try{s=await(await fetch('/api/state')).json();}catch
  paint(s);}
 
 async function loadBeats(){const el=document.getElementById('beats');if(!el)return;
- const len=LAST&&LAST.chain?LAST.chain.nodes.length:-1;
+ // key the held menu on the TIP NODE ID (+ reset on start/burn/delete), not chain length: two
+ // different dreams both reach length 1, so a length key served a prior dream's beats after a
+ // burn->restart. The server holds per frame too (no reroll), so a refetch returns the same set.
+ const tip=LAST&&LAST.chain?LAST.chain.nodes[LAST.chain.nodes.length-1].id:-1;
  const paintBeats=t=>t.map((b,i)=>`<button class=beat onclick='dream(${i})'><b>${E(b.label)}</b>`
   +`<small>${E(b.prompt)}</small></button>`).join('');
- if(BEATS_FOR===len&&BEATS.length){el.innerHTML=paintBeats(BEATS);return;}  // already have this frame's beats
+ if(BEATS_FOR===tip&&BEATS.length){el.innerHTML=paintBeats(BEATS);return;}  // already have this frame's beats
  let j;try{j=await(await fetch('/api/beats')).json();}catch(e){return;}
- BEATS=j.beats||[];BEATS_FOR=len;
+ BEATS=j.beats||[];BEATS_FOR=tip;
  const el2=document.getElementById('beats');if(!el2)return;
  el2.innerHTML=BEATS.length?paintBeats(BEATS):'<div class=note>No suggestions — type your own below.</div>';}
 
@@ -393,7 +579,7 @@ async function startDream(consent){
    msg.textContent='🚫 '+j.reason;return;  // hard block (e.g. possible minor) — not overridable
  }
  if(j.error){msg.textContent=j.error;return;}
- lastSig='';load();
+ BEATS=[];BEATS_FOR=-1;lastSig='';load();   // a fresh dream: drop the prior frame's held menu
 }
 
 // --- burn: two-step inline consent + an honest, persistent outcome (no native dialogs) ---
@@ -405,7 +591,7 @@ async function doBurn(){burnArmed=false;let j;
  if(j.failed&&j.failed.length)burnMsg='!Some traces could NOT be wiped and remain on disk: '
   +j.failed.join('; ')+'. They are retried at next start; delete by hand to be certain.';
  else burnMsg='This dream is gone — '+(j.burned||0)+' location(s) wiped.';
- lastSig='';load();}
+ BEATS=[];BEATS_FOR=-1;lastSig='';load();}
 
 function armDel(){delArmed=true;delMsg='';if(LAST)paint(LAST);}
 function cancelDel(){delArmed=false;if(LAST)paint(LAST);}
@@ -415,7 +601,7 @@ async function doDelete(){delArmed=false;let j;
  if(j.failed&&j.failed.length)delMsg='!Some files could NOT be deleted: '+j.failed.join('; ')
   +'. Delete by hand to be certain.';
  else delMsg='';   // success — the dream is gone; the page returns to Start
- lastSig='';load();}
+ BEATS=[];BEATS_FOR=-1;lastSig='';load();}
 
 function nextDelay(){if(document.hidden)return 15000;
  return (LAST&&LAST.turn&&LAST.turn.phase==='dreaming')?2500:5000;}
@@ -438,22 +624,81 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_raw(self, code, data, ctype, cache):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("X-Content-Type-Options", "nosniff")   # we serve bundled JS/SVG — don't let the
+        self.send_header("Content-Length", str(len(data)))      # browser MIME-sniff a response
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable" if cache else "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_static(self, path):
+        """Serve the built React bundle (web/dist); SPA-fallback to index.html (CSRF-injected)."""
+        rel = path.lstrip("/") or "index.html"
+        full = os.path.normpath(os.path.join(WEB_DIST, rel))
+        if full != WEB_DIST and not full.startswith(WEB_DIST + os.sep):
+            return self._send(403, "forbidden", "text/plain")    # never traverse out of dist/
+        if not os.path.isfile(full):
+            full = os.path.join(WEB_DIST, "index.html")           # SPA fallback
+        if not os.path.isfile(full):
+            return self._send(404, "not found", "text/plain")
+        with open(full, "rb") as f:
+            data = f.read()
+        if os.path.basename(full) == "index.html":                # inject the per-process CSRF token
+            return self._send_raw(200, data.replace(b"__CSRF__", CSRF.encode()),
+                                  "text/html; charset=utf-8", cache=False)
+        ctype = _MIME.get(os.path.splitext(full)[1].lower(), "application/octet-stream")
+        self._send_raw(200, data, ctype, cache=True)
+
+    def _serve_media(self, kind):
+        """Serve a chain node's clip (mp4) or anchor frame (png). `id` indexes the server-held chain,
+        so the path is never user-supplied — no traversal surface; loopback-only."""
+        from urllib.parse import urlparse, parse_qs
+        try:
+            nid = int(parse_qs(urlparse(self.path).query).get("id", [""])[0])
+        except ValueError:
+            return self._send(400, "bad id", "text/plain")
+        chain = chain_or_none()
+        node = next((n for n in (chain["nodes"] if chain else []) if n.get("id") == nid), None)
+        if node is None:
+            return self._send(404, "no such frame", "text/plain")
+        if kind == "clip":
+            p = node.get("clip")
+        else:
+            of = node.get("out_frame")
+            p = os.path.join(L.E.INPUT_DIR, of) if of else None
+        if not p or not os.path.isfile(p):
+            return self._send(404, "not found", "text/plain")
+        with open(p, "rb") as f:
+            data = f.read()
+        self._send_raw(200, data, _MIME.get(os.path.splitext(p)[1].lower(), "application/octet-stream"),
+                       cache=False)
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path in ("/", "/index.html"):
-            self._send(200, PAGE.replace("__CSRF__", CSRF), "text/html; charset=utf-8")
-        elif path == "/healthz":
-            self._send(200, "ok", "text/plain")
-        elif path == "/api/state":
-            self._send(200, json.dumps(state()), "application/json")
-        elif path == "/api/beats":   # slow (Ollama) — fetched separately so the page never blocks
-            self._send(200, json.dumps({"beats": beats()}), "application/json")
-        else:
-            self._send(404, "not found", "text/plain")
+        if path == "/healthz":
+            return self._send(200, "ok", "text/plain")
+        if path == "/api/state":
+            return self._send(200, json.dumps(state()), "application/json")
+        if path == "/api/beats":   # slow (Ollama) — fetched separately so the page never blocks
+            return self._send(200, json.dumps({"beats": beats()}), "application/json")
+        if path == "/api/clip":
+            return self._serve_media("clip")
+        if path == "/api/frame":
+            return self._serve_media("frame")
+        if path == "/api/queue":   # ADR-0019: the durable held + needs-review board (read-only)
+            return self._send(200, json.dumps(H.board()), "application/json")
+        if HAS_DIST:                                 # the React build is the primary surface
+            return self._serve_static(path)
+        if path in ("/", "/index.html"):             # fallback: the inline vanilla page (no build present)
+            return self._send(200, PAGE.replace("__CSRF__", CSRF), "text/html; charset=utf-8")
+        self._send(404, "not found", "text/plain")
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
-        if path not in ("/api/dream", "/api/burn", "/api/start", "/api/delete"):
+        if path not in ("/api/dream", "/api/burn", "/api/start", "/api/delete",
+                        "/api/queue/retry", "/api/queue/dismiss", "/api/queue/approve"):
             return self._send(404, "not found", "text/plain")
         # CSRF: a state-changing POST must carry the per-process token embedded in the page (a
         # cross-origin page can't read it). Fail closed. Defense-in-depth: reject a bad Origin too.
@@ -472,17 +717,32 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(n) or "{}") if n else {}
         except Exception:
             return self._send(400, json.dumps({"error": "bad request"}), "application/json")
+        if path in ("/api/queue/retry", "/api/queue/dismiss", "/api/queue/approve"):
+            # ADR-0019: the human disposes a held/needs-review request (CSRF + Origin checked above).
+            # The id is validated INSIDE lucid_hub (no traversal); a bad id maps to 400. Durable spool
+            # only — these never touch the private queue (which has no review surface by design).
+            jid = req.get("id")
+            try:
+                if path.endswith("/retry"):
+                    ok = H.retry(jid)
+                elif path.endswith("/dismiss"):
+                    ok = H.dismiss(jid)
+                else:
+                    ok = H.approve(jid)
+            except ValueError:
+                return self._send(400, json.dumps({"error": "bad id"}), "application/json")
+            return self._send(200, json.dumps({"ok": bool(ok)}), "application/json")
         if path == "/api/burn":   # wipe the private session's every sink (ADR-0016)
+            _end_session()        # invalidate any in-flight beat + reclaim the GPU lease BEFORE wiping
             removed, failed = L.burn(SESSION)
             return self._send(200, json.dumps({"ok": not failed, "burned": len(removed),
                                                "failed": failed}), "application/json")
         if path == "/api/delete":   # delete a PERSISTENT dream's every sink (a private one -> burn)
+            _end_session()        # invalidate any in-flight beat + reclaim the GPU lease BEFORE wiping
             if L.ST.is_private(SESSION):
                 removed, failed = L.burn(SESSION)
             else:
                 removed, failed = L.ST.purge_persistent(SESSION)
-            with TURN_LOCK:
-                TURN.update(phase="idle", label=None, error=None, started=None)
             return self._send(200, json.dumps({"ok": not failed, "deleted": len(removed),
                                                "failed": failed}), "application/json")
         if path == "/api/start":  # begin a dream; uploaded image (B2-gated in start) or synthetic frame
@@ -492,9 +752,9 @@ class Handler(BaseHTTPRequestHandler):
             if not _START_SEM.acquire(blocking=False):   # bound concurrent decode + vision-model loads
                 return self._send(429, json.dumps({"error": "busy — try again in a moment"}), "application/json")
             try:
+                _supersede_turn()     # invalidate any in-flight beat BEFORE clearing — and reset to idle
                 L.ST.clear(SESSION)   # clean any prior session of this name before a fresh start
-                with TURN_LOCK:       # a fresh dream clears any stale outcome from the last one
-                    TURN.update(phase="idle", label=None, error=None, started=None)
+                _release_lease()      # a fresh dream starts cold — drop the prior session's ComfyUI lease
                 if img_b64:
                     if not readiness()["ollama"]:   # B2 needs the vision model; fail fast, don't hang
                         return self._send(200, json.dumps({"error": "can't check the image — the narrator (Ollama) is unavailable"}), "application/json")
@@ -518,8 +778,8 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                     return self._send(200, json.dumps({"ok": True, "private": private}), "application/json")
                 if req.get("text"):   # text-to-opening: render via t2i, then B2 (a t2i CAN render a person)
-                    if not readiness()["comfyui"]:
-                        return self._send(200, json.dumps({"error": "the video generator is unavailable — can't paint an opening"}), "application/json")
+                    if _ensure_lease() is None:   # spawn+own ComfyUI for the opening render (on-demand)
+                        return self._send(200, json.dumps({"error": "the video generator is unavailable — can't paint an opening (GPU busy?)"}), "application/json")
                     import tempfile
                     fd, seed = tempfile.mkstemp(suffix=".png")
                     os.close(fd)
@@ -579,22 +839,31 @@ class Handler(BaseHTTPRequestHandler):
             if TURN["phase"] == "dreaming":
                 return self._send(200, json.dumps(
                     {"error": "A dream is already in flight — one beat at a time."}), "application/json")
+            epoch = TURN["epoch"]   # this turn's generation; a later start/delete/burn bumps it to supersede
             TURN.update(phase="dreaming", label=label, error=None, started=time.monotonic())
-        threading.Thread(target=_run_turn, args=(prompt, label), daemon=True).start()
+        threading.Thread(target=_run_turn, args=(prompt, label, epoch), daemon=True).start()
         return self._send(202, json.dumps({"ok": True, "started": True}), "application/json")
 
 
 def _burn_private_on_stop():
-    """systemd ExecStop hook (ADR-0016): make "wiped when you log out" TRUE for the on-disk sinks
-    (the sealed seed/anchor frames ComfyUI must keep on real disk — tmpfs is wiped by logind, the
-    rest waited for the NEXT startup's reap). GUARDED — burns ONLY if the session is private, so a
-    normal persistent dream is never destroyed."""
+    """systemd ExecStop hook (ADR-0016 + ADR-0019 Condition 1): make "wiped when you log out" TRUE for
+    EVERY live private session, not just this web process's own SESSION. The ephemeral private queue
+    (ADR-0019 §5) can hold N sessions; burning only SESSION left the other N-1 sessions' on-disk sealed
+    anchor frames (input/.lucid-priv-<s>/) alive until the next startup reap — "burned on logout" was
+    FALSE as-written. Now burn the union of the private queue and the live private dream sessions, then
+    clear the tmpfs queue dir. Structurally safe: list_priv_queue()/list_private() only ever return
+    PRIVATE sessions, so a normal persistent dream is never destroyed."""
     try:
-        if L.ST.is_private(SESSION):
-            removed, failed = L.burn(SESSION)
-            print(f"on-stop burn: wiped {len(removed)} sink(s); failed {failed}", flush=True)
-        else:
-            print("on-stop burn: session is not private — nothing to burn", flush=True)
+        sessions = sorted(set(L.ST.list_priv_queue()) | set(L.ST.list_private()))
+        wiped = 0
+        for s in sessions:
+            removed, failed = L.burn(s)
+            wiped += len(removed)
+            if failed:
+                print(f"on-stop burn: session {s!r} left {len(failed)} sink(s) un-wiped: {failed}", flush=True)
+        cleared = L.ST.clear_priv_queue_dir()
+        tail = "; cleared queue dir" if cleared else ""
+        print(f"on-stop burn: wiped {wiped} sink(s) across {len(sessions)} private session(s){tail}", flush=True)
     except Exception as e:
         print(f"on-stop burn skipped: {e}", flush=True)
 
@@ -609,6 +878,16 @@ def main():
             print(f"reaped {len(reaped)} orphaned private session(s): {reaped}", flush=True)
     except Exception as e:
         print(f"orphan reap skipped: {e}", flush=True)
+    # Warm-keep lease must be released when the server stops: the coordinator owns ComfyUI
+    # INDEPENDENTLY of this process, so a held lease would leak ~17 GB if we just exit. Release on
+    # SIGTERM/SIGINT (systemd stop / Ctrl-C); the idle reaper covers the walked-away case. A hard
+    # SIGKILL of this server still leaks until the daemon restarts — a documented edge (ADR-0015).
+    def _shutdown(_signum, _frame):
+        _release_lease()
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+    threading.Thread(target=_lease_reaper, daemon=True).start()
     print(f"Lucid web → http://{HOST}:{PORT}  (session '{SESSION}')", flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 

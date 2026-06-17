@@ -6,7 +6,9 @@ original spike (`lucid_engine.py`, which runs the ~21.8 GB i2v step with no leas
 `keep_alive:0`), every video beat here:
 
   1. proposes beats via Ollama, then SCHEMA-VALIDATES + RED-LINE-FILTERS them (lucid_safety, B3);
-  2. CONFIRMS the beat model is evicted before touching video VRAM (lucid_safety.confirm_evicted, B1);
+  2. EVICTS the beat model from VRAM (`ollama stop`, the ADR-0018 lever), then CONFIRMS it gone,
+     before touching video VRAM (lucid_safety.force_evict, B1 — confirm-only had no teeth and skipped
+     every turn while the page kept the model warm);
   3. acquires the video lease by asking agentosd to Spawn+own ComfyUI under the BATCH tier
      (predict-before-load admission; reuses the dream.sh client) — and FAILS OPEN (ADR-0003) if the
      coordinator is unreachable or refuses;
@@ -58,10 +60,15 @@ def _coord(*args):
                           capture_output=True, text=True, timeout=30)
 
 
-def lease_spawn():
-    """Ask agentosd to Spawn+own ComfyUI under the batch lease. Returns a token, or None to
-    fail open (coordinator down OR admission refused -> the dream yields, never forces VRAM)."""
-    r = _coord("Spawn", "susas", "batch", str(EST_MIB), PROFILE, str(len(PARAMS)), *PARAMS)
+def lease_spawn(tier="batch"):
+    """Ask agentosd to Spawn+own ComfyUI under a lease. Returns a token, or None to fail open
+    (coordinator down OR admission refused -> the dream yields, never forces VRAM).
+
+    `tier` defaults to "batch" so the interactive Lucid loop (create_from_image.py, lucid_web.py)
+    is unchanged. The ADR-0019 drainer passes tier="best-effort" so arbitrate() (coord.rs:129-135)
+    structurally Queues this run behind ANY holder and lets Tier::Interactive preempt it
+    (lease.rs:583-592) — fail-open BY CONSTRUCTION, never by measurement (design doc G3)."""
+    r = _coord("Spawn", "susas", tier, str(EST_MIB), PROFILE, str(len(PARAMS)), *PARAMS)
     if r.returncode != 0:
         log(f"coordinator unreachable ({r.stderr.strip() or r.stdout.strip()}) — fail open (ADR-0003)")
         return None
@@ -159,18 +166,58 @@ def propose(context, n=4):
     return S.validate_beats(raw, n)
 
 
+def beats_for_tip(session, n=4, roll=True):
+    """The HELD "what happens next" menu for the current chain tip (ADR-0015 §1: "no reroll").
+
+    The model proposes the menu ONCE per frame; that proposal is persisted on the tip node and
+    re-served verbatim forever after — so once the user is looking at a set of options it is held
+    until the chain advances to a NEW tip (a clip they picked is generated and appended). The old
+    spike re-rolled the non-deterministic LLM on every read, so a reload / second tab / cache
+    eviction / a skipped fail-open turn all silently swapped the menu under the user. Now the menu
+    is a deterministic property of the frame, not of a client cache.
+
+    - `roll=False` (a beat is in flight) NEVER calls the model — it returns the already-held menu (or
+      [] if none was rolled yet), so the tip can't sprout a fresh menu mid-turn.
+    - A transient empty roll (Ollama down -> propose() == []) is NOT sealed: we return [] and let a
+      later call retry, rather than pin "type your own" onto the frame permanently.
+
+    Persisting onto the tip is the one late-bound write to an otherwise append-only node; it is sealed
+    once a child node is appended (a new tip with no `beats` is what the next turn rolls against).
+    """
+    chain = load_chain(session)
+    tip = chain["nodes"][-1]
+    held = tip.get("beats")
+    if isinstance(held, list) and held:           # already rolled for this frame — hold it
+        return held
+    if not roll:                                   # in-flight: never roll, just serve what's held
+        return held if isinstance(held, list) else []
+    proposed = propose(context_for(session), n=n)
+    if proposed:                                   # seal only a real menu (don't pin a transient [])
+        tip["beats"] = proposed
+        save_chain(session, chain)
+    return proposed
+
+
 # ---------------- one leased, confirmed-evicted, gated video beat ----------------
-def generate_video(session, prompt, anchor_frame):
-    """B1 dance: confirm beat model evicted -> lease -> generate -> release. Returns clip path,
+def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=False):
+    """B1 dance: actively evict beat model (`ollama stop`) + confirm -> lease -> generate -> release. Returns clip path,
     or None to skip the turn (fail open). The prompt MUST already have passed S.gate_prompt.
-    Private sessions render to a sealed subdir and the clip is moved to tmpfs (ADR-0016)."""
+    Private sessions render to a sealed subdir and the clip is moved to tmpfs (ADR-0016).
+    `tier` (default "batch") is threaded to lease_spawn; the drainer passes "best-effort".
+
+    `external_lease=True` (warm-keep, ADR-0015): the CALLER already holds a batch lease and the
+    coordinator already owns a ready ComfyUI, so this turn neither Spawns nor Releases — it just
+    evicts the beat model, confirms ComfyUI is up, and generates. The default (False) preserves the
+    per-beat Spawn/Release dance for every one-shot caller (create_from_image, the drain path)."""
     private = ST.is_private(session)
-    if not S.confirm_evicted(E.MODEL):
-        log(f"could not confirm '{E.MODEL}' evicted — refusing to load video (B1 fail-closed)")
+    if not S.force_evict(E.MODEL):
+        log(f"could not evict '{E.MODEL}' from VRAM — refusing to load video (B1 fail-closed)")
         return None
-    token = lease_spawn()
-    if token is None:
-        return None
+    token = None
+    if not external_lease:
+        token = lease_spawn(tier)
+        if token is None:
+            return None
     try:
         if not wait_ready():
             log("ComfyUI not ready in time — skipping (requeue)")
@@ -188,7 +235,8 @@ def generate_video(session, prompt, anchor_frame):
         log(f"generation error ({e}) — likely preempted (SIGKILL); clip lost, loop yields")
         return None
     finally:
-        lease_release(token)
+        if not external_lease:
+            lease_release(token)  # warm-keep caller owns the lease across beats; releases it itself
 
 
 def _newest_clip(scope_dir=None):
@@ -206,17 +254,31 @@ def _newest_clip(scope_dir=None):
     return best
 
 
-def step(session, prompt, label):
-    """One linear turn: gate the prompt (both paths), generate under lease, append a node."""
+def step(session, prompt, label, tier="batch", external_lease=False, is_current=None):
+    """One linear turn: gate the prompt (both paths), generate under lease, append a node.
+    `tier` (default "batch") preserves the interactive callers; the ADR-0019 drainer passes
+    "best-effort" so a held re-run is structurally preemptible by Tier::Interactive (fail-open).
+    `external_lease=True` (warm-keep) threads through to generate_video so a caller holding the
+    batch lease across beats (lucid_web) neither Spawns nor Releases ComfyUI per turn.
+
+    `is_current` (optional) is a freshness predicate checked RIGHT BEFORE the chain persist — the one
+    state mutation. A beat is minutes long; the chain is loaded at the top and held in memory across
+    generation, so if the session was cleared/restarted/deleted meanwhile (a `/api/start`,
+    `/api/delete`, or burn arrived), writing this stale in-memory chain back would resurrect deleted
+    data or clobber the new dream. If the caller says the turn is no longer current, we discard the
+    clip (a cache artifact) and leave the chain untouched — fail-open, exactly like a preempt."""
     gated = S.gate_prompt(prompt)
     if gated is None:
         raise SystemExit("prompt refused by red-line gate (B3)")
     private = ST.is_private(session)
     chain = load_chain(session)
     parent = chain["nodes"][-1]
-    clip = generate_video(session, gated, parent["out_frame"])
+    clip = generate_video(session, gated, parent["out_frame"], tier=tier, external_lease=external_lease)
     if clip is None:
         log("turn skipped (fail open) — chain unchanged")
+        return None
+    if is_current is not None and not is_current():
+        log("turn superseded mid-beat (session restarted/deleted) — discarding clip, chain unchanged")
         return None
     nid = parent["id"] + 1
     ref_name, abs_path = ST.frame_ref(session, private, f"{session}_n{nid}.png")
