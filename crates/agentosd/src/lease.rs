@@ -353,12 +353,34 @@ fn fits_after_evict(free_mib: u64, victim_est: u64, reclaimable: bool, succ_est:
     admit(predicted, succ_est, headroom).granted()
 }
 
-/// Release `token` — shared by the `Release` method and the peer-disconnect listener (B4).
-/// True iff it was the holder. Group-SIGKILLs + reaps an owned child, clears narration +
+/// GO-2 identity gate (ADR-0021): may `requester` release `token`? A *bound* (cooperative) holder —
+/// one whose token agentosd recorded against the acquiring bus name (`holder_peer`) — may be released
+/// ONLY by that same peer, so one agent behind the MCP act surface can't release another's lease. An
+/// authoritative system release (`None`: B4 peer-disconnect, B5 TTL) always may; an unbound holder (an
+/// owned `Spawn` job, whose caller may have disconnected) stays token-only as before. Pure + tested.
+fn may_release(holder_peer: Option<&(u64, String)>, token: u64, requester: Option<&str>) -> bool {
+    match (requester, holder_peer) {
+        (None, _) => true, // system/authoritative release (disconnect, TTL) — always permitted
+        (Some(name), Some((bound_tok, bound_name))) if *bound_tok == token => name == bound_name,
+        (Some(_), _) => true, // no binding for this token (owned job / unknown) — token-only guard
+    }
+}
+
+/// Release `token` — shared by the `Release` method (peer-identity-checked: `requester = Some(name)`)
+/// and the authoritative supervisor paths (`requester = None`). True iff it was the holder AND the
+/// requester was allowed (GO-2). Group-SIGKILLs + reaps an owned child, clears narration +
 /// holder-peer when the lease goes idle, and republishes the keyhole mirror OFF the lock.
-async fn release_token(inner: &Arc<Mutex<Inner>>, mirror: Option<&Path>, token: u64) -> bool {
+async fn release_token(
+    inner: &Arc<Mutex<Inner>>,
+    mirror: Option<&Path>,
+    token: u64,
+    requester: Option<&str>,
+) -> bool {
     let (freed, to_reap, snap) = {
         let mut g = inner.lock().await;
+        if !may_release(g.holder_peer.as_ref(), token, requester) {
+            return false; // GO-2: foreign-token release — refuse, identical to an unknown token
+        }
         let freed = g.lease.release(token);
         let mut to_reap: Option<(Child, u32)> = None;
         if freed {
@@ -689,8 +711,15 @@ impl Coordinator {
     /// Release the lease (true iff `token` is the current holder's). If that holder is an
     /// agentosd-owned job, its process group is SIGKILLed too — releasing means "done with
     /// the GPU" — and the leader is reaped (no zombie).
-    async fn release(&self, token: u64) -> bool {
-        release_token(&self.inner, self.mirror.as_deref(), token).await
+    async fn release(
+        &self,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        token: u64,
+    ) -> bool {
+        // GO-2 (ADR-0021): bind the release to the caller identity — a cooperative lease can only be
+        // released by the bus name that acquired it (`holder_peer`), so one agent can't release another's.
+        let caller = hdr.sender().map(|s| s.to_string());
+        release_token(&self.inner, self.mirror.as_deref(), token, caller.as_deref()).await
     }
 
     /// Heartbeat the lease (ADR-0013 B5): extend the holder's TTL. True iff `token` holds. A
@@ -777,7 +806,7 @@ async fn supervise(inner: Arc<Mutex<Inner>>, mirror: Option<PathBuf>, conn: zbus
                 };
                 if !alive {
                     println!("coordd: holder peer {name} gone → auto-release token {token} (ADR-0013 B4)");
-                    release_token(&inner, mirror.as_deref(), token).await;
+                    release_token(&inner, mirror.as_deref(), token, None).await; // authoritative (B4)
                 }
             }
         }
@@ -793,7 +822,7 @@ async fn supervise(inner: Arc<Mutex<Inner>>, mirror: Option<PathBuf>, conn: zbus
         };
         if let Some(tok) = expired {
             println!("coordd: lease TTL expired → auto-release token {tok} (ADR-0013 B5)");
-            release_token(&inner, mirror.as_deref(), tok).await;
+            release_token(&inner, mirror.as_deref(), tok, None).await; // authoritative (B5 TTL)
         }
     }
 }
@@ -906,6 +935,20 @@ mod tests {
         assert_eq!(st.acquire(agent_tier, &fits()), AcquireResult::Queued);
         assert_eq!(st.holder_token(), 1); // incumbent untouched
         assert_eq!(st.holder_tier(), Some(Tier::Interactive));
+    }
+
+    #[test]
+    fn go2_release_is_identity_bound_for_cooperative_holders() {
+        // ADR-0021 GO-2: a bound cooperative lease is releasable ONLY by its acquiring peer, so one
+        // agent behind the MCP act surface can't release (DoS) another's lease.
+        let bound = (7u64, ":1.42".to_string()); // token 7 acquired by bus name :1.42
+        assert!(!may_release(Some(&bound), 7, Some(":1.99")), "a foreign peer cannot release it");
+        assert!(may_release(Some(&bound), 7, Some(":1.42")), "the acquiring peer can");
+        assert!(may_release(Some(&bound), 7, None), "an authoritative system release (B4/B5) always may");
+        assert!(may_release(None, 7, Some(":1.99")), "an unbound (owned) holder stays token-only");
+        // A token that isn't the bound one falls through to the token guard (release() then fails it),
+        // so a foreign release reads as "unknown token" — identical failure, no state change.
+        assert!(may_release(Some(&bound), 999, Some(":1.99")));
     }
 
     #[test]
