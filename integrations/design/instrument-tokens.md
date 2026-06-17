@@ -9,7 +9,9 @@ you re-theme the instrument register, change the values here and mirror them int
 surface's token block.
 
 Consumers:
-- `spikes/keyhole/contents/ui/StateToken.qml`, `FullRepresentation.qml` (QML — ADR-0012)
+- `spikes/keyhole/contents/ui/InstrumentPalette.qml` (the two-register skin), consumed by
+  `StateToken.qml` / `AuroraRing.qml` (the glyph + its aurora halo) and `FullRepresentation.qml`
+  (the panel + the VRAM aurora gauge) — ADR-0012
 - `integrations/status-panel/panel.html` (`:root`, the `--inst-*` block)
 
 ## Palette (canonical)
@@ -42,6 +44,56 @@ literals to drift.
 | `--st-idle` | `#757c8e` | down / absent (≥3:1 as a graphical mark) |
 | `--st-unknown` | `#6f7894` | can't determine (dashed ring) |
 | `--st-acting` | = `--inst-blue` | reserved: computer-use "acting" |
+
+## Aurora ramp (cool) — the GPU-pressure dawn
+
+The glyph ring/halo (`AuroraRing.qml`) and the VRAM gauge fill (`FullRepresentation.qml`) wear
+the **cool half** of the nimbus-aurora dawn — indigo → blue → violet — so the instrument breathes
+the same palette as the reactive wallpaper. It is spent on **GPU pressure / activity only**; the
+reserved warm is *never* mixed in here, keeping "pressure" (cool) visually distinct from "needs
+you" (warm). It is **earned**: invisible/flat at rest, blooming and brightening with `busy`
+(ADR-0012's "density-grows-with-load"). Zero-GPU — a QML gradient + a colour/width tween, no
+shader, no Canvas (ADR-0012 §7, the same VRAM-coexistence reason the horizon strip obeys).
+
+| Token | Dark | Light | Role |
+|---|---|---|---|
+| `auroraLo`  | `#27306E` | `#3E50C4` | deep indigo base (gauge low / halo floor) |
+| `auroraMid` | `#4A5AD2` | `#5E54C2` | blue (gauge mid) |
+| `auroraHi`  | `#8A6BDC` | `#7E42AE` | violet crest (gauge cap) |
+
+The glyph **ring** samples the live `KeyholeModel.horizonColor` directly (so the ring, the 2px
+horizon strip and the gauge share one breathing colour), darkened in the light register to stay
+legible; the **gauge** uses the cool ramp above, lifted by `Qt.lighter(…, 1 + 0.3·busy)`.
+
+## Light register (scheme-reactive)
+
+The dark deep-navy values above are the **canonical** instrument skin. The keyhole
+plasmoid now ALSO follows the desktop light/dark toggle (per user direction — the
+"react to the taskbar toggle" requirement overrides the original always-dark intent):
+its QML host (`main.qml`) derives `dark` from `Kirigami.Theme.backgroundColor`
+luminance and injects an `InstrumentPalette` (`contents/ui/InstrumentPalette.qml`,
+QtQuick-only so the dependency-light reps and the harness consume it without Kirigami)
+that swaps to a light frosted register. The reserved warm cue is held identical in
+both registers; accents that would lose contrast on a light surface are darkened.
+
+| Token | Dark | Light | Role |
+|---|---|---|---|
+| `base` | `#12141c` | `#f1f3f8` | panel base |
+| `deep` | `#161a28` | `#e6eaf3` | mid background |
+| `text` | `#e6e9f0` | `#1a1f2c` | primary text |
+| `muted` | `#b4bac8` | `#3c4356` | secondary text |
+| `label` | `#7a8090` | `#5a6173` | quiet labels |
+| `dim` | `#8a90a0` | `#6b7184` | unknown / snag / idle |
+| `hairline` | `#262a36` | `#cfd5e2` | 1px separators |
+| `tintHover` | `#1c2230` | `#dde2ee` | row hover |
+| `blue` | `#7aa2ff` | `#2c57c9` | link / acting |
+| `warm` | `#ff9957` | `#ff9957` | **RESERVED** needs-you cue (identical) |
+| `stUp` | `#86b89a` | `#2c7a50` | healthy |
+| `stAmber` | `#d9b45a` | `#8a6310` | transitional |
+
+The web status panel (`panel.html`) is **not yet** scheme-reactive — it still wears
+the canonical dark register only. If we want it to follow the toggle too, mirror this
+light register into its `:root` with a `prefers-color-scheme: light` block.
 
 ## Dot grammar (3 orthogonal axes)
 
