@@ -15,6 +15,8 @@
 //!   * `coexist` — read-only analyzer: turn `telemetry.jsonl` into a proposed residency plan
 //!     (warm pool vs heavy lane, max-loaded/keep-alive, real footprints) — proposes, never
 //!     applies (ADR-0018 §4; see `analyze.rs`).
+//!   * `mcp` — agent-facing GPU MCP server (ADR-0020 Phase 1, perceive-only): `gpu_status`/
+//!     `gpu_residency`/`gpu_why` over stdio, read-only, no NVML/D-Bus/network (see `mcp.rs`).
 //!
 //! `monitor` proves the load-bearing pieces of the VRAM coordinator WITHOUT doing
 //! anything destructive:
@@ -39,6 +41,7 @@ mod coord;
 mod feed;
 mod keyhole;
 mod lease;
+mod mcp;
 mod telemetry;
 
 const OLLAMA_PS: &str = "http://127.0.0.1:11434/api/ps";
@@ -104,13 +107,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "lease" => lease::run(),
         "telemetry" => telemetry::run(std::env::args().skip(2).collect()),
         "coexist" => analyze::run(std::env::args().skip(2).collect()),
+        "mcp" => mcp::run(std::env::args().skip(2).collect()),
         other => {
             eprintln!(
                 "agentosd: unknown mode `{other}`. Modes: monitor (read-only VRAM), \
                  feed (emit agent.json), keyhole (emit keyhole.json for the tray instrument), \
                  coord (VRAM lease + SIGKILL evict), lease (D-Bus lease server), \
                  telemetry (append telemetry.jsonl history for coexistence tuning), \
-                 coexist (analyze telemetry → propose a residency plan). See docs/adr/."
+                 coexist (analyze telemetry → propose a residency plan), \
+                 mcp (agent-facing read-only GPU MCP server, ADR-0020). See docs/adr/."
             );
             std::process::exit(2);
         }

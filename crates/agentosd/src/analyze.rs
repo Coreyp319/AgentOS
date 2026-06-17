@@ -111,7 +111,7 @@ impl ModelStat {
     /// The number admission should reserve. Trust a measured footprint only with enough clean samples;
     /// otherwise use corrected `size_vram`. Floored to `reported_max_mib` so a contaminated free-delta
     /// (observed: real read *below* size_vram) can never under-reserve — under-reserving causes OOM.
-    fn admission_mib(&self, undercount: f64) -> u64 {
+    pub(crate) fn admission_mib(&self, undercount: f64) -> u64 {
         let estimate = match self.real_footprint_mib {
             Some(v) if self.footprint_samples >= MIN_FOOTPRINT_SAMPLES => v,
             _ => ((self.reported_max_mib as f64) * undercount).round() as u64,
@@ -537,18 +537,28 @@ fn report(plan: &Plan) {
     }
 }
 
-pub fn run(_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
-    let paths = log_paths();
-    let ticks = load_ticks(&paths);
+/// Load the telemetry log and build the plan, or `None` if there is no data. Shared by `coexist`
+/// (which reports it) and `agentosd mcp` (which serves `gpu_residency` from it) — ADR-0020.
+pub fn load_plan() -> Option<Plan> {
+    let ticks = load_ticks(&log_paths());
     if ticks.is_empty() {
-        eprintln!(
-            "agentosd coexist: no telemetry at {} — start the collector (`agentosd telemetry`) and let it run.",
-            paths.last().map(|p| p.display().to_string()).unwrap_or_default()
-        );
-        std::process::exit(1);
+        None
+    } else {
+        Some(build_plan(&ticks))
     }
-    let plan = build_plan(&ticks);
-    report(&plan);
+}
+
+pub fn run(_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    match load_plan() {
+        Some(plan) => report(&plan),
+        None => {
+            eprintln!(
+                "agentosd coexist: no telemetry at {} — start the collector (`agentosd telemetry`) and let it run.",
+                log_paths().last().map(|p| p.display().to_string()).unwrap_or_default()
+            );
+            std::process::exit(1);
+        }
+    }
     Ok(())
 }
 
