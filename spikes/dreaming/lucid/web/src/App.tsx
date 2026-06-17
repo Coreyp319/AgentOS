@@ -1,6 +1,7 @@
 import { useLucidState } from './api'
 import type { LucidState } from './api'
 import { ReadinessCard, PrivateCard, LibraryCard } from './components'
+import QueuePanel from './QueuePanel'
 import Start from './Start'
 import Chain from './Chain'
 import Dreaming from './Dreaming'
@@ -39,6 +40,8 @@ export default function App() {
       ) : (
         <>
           <ReadinessCard r={s.readiness} />
+          {/* deferred Create-from-image requests — global (independent of the current dream); self-hides when empty */}
+          <QueuePanel />
           {s.private && <PrivateCard />}
           {!s.chain ? (
             <Start />

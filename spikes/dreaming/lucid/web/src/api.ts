@@ -83,6 +83,38 @@ export const useStart = () =>
 export const useBurn = () => useStateMutation((_: void) => post('/api/burn'), [['beats']])
 export const useDelete = () => useStateMutation((_: void) => post('/api/delete'), [['beats']])
 
+// ---- ADR-0019 reviewable request queue (the durable held + needs-review board) ----
+// Mirrors lucid_hub.board(): path-free by design (no snapshot, no spool location ever reaches here).
+export type QueueHeld = {
+  id: string; title: string; created: number; age_s: number; attempts: number; last_error: string | null
+}
+export type QueueReview = { id: string; title: string; since: number }
+export type QueueBoard = { held: QueueHeld[]; needs_review: QueueReview[]; recent: unknown[] }
+
+export function useQueue() {
+  return useQuery<QueueBoard>({
+    queryKey: ['queue'],
+    queryFn: () => getJSON('/api/queue'),
+    refetchInterval: 5000, // the queue moves on the drainer's cadence; a calm poll keeps the board honest
+  })
+}
+
+// retry / dismiss / approve a single request by id. The id is validated inside lucid_hub (no traversal);
+// every action refetches the board AND the main state (a made request becomes a dream).
+function useQueueAction(path: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => post(path, { id }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['queue'] })
+      qc.invalidateQueries({ queryKey: ['state'] })
+    },
+  })
+}
+export const useQueueRetry = () => useQueueAction('/api/queue/retry')
+export const useQueueDismiss = () => useQueueAction('/api/queue/dismiss')
+export const useQueueApprove = () => useQueueAction('/api/queue/approve')
+
 export function fileToB64(f: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader()

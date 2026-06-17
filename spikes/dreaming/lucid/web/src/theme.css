@@ -111,6 +111,25 @@ a{ color:var(--inst-blue) }
   padding:10px 16px; border-radius:var(--radius-sm); font-size:var(--fs-sm); box-shadow:0 12px 40px -16px #000 }
 .sr{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0 }
 
+/* ---- ADR-0019 reviewable request queue: deferred Create-from-image requests, made visible ---- */
+.card.queue{ display:flex; flex-direction:column; gap:16px }
+.queue-head{ font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.06em;
+  color:var(--inst-label); margin-bottom:6px }
+.qitem{ display:flex; gap:14px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap;
+  padding:12px 0; border-top:1px solid var(--hairline) }
+.queue-group .qitem:first-of-type{ border-top:0; padding-top:0 }
+/* a "needs your okay" item carries the one warm cue (brand-warm), never alarming red */
+.qitem.consent{ border:1px solid color-mix(in srgb,var(--brand-warm) 40%,transparent);
+  border-left:3px solid var(--brand-warm); border-radius:var(--radius-sm);
+  background:color-mix(in srgb,var(--brand-warm) 7%,transparent); padding:12px 14px; margin-bottom:8px }
+.qitem.consent + .qitem.consent{ margin-top:0 }
+.qmain{ flex:1 1 240px; min-width:0 }
+.qtitle{ font-weight:600; color:var(--inst-text) }
+.qitem .note{ margin-top:3px }
+/* the row buttons sit inline + auto-width here, not the full-width stacked `.beat` of the dream loop */
+.qitem .row{ margin-top:0; flex:0 0 auto; align-items:center }
+.qitem .beat, .qitem .ghost{ width:auto; margin:0; padding:8px 13px; font-size:var(--fs-sm) }
+
 @keyframes develop{ from{ opacity:0 } to{ opacity:.6 } }
 @keyframes drift1{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(12%,-8%) scale(1.12) } }
 @keyframes drift2{ 0%,100%{ transform:translate(0,0) scale(1.05) } 50%{ transform:translate(-10%,9%) scale(.92) } }
