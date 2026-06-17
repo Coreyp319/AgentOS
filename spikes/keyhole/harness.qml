@@ -24,7 +24,7 @@ import "contents/ui"
 Window {
     id: win
     width: 420
-    height: 520
+    height: 860
     visible: true
     color: "#08090D"
     title: "keyhole harness"
@@ -48,6 +48,15 @@ Window {
         feedPath: win.feedFromArgs()
         pollIntervalMs: 1000   // 1s in the harness so reactivity is snappy to watch
         reducedMotion: false
+    }
+
+    // Boot-health board model — null readBackend ⇒ XHR fallback (http XHR is allowed;
+    // only file:// is blocked), so the SYSTEM board is exercised standalone too.
+    // `active: true` here since there is no popup expand/collapse to gate on.
+    ServicesModel {
+        id: servicesModel
+        active: true
+        pollIntervalMs: 3000
     }
 
     // poll counter — wraps the model's Timer so we can SEE it fire
@@ -75,8 +84,9 @@ Window {
         // The real instrument panel (identical component the plasmoid hosts)
         FullRepresentation {
             Layout.fillWidth: true
-            Layout.preferredHeight: 300
+            Layout.preferredHeight: implicitHeight
             model: model
+            services: servicesModel
         }
 
         Rectangle { Layout.fillWidth: true; height: 1; color: "#1E2230" }

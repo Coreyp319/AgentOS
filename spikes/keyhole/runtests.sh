@@ -10,6 +10,13 @@
 #
 # SPDX-License-Identifier: MIT
 set -uo pipefail
+# The standalone harness reads keyhole.json via XMLHttpRequest on file:// (the
+# plasmoid uses the Plasma5Support `cat` DataSource instead). qml6 disables file://
+# XHR by default unless this override is set — without it contracttest.qml never
+# reaches the file and the suite FAILs with exit 10 (a harness-only env gotcha, not
+# a regression in the plasmoid, which has no XHR path). Export it so the suite is
+# robust out of the box.
+export QML_XHR_ALLOW_FILE_READ=1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF="/tmp/keyhole-contract.json"
 

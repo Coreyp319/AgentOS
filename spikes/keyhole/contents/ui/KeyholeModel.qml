@@ -36,6 +36,12 @@ Item {
     property var vram:  ({ used_mib: -1, total_mib: -1 })
     property var residency: []
     property var tokensPerSec: null     // null === UNKNOWN, never synthesized
+    // schema 2 (ADR-0019 §6): the local lucid queue, split into two HONEST counts.
+    //   held         = "waiting for the graphics card" — CALM weather, count only, NEVER warm.
+    //   needs_review = "needs your OK" — the warm-bloom cohort (warmth comes from feed.rs, not here).
+    // 0 is a real "nothing waiting" datum (NOT -1/UNKNOWN). A schema-1 producer omits the field,
+    // so we default to empty and let the `|| {...}` guard hold it. Two counts → two tray lines.
+    property var pendingRequests: ({ held: 0, needs_review: 0 })
 
     // --- Freshness / liveness ------------------------------------------------
     property bool everLoaded: false     // have we ever parsed a good file?
@@ -217,6 +223,25 @@ Item {
         residency = d.residency || []
         // tokens_per_sec: respect null explicitly — do NOT coalesce to 0
         tokensPerSec = (d.tokens_per_sec === undefined) ? null : d.tokens_per_sec
+        // schema 2: lucid queue mirror. Backward-compatible — a schema-1 file lacks the field and
+        // we hold the empty default (0,0), which reads as "nothing waiting", never UNKNOWN.
+        pendingRequests = d.pending_requests || ({ held: 0, needs_review: 0 })
+    }
+
+    // schema 2: the two tray lines (held = calm weather; needs_review = your-move). Empty queue →
+    // empty strings so the FullRepresentation rows collapse and the panel returns to its idle look.
+    // NEVER red, NEVER warm for `held` — the warm hue is reserved for needs_review (and is produced
+    // upstream in feed.rs, not asserted here). UNKNOWN suppresses both (a local queue we can't read
+    // says nothing — show nothing, never a guess).
+    function heldString() {
+        if (effectiveState === "unknown") return ""
+        var n = (pendingRequests && pendingRequests.held) || 0
+        return n > 0 ? (n + (n === 1 ? " held — GPU busy" : " held — GPU busy")) : ""
+    }
+    function needsReviewString() {
+        if (effectiveState === "unknown") return ""
+        var n = (pendingRequests && pendingRequests.needs_review) || 0
+        return n > 0 ? (n + (n === 1 ? " needs your OK" : " need your OK")) : ""
     }
 
     Timer {

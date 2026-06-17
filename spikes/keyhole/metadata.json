@@ -17,6 +17,5 @@
         "Website": "https://github.com/coreypreston/AgentOS"
     },
     "X-Plasma-API-Minimum-Version": "6.0",
-    "X-Plasma-NotificationArea": "true",
     "X-Plasma-NotificationAreaCategory": "SystemServices"
 }
