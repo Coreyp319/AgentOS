@@ -137,6 +137,26 @@ check("reap_orphans found the orphan", "orph1" in reaped)
 check("reap removed the sealed input subdir", not os.path.exists(os.path.join(CINPUT, ".lucid-priv-orph1")))
 check("orphan no longer private after reap", ST.is_private("orph1") is False)
 
+# --- ADR-0019 Condition 1: the on-logout burn covers EVERY live private session, not just one ---
+check("list_priv_queue empty until the queue ships", ST.list_priv_queue() == [])
+check("clear_priv_queue_dir no-op when the queue dir is absent", ST.clear_priv_queue_dir() is False)
+for s in ("burn_a", "burn_b"):                       # two concurrent private sessions
+    ST.ensure_session(s, True)
+    _, _ap = ST.frame_ref(s, True, f"{s}_n0.png")    # each with a sealed on-disk anchor frame
+    open(_ap, "w").write("FRAME")
+check("both private sessions are live", {"burn_a", "burn_b"} <= set(ST.list_private()))
+for s in sorted(set(ST.list_priv_queue()) | set(ST.list_private())):  # the ExecStop hook's core
+    ST.burn(s)
+check("Condition 1: NO sealed input subdir survives the logout burn",
+      [e for e in os.listdir(CINPUT) if e.startswith(".lucid-priv-")] == [])
+check("Condition 1: every tmpfs private session is gone",
+      not os.path.exists(os.path.join(PRIV_ROOT, "burn_a"))
+      and not os.path.exists(os.path.join(PRIV_ROOT, "burn_b")))
+_qroot = os.path.join(_TMP, "run", "agentos", "lucid-priv-queue")
+os.makedirs(_qroot, exist_ok=True)
+check("clear_priv_queue_dir removes a present queue dir we own",
+      ST.clear_priv_queue_dir() is True and not os.path.exists(_qroot))
+
 # --- cleanup ---
 import shutil  # noqa: E402
 shutil.rmtree(_TMP, ignore_errors=True)

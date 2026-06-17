@@ -36,7 +36,7 @@ JOBS_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())
                         "agentos", "lucid-jobs")
 MAX_AGE = 24 * 3600     # a board entry older than a day is stale — drop it
 MAX_JOBS = 24           # keep the most recent N; the board is a glance, not an archive
-STATUSES = ("queued", "checking", "generating", "ready", "skipped", "blocked", "failed")
+STATUSES = ("queued", "checking", "generating", "ready", "held", "skipped", "blocked", "failed")
 
 
 def _dir():

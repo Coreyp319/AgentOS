@@ -220,6 +220,35 @@ def list_private():
     return [s for s in os.listdir(root) if valid_session(s) and os.path.isdir(os.path.join(root, s))]
 
 
+def _priv_queue_root():
+    """tmpfs root for the ephemeral in-session private request queue (ADR-0019 §5). Sibling of the
+    lucid-priv dream root; does not exist until the private queue ships."""
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return os.path.join(base, "agentos", "lucid-priv-queue")
+
+
+def list_priv_queue():
+    """Live sessions holding an ephemeral private request in the tmpfs queue (ADR-0019 §5). Returns []
+    until the private queue ships (the dir is absent), so the on-logout burn already covers the queue
+    the day it lands — no second edit to the burn hook required (ADR-0019 Condition 1)."""
+    root = _priv_queue_root()
+    if not os.path.isdir(root):
+        return []
+    return [s for s in os.listdir(root) if valid_session(s)
+            and os.path.isdir(os.path.join(root, s))]
+
+
+def clear_priv_queue_dir():
+    """Remove the whole tmpfs private-queue dir — the final sweep after the per-session burn on logout
+    (ADR-0019 Condition 1). Only ever touches the tmpfs lucid-priv-queue root, and only if it is a real
+    dir we own (a planted symlink / foreign dir is refused, never followed). True iff a dir was cleared."""
+    root = _priv_queue_root()
+    if _own_real_dir(root) is True:
+        shutil.rmtree(root, ignore_errors=True)
+        return not os.path.exists(root)
+    return False
+
+
 def reap_orphans():
     """Burn any private sink (output/lucid-priv-*, input/.lucid-priv-*) whose tmpfs session is gone
     — a crash or logout can leave a clip + prompt-PNG on shared disk with no tmpfs index to find it

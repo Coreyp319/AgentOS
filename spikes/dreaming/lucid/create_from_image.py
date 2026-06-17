@@ -42,6 +42,8 @@ import lucid_b2 as B2      # noqa: E402  (seed-likeness verdict, so we can surfa
 import lucid_safety as S   # noqa: E402  (the deterministic prompt gate)
 import lucid_store as ST   # noqa: E402  (private/ephemeral storage hygiene — ADR-0016)
 import lucid_jobs as J     # noqa: E402  (visible queue for NON-private creations — the :8765 board)
+import lucid_queue as Q    # noqa: E402  (durable deferral spool — held instead of dropped, ADR-0019 §5)
+import lucid_toast as T    # noqa: E402  (G5 recovery-toast: persist-first a11y view over a held row, ADR-0019)
 
 APP = "AgentOS · Create"
 ICON = "camera-video"
@@ -259,17 +261,12 @@ def run(arg, private, pre_consent=False):
         except Exception:
             job_id = None
 
-    # Resource gate (FAIL OPEN): no lease daemon => nothing to generate on; skip calmly.
-    if not coordinator_up():
-        _job(job_id, status="skipped", detail="graphics turn-taking is offline")
-        notify("Dreaming is offline — skipping",
-               "The GPU coordinator isn't running, so the video wasn't created. It never "
-               "interrupts what you're doing.")
-        return 0
-
     tag = " · Private" if private else ""
     local = None
     try:
+        # Sanitize FIRST (ADR-0019 §5): we must hold an image we OWN, never re-fetch the
+        # attacker-influenced source at drain time. So fetch + strip EXIF + cap BEFORE the resource
+        # gate, so a coordinator-offline hold can snapshot this sanitized PNG into the durable spool.
         try:
             local = _clean_png(_fetch_raw(arg), private)   # validate + strip EXIF + cap (ADR-0017)
         except RuntimeError as e:
@@ -286,8 +283,45 @@ def run(arg, private, pre_consent=False):
             return 0
 
         _job(job_id, status="checking")
-        # Identity/likeness gate (FAIL CLOSED) — same gate for private and non-private.
+        # Identity/likeness gate (FAIL CLOSED) — same gate for private and non-private. This runs
+        # BEFORE the resource gate so a possible-minor / can't-verify image is REFUSED outright and
+        # is NEVER held: only a B2-cleared snapshot can enter the durable spool (a held record is
+        # re-run by the drainer with _trusted_seed=True, so it must already have passed B2).
         if not gate_seed(local, pre_consent, job_id):
+            return 0
+
+        # Resource gate (FAIL OPEN): no lease daemon => nothing to generate on right now. ADR-0019 §5
+        # inverts the old `skipped` drop — a B2-cleared NON-private request is HELD in the durable
+        # spool (the drainer retries when the coordinator returns), mirroring the GPU-busy block below.
+        if not coordinator_up():
+            if not private and job_id:
+                try:
+                    rec = Q.enqueue(job_id, "Create from image", local)   # held; returns the durable record; copies the PNG before the finally unlinks it
+                    _job(job_id, status="held", detail="waiting — graphics turn-taking is starting up")
+                    # G5 (ADR-0019 §5): persist-FIRST (enqueue above fsynced the row) then show the
+                    # recovery toast as a VIEW over that already-durable record — "Run when free /
+                    # Cancel" a11y actions instead of a plain notify. Fail-open: a toast failure must
+                    # NEVER break the held request (the row is safe; the drainer runs it regardless).
+                    try:
+                        T.notify_held(rec)
+                    except Exception as te:
+                        print(f"[create] held toast failed (row is safe): {te}", file=sys.stderr)
+                    return 0
+                except Exception as e:                              # fail open: never let the queue swallow the request
+                    print(f"[create] enqueue failed, falling back to skip: {e}", file=sys.stderr)
+                    # The row could NOT be persisted — fail-open honesty (no action backed by a missing
+                    # row): a no-action critical toast telling the user to re-trigger. Wrapped so the
+                    # toast can never itself break the fallback path.
+                    try:
+                        T.notify_enqueue_failed()
+                    except Exception as te:
+                        print(f"[create] enqueue-failed toast failed: {te}", file=sys.stderr)
+                    _job(job_id, status="skipped", detail="graphics turn-taking is offline")
+                    return 0
+            _job(job_id, status="skipped", detail="graphics turn-taking is offline")
+            notify("Dreaming is offline — skipping" + tag,
+                   "The GPU coordinator isn't running, so the video wasn't created. It never "
+                   "interrupts what you're doing.")
             return 0
 
         _job(job_id, status="generating")
@@ -305,7 +339,32 @@ def run(arg, private, pre_consent=False):
             notify("Couldn't create this video", "The motion prompt was blocked. Nothing created.")
             return 0
         node = L.step(session, prompt, label="animate")
-        if node is None:                         # generate_video fell open (GPU busy / preempted)
+        if node is None:                         # generate_video fell open (GPU busy / preempted / ComfyUI cold)
+            # ADR-0019 §5: a couldn't-run-now request is HELD, not dropped. For a NON-private creation we
+            # snapshot the already-sanitized PNG into the durable spool so the drainer re-runs it later on
+            # a Tier::BestEffort lease — the user never has to click again. (Private has no durable spool;
+            # its ephemeral retry queue is gated on the private-mode conditions, so it keeps the calm skip.)
+            if not private and job_id:
+                try:
+                    rec = Q.enqueue(job_id, "Create from image", local)   # held; returns the durable record; copies the PNG before the finally unlinks it
+                    _job(job_id, status="held", detail="waiting for the graphics card")
+                    # G5 (ADR-0019 §5): persist-FIRST, then the recovery toast as a VIEW over the durable
+                    # held row — "Run when free / Cancel" a11y actions, not a plain notify. Fail-open: the
+                    # held row is already safe, so a toast failure here must never break the request.
+                    try:
+                        T.notify_held(rec)
+                    except Exception as te:
+                        print(f"[create] held toast failed (row is safe): {te}", file=sys.stderr)
+                    return 0
+                except Exception as e:                              # fail open: never let the queue swallow the request
+                    print(f"[create] enqueue failed, falling back to skip: {e}", file=sys.stderr)
+                    # Row not persisted -> honest no-action critical toast (re-trigger), wrapped fail-open.
+                    try:
+                        T.notify_enqueue_failed()
+                    except Exception as te:
+                        print(f"[create] enqueue-failed toast failed: {te}", file=sys.stderr)
+                    _job(job_id, status="skipped", detail="the graphics card was busy")
+                    return 0
             _job(job_id, status="skipped", detail="the graphics card was busy")
             notify("The GPU is busy — skipped for now" + tag,
                    "Lucid waits its turn and won't interrupt you. Try again shortly.")

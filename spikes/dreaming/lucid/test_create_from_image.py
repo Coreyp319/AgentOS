@@ -118,6 +118,284 @@ check("real person, dialog yes -> generate", C.gate_seed("/x", pre_consent=False
 B2.check_seed = lambda *a, **k: B2.Verdict(False, False, "model down", {"checked": False})
 check("can't verify -> blocked (fail closed)", C.gate_seed("/x", pre_consent=False) is False)
 
+
+# === run(): coordinator-offline HOLD path (ADR-0019 §5) ==============================================
+# The whole point: a coordinator-offline request must be HELD (durable spool), not dropped to `skipped`
+# — but ONLY a B2-cleared, NON-private request, and a possible-minor must STILL be a terminal block.
+import tempfile
+import lucid_queue as Q
+import lucid_jobs as J
+import lucid_store as ST
+import lucid_linear as L
+import lucid_safety as S
+import lucid_toast as _real_toast   # used ONLY for its real _require_durable_record guard in the fake
+
+# A real, sanitizable seed via a data: URL (no network) so run()'s fetch+_clean_png actually succeeds.
+SEED_URL = "data:image/png;base64," + __import__("base64").b64encode(_png()).decode()
+
+
+class _Recorder:
+    """Stand in for the side-effecting modules; records every call so the routing is provable."""
+    def __init__(self):
+        self.jobs = {}          # job_id -> last status dict
+        self.enqueued = []      # (job_id, title, snapshot_existed)
+        self.generated = False  # did we reach L.start (i.e. actually try to generate)?
+        self.held_toasts = []   # G5: records passed to lucid_toast.notify_held (must be durable dicts)
+        self.failed_toasts = 0  # G5: count of notify_enqueue_failed (no-action, no-row) toasts
+        self.private_toasts = []  # G5: titles passed to the action-less private carve-out (if ever)
+
+
+def _install_run_harness(rec, *, coordinator, b2_flags=None, b2_verdict=None,
+                         enqueue_raises=False, spool=None):
+    """Wire run()'s dependencies to the recorder. Returns nothing; mutates module-level C/J/Q/etc."""
+    C.coordinator_up = lambda: coordinator
+
+    # Visible board (:8765) — pin a known job_id (run() uses J.create's return as job_id) so the
+    # recorder keys are stable; record the LAST status we set per job.
+    J.create = lambda title, job_id=None: "shot_test"
+    def _update(job_id, **fields):
+        rec.jobs[job_id] = fields
+    J.update = _update
+
+    # Durable spool — real enqueue against a temp spool (proves the snapshot is copied), or a raiser.
+    if enqueue_raises:
+        def _enq(job_id, title, snapshot_src=None, **k):
+            raise RuntimeError("spool unavailable")
+        Q.enqueue = _enq
+    else:
+        def _enq(job_id, title, snapshot_src=None, **k):
+            snap_ok = bool(snapshot_src) and os.path.isfile(snapshot_src)
+            rec.enqueued.append((job_id, title, snap_ok))
+            return _orig_enqueue(job_id, title, snapshot_src, spool=spool)
+        Q.enqueue = _enq
+
+    # Storage hygiene + governed generation — no-ops / trip the "generated" flag.
+    ST.reap_orphans = lambda *a, **k: None
+    ST.clear = lambda *a, **k: None
+    def _start(*a, **k):
+        rec.generated = True
+    L.start = _start
+    L.step = lambda *a, **k: {"clip": "c.mp4", "out_frame": "f.png"}
+    S.gate_prompt = lambda p: p
+
+    # G5 recovery-toast (ADR-0019 §5): fake the lucid_toast module ref on C so we can prove the held
+    # points render the persist-first a11y toast over the ENQUEUED durable record (never send a real
+    # notify-send). notify_held re-runs the REAL durable-record guard so a non-durable/private/missing
+    # record would raise here — i.e. the test fails loudly if we ever pass the wrong shape.
+    # bind the recorder into the fake (closures over `rec`)
+    def _notify_held(record, *a, **k):
+        _real_toast._require_durable_record(record)    # raises unless durable, non-private, has id
+        rec.held_toasts.append(dict(record))
+        return None
+
+    def _notify_enqueue_failed(*a, **k):
+        rec.failed_toasts += 1
+        return None
+
+    def _notify_private(title, *a, **k):
+        rec.private_toasts.append(title)
+        return None
+
+    fake = type("ToastNS", (), {})()
+    fake.notify_held = _notify_held
+    fake.notify_enqueue_failed = _notify_enqueue_failed
+    fake.notify_private = _notify_private
+    C.T = fake
+
+    # B2 verdict (the gate that must clear before a hold).
+    if b2_verdict is not None:
+        B2.check_seed = lambda *a, **k: b2_verdict
+    else:
+        B2.check_seed = mock_b2(b2_flags)
+
+
+_orig_enqueue = Q.enqueue   # keep the real durable enqueue so a non-private hold genuinely spools
+
+
+# --- coordinator OFFLINE, non-private, B2-clear -> HELD (durable spool), NOT skipped, NOT generated ---
+with tempfile.TemporaryDirectory() as spool:
+    rec = _Recorder()
+    _install_run_harness(rec, coordinator=False,
+                         b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                         spool=spool)
+    rc = C.run(SEED_URL, private=False)
+    check("offline non-private -> rc 0 (calm)", rc == 0)
+    check("offline non-private -> enqueued (held, not dropped)", len(rec.enqueued) == 1)
+    check("offline non-private -> snapshot PNG copied into spool", rec.enqueued and rec.enqueued[0][2] is True)
+    check("offline non-private -> board status 'held'",
+          rec.jobs.get("shot_test", {}).get("status") == "held")
+    check("offline non-private -> never generated (deferred, not run)", rec.generated is False)
+    # G5 (ADR-0019 §5): the held point renders the recovery toast over the ENQUEUED durable record.
+    check("offline non-private -> notify_held called exactly once", len(rec.held_toasts) == 1)
+    check("offline non-private -> notify_held got the durable record id (matches the board job)",
+          rec.held_toasts and rec.held_toasts[0].get("id") == "shot_test")
+    check("offline non-private -> notify_held record is in the durable 'held' state",
+          rec.held_toasts and rec.held_toasts[0].get("state") == "held")
+    check("offline non-private -> notify_held record is NOT private (durable-row, persist-first)",
+          rec.held_toasts and rec.held_toasts[0].get("private") is False)
+    check("offline non-private -> the held record is the SAME row the spool enqueued (carries a seq)",
+          rec.held_toasts and rec.held_toasts[0].get("seq") is not None)
+    check("offline non-private -> no enqueue-failed toast on the success path", rec.failed_toasts == 0)
+    # the durable spool actually holds a record + its sanitized snapshot
+    import glob as _glob
+    check("offline non-private -> a *.held.json exists on disk", len(_glob.glob(os.path.join(spool, "*.held.json"))) == 1)
+    check("offline non-private -> the snapshot .png exists on disk", len(_glob.glob(os.path.join(spool, "*.png"))) == 1)
+
+
+# --- coordinator OFFLINE, PRIVATE -> calm SKIP, never enters the durable spool ----------------------
+with tempfile.TemporaryDirectory() as spool:
+    rec = _Recorder()
+    _install_run_harness(rec, coordinator=False,
+                         b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                         spool=spool)
+    rc = C.run(SEED_URL, private=True)
+    check("offline private -> rc 0 (calm)", rc == 0)
+    check("offline private -> NOT enqueued (no durable spool for private)", len(rec.enqueued) == 0)
+    check("offline private -> never generated", rec.generated is False)
+    import glob as _glob
+    check("offline private -> nothing written to the durable spool", len(_glob.glob(os.path.join(spool, "*.held.json"))) == 0)
+    # G5 carve-out (ADR-0019 §5 PRIVATE): a private deferral has NO durable row, so it must NEVER pass
+    # a record to a record-requiring toast. The launcher keeps the calm plain skip notify for private.
+    check("offline private -> notify_held NEVER called (no durable record exists for a private hold)",
+          len(rec.held_toasts) == 0)
+    check("offline private -> no enqueue-failed toast either (private never enqueues)", rec.failed_toasts == 0)
+    check("offline private -> no durable-record toast was fabricated for a private item",
+          len(rec.private_toasts) == 0)
+
+
+# --- coordinator OFFLINE, possible MINOR -> TERMINAL block; never held, never enqueued --------------
+with tempfile.TemporaryDirectory() as spool:
+    rec = _Recorder()
+    _install_run_harness(rec, coordinator=False,
+                         b2_flags={"has_face": True, "real_person": True, "possibly_minor": True},
+                         spool=spool)
+    rc = C.run(SEED_URL, private=False)
+    check("offline + possible-minor -> rc 0", rc == 0)
+    check("offline + possible-minor -> NEVER enqueued (terminal block, not held)", len(rec.enqueued) == 0)
+    check("offline + possible-minor -> board status 'blocked' (not 'held')",
+          rec.jobs.get("shot_test", {}).get("status") == "blocked")
+    check("offline + possible-minor -> never generated", rec.generated is False)
+    import glob as _glob
+    check("offline + possible-minor -> nothing in the durable spool", len(_glob.glob(os.path.join(spool, "*.held.json"))) == 0)
+
+
+# --- coordinator OFFLINE, can't-verify (B2 model down) -> fail-closed refuse; never held ------------
+with tempfile.TemporaryDirectory() as spool:
+    rec = _Recorder()
+    _install_run_harness(rec, coordinator=False,
+                         b2_verdict=B2.Verdict(False, False, "model down", {"checked": False}),
+                         spool=spool)
+    rc = C.run(SEED_URL, private=False)
+    check("offline + can't-verify -> NEVER enqueued (fail-closed, not held)", len(rec.enqueued) == 0)
+    check("offline + can't-verify -> never generated", rec.generated is False)
+
+
+# --- coordinator OFFLINE, enqueue FAILS -> fail-OPEN fallback to the calm skip (request not swallowed) ---
+with tempfile.TemporaryDirectory() as spool:
+    rec = _Recorder()
+    _install_run_harness(rec, coordinator=False,
+                         b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                         enqueue_raises=True, spool=spool)
+    rc = C.run(SEED_URL, private=False)
+    check("offline + enqueue-fail -> rc 0 (still calm)", rc == 0)
+    check("offline + enqueue-fail -> falls back to 'skipped' (fail-open)",
+          rec.jobs.get("shot_test", {}).get("status") == "skipped")
+    check("offline + enqueue-fail -> never generated", rec.generated is False)
+    # G5 fail-open honesty (ADR-0019 §5): the row could NOT be persisted, so show the no-action
+    # critical "re-trigger" toast — and NEVER notify_held (there is no durable row to back an action).
+    check("offline + enqueue-fail -> notify_enqueue_failed shown (no-action, no-row honesty)",
+          rec.failed_toasts == 1)
+    check("offline + enqueue-fail -> notify_held NEVER called (no row exists to back an action)",
+          len(rec.held_toasts) == 0)
+
+
+# --- coordinator ONLINE, B2-clear -> proceeds to generation (the reorder didn't break the happy path) ---
+with tempfile.TemporaryDirectory() as spool:
+    rec = _Recorder()
+    _install_run_harness(rec, coordinator=True,
+                         b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                         spool=spool)
+    rc = C.run(SEED_URL, private=False)
+    check("online + clear -> reaches generation", rec.generated is True)
+    check("online + clear -> NOT enqueued (it ran, not held)", len(rec.enqueued) == 0)
+    check("online + clear -> board status 'ready'",
+          rec.jobs.get("shot_test", {}).get("status") == "ready")
+    check("online + clear -> notify_held NEVER called on the happy path (it ran, wasn't held)",
+          len(rec.held_toasts) == 0)
+
+
+# --- coordinator ONLINE but the GPU is busy (L.step returns None) -> HELD + recovery toast (ADR-0019 §5) ---
+# This is the SECOND held point: generate_video fell open (GPU busy / preempted / ComfyUI cold). It must
+# enqueue the durable row and render notify_held over THAT enqueued record, exactly like the offline hold.
+with tempfile.TemporaryDirectory() as spool:
+    rec = _Recorder()
+    _install_run_harness(rec, coordinator=True,
+                         b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                         spool=spool)
+    L.step = lambda *a, **k: None        # generate_video fell open -> the GPU-busy deferral branch
+    rc = C.run(SEED_URL, private=False)
+    check("gpu-busy non-private -> rc 0 (calm)", rc == 0)
+    check("gpu-busy non-private -> enqueued (held, not dropped)", len(rec.enqueued) == 1)
+    check("gpu-busy non-private -> board status 'held'",
+          rec.jobs.get("shot_test", {}).get("status") == "held")
+    check("gpu-busy non-private -> notify_held called exactly once", len(rec.held_toasts) == 1)
+    check("gpu-busy non-private -> notify_held got the enqueued durable record id",
+          rec.held_toasts and rec.held_toasts[0].get("id") == "shot_test")
+    check("gpu-busy non-private -> notify_held record is in the durable 'held' state",
+          rec.held_toasts and rec.held_toasts[0].get("state") == "held")
+    check("gpu-busy non-private -> notify_held record is NOT private",
+          rec.held_toasts and rec.held_toasts[0].get("private") is False)
+    check("gpu-busy non-private -> no enqueue-failed toast on the success path", rec.failed_toasts == 0)
+
+
+# --- coordinator ONLINE, GPU busy, but PRIVATE -> calm skip; NO durable-record toast ---------------
+with tempfile.TemporaryDirectory() as spool:
+    rec = _Recorder()
+    _install_run_harness(rec, coordinator=True,
+                         b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                         spool=spool)
+    L.step = lambda *a, **k: None        # GPU busy
+    rc = C.run(SEED_URL, private=True)
+    check("gpu-busy private -> rc 0 (calm)", rc == 0)
+    check("gpu-busy private -> NOT enqueued (private has no durable spool)", len(rec.enqueued) == 0)
+    check("gpu-busy private -> notify_held NEVER called (no durable record for a private hold)",
+          len(rec.held_toasts) == 0)
+
+
+# --- coordinator ONLINE, GPU busy, enqueue FAILS -> notify_enqueue_failed, never notify_held -------
+with tempfile.TemporaryDirectory() as spool:
+    rec = _Recorder()
+    _install_run_harness(rec, coordinator=True,
+                         b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                         enqueue_raises=True, spool=spool)
+    L.step = lambda *a, **k: None        # GPU busy
+    rc = C.run(SEED_URL, private=False)
+    check("gpu-busy + enqueue-fail -> rc 0 (still calm)", rc == 0)
+    check("gpu-busy + enqueue-fail -> falls back to 'skipped' (fail-open)",
+          rec.jobs.get("shot_test", {}).get("status") == "skipped")
+    check("gpu-busy + enqueue-fail -> notify_enqueue_failed shown (no-row honesty)", rec.failed_toasts == 1)
+    check("gpu-busy + enqueue-fail -> notify_held NEVER called (no row to back an action)",
+          len(rec.held_toasts) == 0)
+
+
+# --- fail-open: a THROWING held toast must NEVER break the held request (the row is already safe) ---
+# notify_held raises, yet the request must still come to rest calmly at rc 0 with the row enqueued+held.
+with tempfile.TemporaryDirectory() as spool:
+    rec = _Recorder()
+    _install_run_harness(rec, coordinator=False,
+                         b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                         spool=spool)
+    def _boom(record, *a, **k):
+        raise RuntimeError("swaync is on fire")
+    C.T.notify_held = _boom            # the toast layer blows up...
+    rc = C.run(SEED_URL, private=False)
+    check("toast-throws -> rc 0 (fail-open: toast failure never breaks the request)", rc == 0)
+    check("toast-throws -> still enqueued (the durable row is the backstop, not the toast)",
+          len(rec.enqueued) == 1)
+    check("toast-throws -> board status still 'held' (row safe despite the toast blowing up)",
+          rec.jobs.get("shot_test", {}).get("status") == "held")
+
+
 # --- report ---
 print(f"{ok} passed, {len(fail)} failed")
 for f in fail:

@@ -1,0 +1,15 @@
+[Unit]
+Description=AgentOS Lucid drainer tick — poll the durable request queue (ADR-0019 §5, G3)
+
+[Timer]
+# Monotonic poll: first fire 30s after login, then 20s after each run FINISHES (OnUnitInactiveSec, so a
+# long generation never stacks fires on top of itself). Worst-case latency ~20s — this is the POLLING
+# drainer; the lease-free EVENT (closed loop) is G10/Phase-2, substrate-blocked on the daemon push.
+OnBootSec=30s
+OnUnitInactiveSec=20s
+# A tick missed while logged out is NOT replayed on next login (Persistent=false): we re-poll the spool
+# fresh, we don't catch up a backlog. Honest scoping, and it keeps the private-seal posture clean.
+Persistent=false
+
+[Install]
+WantedBy=timers.target
