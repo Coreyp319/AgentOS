@@ -1,7 +1,8 @@
 # ADR-0021: Agent act-phase GO conditions — tier clamp in core + identity-bound tokens
 
-- Status: **Proposed (stub)** — gates the ADR-0020 act phase; model proposes, code disposes,
-  the human disposes on this
+- Status: **Proposed** — gates the ADR-0020 act phase. **GO-1 (tier clamp in core) is implemented +
+  pinned by test** (2026-06-16); **GO-2 (identity binding) remains open.** Model proposes, code
+  disposes; the human disposes on this.
 - Date: 2026-06-16
 - Deciders: pending human + determinism-safety-reviewer + resource-safety-reviewer +
   wayland-computeruse-reviewer
@@ -49,6 +50,15 @@ preempts) is not self-assertable by an autonomous agent regardless of which tran
   `Interactive` (or `Batch`) incumbent, `arbitrate` returns `Queue`, never `Preempt`.
 - **ADR-0020 edit:** rewrite lines 84-87 to state the clamp is a core transform configuring the
   blessed admit/arbitrate core, not an MCP-shell assertion.
+
+**Status: DONE (2026-06-16).** Implemented as a core transform: `Tier::clamp_to`/`Tier::clamp_agent`
++ `CallerClass {Trusted, Agent}` in `coord.rs`, applied in `lease::do_acquire` **before** admission
+or arbitration. The existing D-Bus `Acquire`/`Spawn` pass `CallerClass::Trusted` (tier unchanged —
+no behavior change today). Pinned by three tests: `coord::tests::{agent_class_clamps_interactive_to_batch_and_leaves_lower_tiers,
+a_clamped_agent_interactive_request_can_never_preempt}` and
+`lease::tests::an_agent_clamped_request_queues_behind_interactive_instead_of_preempting`. ADR-0020 §1
+tier-ceiling paragraph rewritten as a core transform. The `Agent` variant is `#[allow(dead_code)]`
+until the first `act` verb constructs it (gated on GO-2).
 
 ### GO-2 — Each act token is bound to its MCP-session identity
 

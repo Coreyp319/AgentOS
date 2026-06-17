@@ -633,7 +633,7 @@ mod tests {
         let m = &models[0];
         assert_eq!(m.footprint_samples, 1);
         assert!(m.admission_mib(undercount) >= 3500);
-        assert!(undercount <= UNDERCOUNT_MAX && undercount >= 1.0);
+        assert!((1.0..=UNDERCOUNT_MAX).contains(&undercount));
     }
 
     #[test]

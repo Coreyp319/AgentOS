@@ -67,6 +67,46 @@ impl Tier {
             Tier::BestEffort => "best-effort",
         }
     }
+
+    /// Clamp this tier down to a ceiling (`self.min(ceiling)`, ordering-driven). The
+    /// admission-boundary transform behind ADR-0021 GO-1.
+    pub fn clamp_to(self, ceiling: Tier) -> Tier {
+        self.min(ceiling)
+    }
+
+    /// The agent-class ceiling: clamp to `Batch` (ADR-0021 GO-1 default). An autonomous agent
+    /// may never self-assert `Interactive` — the only tier that PREEMPTS — so a clamped request
+    /// can seize the GPU from neither the desktop nor a live human request. `Interactive` stays
+    /// reserved for the trusted human-facing path. (A per-profile ceiling is a later refinement,
+    /// ADR-0021 open-Q2.)
+    pub fn clamp_agent(self) -> Tier {
+        self.clamp_to(Tier::Batch)
+    }
+}
+
+/// Trust class of a lease requester (ADR-0021 GO-1). The clamp lives in this CORE transform —
+/// not in the MCP shell — so it cannot be bypassed by a second D-Bus client: every request is
+/// reduced to its admissible tier *here*, before `arbitrate` ever sees it. Today every caller is
+/// `Trusted` (Hermes / human / CLI); the future ADR-0020 `act` verbs are the first `Agent` callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallerClass {
+    /// Trusted human-facing / Hermes / CLI path — its requested tier passes through unchanged.
+    Trusted,
+    /// An autonomous agent (the ADR-0020 MCP `act` verbs) — clamped to the agent ceiling.
+    /// Not yet constructed in non-test code: the first `Agent` caller is the `act` verb, gated on
+    /// GO-2 (identity). The clamp it drives is implemented + tested now (GO-1), so allow until then.
+    #[allow(dead_code)]
+    Agent,
+}
+
+impl CallerClass {
+    /// Reduce a requested tier to what this caller class is allowed to hold.
+    pub fn clamp(self, tier: Tier) -> Tier {
+        match self {
+            CallerClass::Trusted => tier,
+            CallerClass::Agent => tier.clamp_agent(),
+        }
+    }
 }
 
 /// The single exclusive lease's current holder (ADR-0010 §1).
@@ -395,6 +435,45 @@ mod tests {
         assert!(Tier::Interactive > Tier::Batch);
         assert!(Tier::Batch > Tier::BestEffort);
         assert!(Tier::Interactive > Tier::BestEffort);
+    }
+
+    // --- CallerClass tier clamp (ADR-0021 GO-1): the core transform, not a shell check ---
+
+    #[test]
+    fn agent_class_clamps_interactive_to_batch_and_leaves_lower_tiers() {
+        assert_eq!(CallerClass::Agent.clamp(Tier::Interactive), Tier::Batch);
+        assert_eq!(CallerClass::Agent.clamp(Tier::Batch), Tier::Batch);
+        assert_eq!(CallerClass::Agent.clamp(Tier::BestEffort), Tier::BestEffort);
+    }
+
+    #[test]
+    fn trusted_class_passes_every_tier_through_unchanged() {
+        // The existing Hermes/human/CLI path is unaffected — clamp is identity for Trusted.
+        for t in [Tier::BestEffort, Tier::Batch, Tier::Interactive] {
+            assert_eq!(CallerClass::Trusted.clamp(t), t);
+        }
+    }
+
+    #[test]
+    fn a_clamped_agent_interactive_request_can_never_preempt() {
+        // The GO-1 invariant end-to-end: an agent that ASKS for interactive is reduced to batch
+        // BEFORE arbitrate, so against any incumbent it queues — it never preempts the desktop or
+        // a live human request.
+        let agent_tier = CallerClass::Agent.clamp(Tier::Interactive); // == Batch
+        assert_eq!(
+            arbitrate(Some(Holder { tier: Tier::Interactive }), agent_tier),
+            LeaseDecision::Queue
+        );
+        assert_eq!(
+            arbitrate(Some(Holder { tier: Tier::Batch }), agent_tier),
+            LeaseDecision::Queue
+        );
+        // sanity: an UNclamped (trusted) interactive WOULD preempt the batch — proving the clamp
+        // is what makes the difference, not arbitrate.
+        assert_eq!(
+            arbitrate(Some(Holder { tier: Tier::Batch }), CallerClass::Trusted.clamp(Tier::Interactive)),
+            LeaseDecision::Preempt
+        );
     }
 
     // --- admit(): predict before load (ADR-0010 §4) ---

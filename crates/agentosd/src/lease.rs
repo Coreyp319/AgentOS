@@ -40,7 +40,7 @@ use nvml_wrapper::Nvml;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
-use crate::coord::{admit, arbitrate, free_mib, Admission, Holder, LeaseDecision, Tier};
+use crate::coord::{admit, arbitrate, free_mib, Admission, CallerClass, Holder, LeaseDecision, Tier};
 use crate::feed::feed_dir;
 // The keyhole consumes `keyhole.json` (read-only); the lease daemon publishes its arbitration
 // state to a sibling `lease.json` the keyhole producer merges in. Reusing the SAME type both
@@ -403,16 +403,23 @@ impl Coordinator {
     async fn do_acquire(
         &self,
         caller: Option<String>,
+        class: CallerClass,
         tier_name: String,
         estimate_mib: u32,
         argv: Option<Vec<String>>,
     ) -> (bool, u64, String) {
         use std::fmt::Write as _;
 
-        let tier = match Tier::from_arg(&tier_name) {
+        let requested = match Tier::from_arg(&tier_name) {
             Ok(t) => t,
             Err(e) => return (false, 0, format!("error: {e}")),
         };
+        // ADR-0021 GO-1: clamp the requested tier to the caller class HERE, in core, before any
+        // admission or arbitration — an agent can never hold a tier that preempts the desktop, on
+        // ANY transport (a guard in the MCP shell would be bypassed by a second D-Bus client). WHO
+        // is an `Agent` is the GO-2 identity question; this is the clamp that question relies on.
+        // Today every caller is `Trusted`, so this is a no-op until the `act` verbs land.
+        let tier = class.clamp(requested);
         let est = estimate_mib as u64;
         let headroom = headroom_for(est);
 
@@ -647,7 +654,9 @@ impl Coordinator {
         estimate_mib: u32,
     ) -> (bool, u64, String) {
         let caller = hdr.sender().map(|s| s.to_string());
-        self.do_acquire(caller, tier, estimate_mib, None).await
+        // The session-bus D-Bus verbs are the trusted Hermes/human/CLI path (ADR-0021): tier passes
+        // through. The future agent-facing `act` verbs are the first `CallerClass::Agent` callers.
+        self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, None).await
     }
 
     /// Owned lease via a daemon-owned launch *profile* (ADR-0013 A2 — no caller-supplied
@@ -667,7 +676,7 @@ impl Coordinator {
         };
         argv.extend(params);
         let caller = hdr.sender().map(|s| s.to_string());
-        self.do_acquire(caller, tier, estimate_mib, Some(argv)).await
+        self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, Some(argv)).await
     }
 
     /// Release the lease (true iff `token` is the current holder's). If that holder is an
@@ -872,6 +881,18 @@ mod tests {
         );
         assert_eq!(st.holder_tier(), Some(Tier::Interactive));
         assert_eq!(st.holder_token(), 2);
+    }
+
+    #[test]
+    fn an_agent_clamped_request_queues_behind_interactive_instead_of_preempting() {
+        // ADR-0021 GO-1 at the install boundary: an agent asks for interactive, the core clamps it
+        // to batch, so against a live interactive holder it QUEUES — the desktop is never preempted.
+        let mut st = LeaseState::new();
+        st.acquire(Tier::Interactive, &fits()); // a live human/interactive holder, token 1
+        let agent_tier = CallerClass::Agent.clamp(Tier::Interactive); // == Batch
+        assert_eq!(st.acquire(agent_tier, &fits()), AcquireResult::Queued);
+        assert_eq!(st.holder_token(), 1); // incumbent untouched
+        assert_eq!(st.holder_tier(), Some(Tier::Interactive));
     }
 
     #[test]

@@ -86,10 +86,13 @@ Tool surface, in two tiers of trust:
     profile allowlist — agents get, at most, allowlisted *profiles*, never a binary path), and any
     direct SIGKILL/preempt verb. Eviction stays a code decision driven by tier + admission.
 
-  **Tier ceiling (determinism guard):** an agent's `gpu_request` tier is clamped to a configured
-  maximum (default `Batch`). `Interactive` — which can preempt — is reserved for the human-facing
-  path (the actual interactive request), not self-assertable by an autonomous agent. This is the
-  concrete mechanism that stops an agent from preempting the desktop to win the GPU.
+  **Tier ceiling (determinism guard) — a CORE transform, not a shell check.** An agent-class
+  caller's tier is clamped to a configured maximum (default `Batch`) *inside* the admission core
+  (`CallerClass::clamp` in `coord`, applied in `lease::do_acquire` **before** `arbitrate` sees it),
+  so a second D-Bus client cannot bypass it the way an MCP-layer check could. `Interactive` — the
+  only tier that preempts — is therefore not self-assertable by an autonomous agent on any transport.
+  Implemented + pinned by test now (ADR-0021 GO-1); WHO counts as an `Agent` is the GO-2 identity
+  question the `act` verbs still depend on.
 
 ### 2. Feedback-driven admission (CONCUR-style AIMD) — Phase 2, conditional on a real signal
 
