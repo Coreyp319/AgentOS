@@ -2,7 +2,8 @@
 # Revert apply.sh. Pass --purge to also remove the installed binary + the telemetry history.
 set -euo pipefail
 
-UNITS=(nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service)
+UNITS=(nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service \
+       agentos-coexist-report.timer agentos-coexist-report.service)
 UNIT_DIR="$HOME/.config/systemd/user"
 BIN_DEST="$HOME/.local/bin/agentosd"
 RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -18,8 +19,8 @@ rm -f "$RUNTIME/nimbus-aurora/agent.json" "$RUNTIME/nimbus-aurora/keyhole.json"
 if [ "${1:-}" = "--purge" ]; then
   rm -f "$BIN_DEST"
   echo "✓ purged $BIN_DEST"
-  rm -f "$STATE/telemetry.jsonl" "$STATE/telemetry.jsonl.1"
-  echo "✓ purged telemetry history in $STATE"
+  rm -f "$STATE/telemetry.jsonl" "$STATE/telemetry.jsonl.1" "$STATE/coexist-history.txt"
+  echo "✓ purged telemetry + coexist history in $STATE"
 fi
 systemctl --user daemon-reload 2>/dev/null || true
 echo "✓ reverted"

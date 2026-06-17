@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily AgentOS coexist report (ADR-0018 measure-first go/no-go)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

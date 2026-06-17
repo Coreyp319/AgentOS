@@ -20,6 +20,8 @@ use serde::Deserialize;
 
 /// Headroom kept free above the warm set (mirrors `main::SAFETY_MIB`); the budget is conservative.
 const SAFETY_MIB: i64 = 512;
+/// Free-VRAM "near-miss" threshold for the go/no-go signals — below this the next load is at risk.
+const NEAR_MIB: i64 = 1500;
 /// A model is "warm-poolable" only if its real footprint leaves room for at least one peer — i.e.
 /// it takes no more than this fraction of the LLM budget. Above it, the model is exclusive
 /// (heavy-lane). 0.5 ⇒ "must fit alongside an equal-sized peer", matching ADR-0018's bounded
@@ -118,6 +120,22 @@ impl ModelStat {
     }
 }
 
+/// The Phase-3 go/no-go evidence, computed directly from the window. This is the decision the whole
+/// measure-first effort hinges on — surfaced in one command instead of an ad-hoc script.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Signals {
+    /// Most models resident at once — did `MAX_LOADED>1` ever actually hold two?
+    pub max_concurrent: usize,
+    /// Ticks with ≥2 co-resident (coexistence actually happening, not just permitted).
+    pub coexist_ticks: usize,
+    /// Reloads of warm-poolable models a persistent pool would have prevented (the swap penalty).
+    pub avoided_swaps: u64,
+    /// Ticks with free VRAM below `NEAR_MIB` / below `SAFETY_MIB` (OOM proximity).
+    pub oom_near_ticks: usize,
+    pub oom_danger_ticks: usize,
+    pub min_free_mib: i64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
     pub samples: usize,
@@ -131,12 +149,53 @@ pub struct Plan {
     pub warm_set: Vec<String>,
     /// Models too big to share — swap through the lease (heavy lane).
     pub exclusive: Vec<String>,
+    /// Per-model placement rationale (warm/heavy + why) — for the report and keyhole legibility.
+    pub reasons: BTreeMap<String, String>,
+    pub signals: Signals,
     pub max_loaded: usize,
     pub keep_alive_min: u64,
     /// `samples >= MIN_SAMPLES`. Below it the config block is suppressed (keep Ollama defaults) so a
     /// 2-minute sample can't masquerade as an authoritative recommendation.
     pub confident: bool,
     pub warnings: Vec<String>,
+}
+
+/// The go/no-go evidence, computed from the window. `warm_poolable` is the by-size set (footprint ≤
+/// the coexist ceiling) — the models that COULD coexist if the budget allowed; their reloads are the
+/// swaps a bigger warm pool would avoid.
+fn compute_signals(
+    ticks: &[RawTick],
+    warm_poolable: &std::collections::BTreeSet<String>,
+    models: &[ModelStat],
+) -> Signals {
+    let mut s = Signals { min_free_mib: -1, ..Signals::default() };
+    let mut min_free = i64::MAX;
+    for t in ticks {
+        let n = t.residency.len();
+        s.max_concurrent = s.max_concurrent.max(n);
+        if n >= 2 {
+            s.coexist_ticks += 1;
+        }
+        let f = t.vram.free_mib;
+        if f > 0 {
+            min_free = min_free.min(f);
+            if f < NEAR_MIB {
+                s.oom_near_ticks += 1;
+            }
+            if f < SAFETY_MIB {
+                s.oom_danger_ticks += 1;
+            }
+        }
+    }
+    if min_free != i64::MAX {
+        s.min_free_mib = min_free;
+    }
+    s.avoided_swaps = models
+        .iter()
+        .filter(|m| warm_poolable.contains(&m.name))
+        .map(|m| m.loads.saturating_sub(1))
+        .sum();
+    s
 }
 
 fn median(mut v: Vec<u64>) -> Option<u64> {
@@ -285,7 +344,10 @@ fn build_plan(ticks: &[RawTick]) -> Plan {
     let coexist_ceiling = (llm_budget_mib as f64 * COEXIST_FRACTION) as u64;
     let mut warm_set = Vec::new();
     let mut exclusive = Vec::new();
+    let mut warm_poolable = std::collections::BTreeSet::new();
+    let mut reasons: BTreeMap<String, String> = BTreeMap::new();
     let mut used = 0u64;
+    let mut rank = 0usize;
     for m in &models {
         let fp = m.admission_mib(undercount);
         if fp == 0 {
@@ -293,14 +355,27 @@ fn build_plan(ticks: &[RawTick]) -> Plan {
         }
         if fp > coexist_ceiling {
             exclusive.push(m.name.clone());
-        } else if (used + fp) as i64 <= llm_budget_mib {
-            warm_set.push(m.name.clone());
-            used += fp;
+            reasons.insert(
+                m.name.clone(),
+                format!("heavy-lane: {} > {} ceiling", gib(fp as i64), gib(coexist_ceiling as i64)),
+            );
         } else {
-            // Warm-poolable but the budget is already full — it'll swap within the pool.
-            exclusive.push(m.name.clone());
+            warm_poolable.insert(m.name.clone()); // could coexist by size, budget permitting
+            if (used + fp) as i64 <= llm_budget_mib {
+                rank += 1;
+                used += fp;
+                warm_set.push(m.name.clone());
+                reasons.insert(m.name.clone(), format!("warm: rank #{rank}, fits ({})", gib(fp as i64)));
+            } else {
+                exclusive.push(m.name.clone());
+                reasons.insert(
+                    m.name.clone(),
+                    format!("heavy-lane: budget full ({} of {} used)", gib(used as i64), gib(llm_budget_mib)),
+                );
+            }
         }
     }
+    let signals = compute_signals(ticks, &warm_poolable, &models);
 
     // Confidence-gated keep-alive: only recommend holding the warm set longer once there's enough
     // data; below MIN_SAMPLES the report keeps Ollama's defaults instead (no thin magic-number
@@ -317,6 +392,8 @@ fn build_plan(ticks: &[RawTick]) -> Plan {
         max_loaded: warm_set.len().max(1),
         warm_set,
         exclusive,
+        reasons,
+        signals,
         keep_alive_min,
         confident,
         models,
@@ -413,14 +490,38 @@ fn report(plan: &Plan) {
         println!("  (none fit as a coexisting set — every used model is heavy-lane on this budget)");
     } else {
         for n in &plan.warm_set {
-            println!("  • {n}");
+            println!("  • {n}  — {}", plan.reasons.get(n).map(String::as_str).unwrap_or(""));
         }
     }
     if !plan.exclusive.is_empty() {
         println!("\nHeavy lane (exclusive — swap via the ADR-0010 lease, graphics-yield):");
         for n in &plan.exclusive {
-            println!("  • {n}");
+            println!("  • {n}  — {}", plan.reasons.get(n).map(String::as_str).unwrap_or(""));
         }
+    }
+
+    // The decision the whole effort hinges on — measured, not guessed.
+    let s = &plan.signals;
+    println!("\nGo/no-go signals over the window:");
+    println!(
+        "  models co-resident: max {} | coexistence ticks (≥2): {}",
+        s.max_concurrent, s.coexist_ticks
+    );
+    println!("  avoided-swaps (warm-poolable reloads a persistent pool would prevent): {}", s.avoided_swaps);
+    println!(
+        "  OOM proximity: min free {}M | near-miss (<{}M): {} ticks | danger (<{}M): {} ticks",
+        s.min_free_mib, NEAR_MIB, s.oom_near_ticks, SAFETY_MIB, s.oom_danger_ticks
+    );
+    let verdict = if s.max_concurrent < 2 && s.avoided_swaps == 0 {
+        "no coexistence pressure observed → MAX_LOADED=1 is sufficient; Phase 3 not justified yet"
+    } else if s.avoided_swaps > 0 {
+        "warm-poolable models are being reloaded → coexistence / longer keep-alive would help"
+    } else {
+        "coexistence occurred without churn → benign"
+    };
+    println!("  → {verdict}");
+    if s.oom_danger_ticks > 0 {
+        println!("  ⚠ free fell below the {}M safety floor — the heavy-lane evictor would matter here", SAFETY_MIB);
     }
 
     if plan.confident {
@@ -563,6 +664,27 @@ mod tests {
         assert!(plan.warm_set.contains(&"small".to_string()), "small should be warm-poolable");
         assert!(plan.exclusive.contains(&"big".to_string()), "big should be heavy-lane");
         assert_eq!(plan.max_loaded, 1); // only `small` fits the warm set here
+    }
+
+    #[test]
+    fn signals_detect_coexistence_and_avoided_swaps() {
+        // Two small models co-reside for some ticks; `b` is unloaded then reloaded (a swap a bigger
+        // warm pool would have avoided).
+        let ticks = vec![
+            tick(8000, 16000, 24000, &[], &[]),
+            tick(13000, 11000, 24000, &[("a", 3000)], &["load:a"]),
+            tick(18000, 6000, 24000, &[("a", 3000), ("b", 3000)], &["load:b"]),
+            tick(13000, 11000, 24000, &[("a", 3000)], &["unload:b"]),
+            tick(18000, 6000, 24000, &[("a", 3000), ("b", 3000)], &["load:b"]),
+        ];
+        let plan = build_plan(&ticks);
+        assert_eq!(plan.signals.max_concurrent, 2);
+        assert!(plan.signals.coexist_ticks >= 2);
+        assert!(plan.signals.avoided_swaps >= 1, "b reloaded → at least one avoided-swap");
+        // every placed model carries a reason
+        for n in plan.warm_set.iter().chain(plan.exclusive.iter()) {
+            assert!(plan.reasons.contains_key(n));
+        }
     }
 
     #[test]

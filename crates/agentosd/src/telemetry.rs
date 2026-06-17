@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -53,10 +53,14 @@ const OLLAMA_PS: &str = "http://127.0.0.1:11434/api/ps";
 /// the edge-driven snapshots — telemetry writes EVERY tick. Override with `--interval SECS`.
 const DEFAULT_INTERVAL_SECS: u64 = 2;
 
-/// Rotate `telemetry.jsonl` → `.1` past this size, keeping one prior generation (ADR-0018: bounds
-/// the log to ~7–9 days at the default cadence). Override with `AGENTOSD_TELEMETRY_MAX_MIB`.
+/// Rotate `telemetry.jsonl` → `.1` past this size, keeping one prior generation. Override with
+/// `AGENTOSD_TELEMETRY_MAX_MIB`.
 const DEFAULT_MAX_MIB: u64 = 64;
-/// How often (in ticks) to stat the file for rotation — cheap, but no need every tick.
+/// Privacy retention policy (ADR-0018): rotate when the current file's oldest line exceeds this age,
+/// and drop a prior generation past it — so the trace is time-bounded, not just disk-bounded. Override
+/// with `AGENTOSD_TELEMETRY_RETENTION_DAYS`.
+const DEFAULT_RETENTION_DAYS: u64 = 7;
+/// How often (in ticks) to check for rotation — cheap, but no need every tick.
 const ROTATE_CHECK_EVERY: u64 = 64;
 
 /// Drop sub-threshold procs from the itemised list (idle GL/Wayland contexts are ~6 MiB of pure
@@ -337,14 +341,40 @@ fn max_bytes() -> u64 {
         * 1024
 }
 
-/// Rotate `path` → `path.1` (overwriting any prior `.1`) when it exceeds `max`. Best-effort: a
-/// failed rotate just means the file grows a little past the cap — never a reason to stop logging.
-fn rotate_if_big(path: &Path, max: u64) {
-    if let Ok(meta) = fs::metadata(path) {
-        if meta.len() > max {
-            let backup = path.with_extension("jsonl.1");
-            let _ = fs::rename(path, backup);
+fn retention_ms() -> u64 {
+    std::env::var("AGENTOSD_TELEMETRY_RETENTION_DAYS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&d| d > 0)
+        .unwrap_or(DEFAULT_RETENTION_DAYS)
+        * 24
+        * 3600
+        * 1000
+}
+
+/// `ts_ms` of the first (oldest) line of a jsonl file — for the age-based retention check. Cheap:
+/// reads only the first line.
+fn first_line_ts(path: &Path) -> Option<u64> {
+    let f = fs::File::open(path).ok()?;
+    let mut line = String::new();
+    std::io::BufReader::new(f).read_line(&mut line).ok()?;
+    serde_json::from_str::<serde_json::Value>(&line).ok()?.get("ts_ms")?.as_u64()
+}
+
+/// Rotate `path` → `path.1` when it exceeds `max` bytes OR its oldest line is past the retention
+/// window, and drop a prior `.1` that is itself past the window. Bounds the trace by BOTH disk and
+/// time. Best-effort: a failed rotate just means a little overshoot — never a reason to stop logging.
+fn rotate_if_needed(path: &Path, max: u64, now_ms: u64, retention: u64) {
+    let backup = path.with_extension("jsonl.1");
+    if let Some(ts) = first_line_ts(&backup) {
+        if now_ms.saturating_sub(ts) > retention {
+            let _ = fs::remove_file(&backup); // a prior generation past the window — forget it
         }
+    }
+    let too_big = fs::metadata(path).map(|m| m.len() > max).unwrap_or(false);
+    let too_old = first_line_ts(path).is_some_and(|ts| now_ms.saturating_sub(ts) > retention);
+    if too_big || too_old {
+        let _ = fs::rename(path, &backup);
     }
 }
 
@@ -387,18 +417,21 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     harden_perms(&dir, &out);
     let lease_mirror = feed_dir()?.join("lease.json");
     let max = max_bytes();
+    let retention = retention_ms();
+    let retention_days = retention / (24 * 3600 * 1000);
     println!(
-        "agentosd telemetry → {} (every {}s, rotate at {} MiB, mode 0600)",
+        "agentosd telemetry → {} (every {}s, rotate at {} MiB / {} days, mode 0600)",
         out.display(),
         interval.as_secs(),
-        max / (1024 * 1024)
+        max / (1024 * 1024),
+        retention_days,
     );
     // Disclosure (ADR-0018 privacy): record what this trace contains and how to stop/forget it.
     println!(
         "  records: VRAM + arbitrated GPU-process sizes (other apps bucketed, not named) + Ollama \
-         model residency/load history. Local-only, ~{} days. Stop: `systemctl --user stop \
+         model residency/load history. Local-only, retained ~{} days. Stop: `systemctl --user stop \
          agentos-telemetry`. Forget: delete {}*",
-        (max / (1024 * 1024)) / 8, // ~rough days at the default cadence/line size
+        retention_days,
         out.display(),
     );
 
@@ -414,7 +447,7 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         if ticks.is_multiple_of(ROTATE_CHECK_EVERY) {
-            rotate_if_big(&out, max);
+            rotate_if_needed(&out, max, now_ms(), retention);
         }
 
         let now = Instant::now();

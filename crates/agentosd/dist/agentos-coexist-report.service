@@ -1,0 +1,9 @@
+[Unit]
+Description=AgentOS coexist report — snapshot the residency plan + go/no-go signals (ADR-0018)
+
+[Service]
+Type=oneshot
+# Append a dated `agentosd coexist` snapshot to the history file so the Phase-3 go/no-go decision
+# accumulates without manual re-runs. %h = user home (systemd-expanded); $(date) is shell. Avoid the
+# `%s` printf spec — systemd would expand it to the user's shell; use a plain `echo "$(date)"` header.
+ExecStart=/bin/sh -c '{ echo; echo "===== $(date -Is) ====="; %h/.local/bin/agentosd coexist; } >> %h/.local/state/agentosd/coexist-history.txt 2>&1'
