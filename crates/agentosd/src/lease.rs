@@ -247,13 +247,20 @@ impl Inner {
     }
 }
 
-/// Basename of the launched program (argv[0]) — the keyhole's `holder` for an owned job.
+/// Basename of the launched program (argv[0]) — the keyhole's `holder` for an owned job, mapped
+/// to a friendly name for the recognized launch profiles so the tray reads `batch (comfyui)`
+/// rather than the raw `start-comfyui.sh` (and matches the keyhole WORKLOAD label). Unknown
+/// launchers fall back to the bare basename (honest, never faked).
 fn short_label(label: &str) -> String {
-    label
+    let base = label
         .split_whitespace()
         .next()
         .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    match base.as_str() {
+        "start-comfyui.sh" => "comfyui".to_string(),
+        _ => base,
+    }
 }
 
 /// Snapshot the current holder into the keyhole's lease-mirror contract. Cheap — call it while
@@ -835,6 +842,12 @@ mod tests {
         assert_eq!(short_label("/usr/bin/python main.py"), "python");
         assert_eq!(short_label("comfyui --port 8188"), "comfyui");
         assert_eq!(short_label(""), "");
+        // The comfyui launch profile maps to a friendly holder so the tray reads "batch (comfyui)"
+        // (matches the keyhole WORKLOAD label) rather than the raw launcher basename.
+        assert_eq!(
+            short_label("/home/corey/Documents/AgentOS/spikes/dreaming/start-comfyui.sh"),
+            "comfyui"
+        );
     }
 
     #[test]

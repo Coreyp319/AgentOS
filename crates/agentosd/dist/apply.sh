@@ -10,7 +10,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 BIN_DEST="$HOME/.local/bin/agentosd"
-UNITS=(nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service)
+UNITS=(agentos-lease.service nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service)
 # Timer-triggered (install both, enable only the .timer).
 REPORT_UNITS=(agentos-coexist-report.service agentos-coexist-report.timer)
 UNIT_DIR="$HOME/.config/systemd/user"
@@ -31,6 +31,7 @@ done
 systemctl --user daemon-reload
 if systemctl --user enable --now "${UNITS[@]}"; then
   echo "✓ producers installed + started (${UNITS[*]})"
+  echo "  → org.agentos.Coordinator1            (D-Bus VRAM lease/coordinator + $RUNTIME/nimbus-aurora/lease.json)"
   echo "  → $RUNTIME/nimbus-aurora/agent.json   (wallpaper mood)"
   echo "  → $RUNTIME/nimbus-aurora/keyhole.json (tray instrument)"
   echo "  → $STATE/telemetry.jsonl              (coexistence history)"

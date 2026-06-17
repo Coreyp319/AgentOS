@@ -1,0 +1,17 @@
+[Unit]
+Description=AgentOS VRAM coordinator (org.agentos.Coordinator1 — predict-before-load lease + owned-job SIGKILL evict, ADR-0006/0010/0015)
+# Not tied to graphical-session: the coordinator must arbitrate headless overnight batch/dream runs
+# too (dream.sh / lucid spawn ComfyUI through it). A restart is fail-safe — the daemon owns no jobs
+# at start (kill_on_drop reclaimed any child when the old process died) and republishes an empty
+# lease.json mirror, so the keyhole reads honest "no contention" until the next Acquire/Spawn.
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/agentosd lease
+Restart=on-failure
+RestartSec=2
+# On the SIGKILL / preempt safety path — NEVER Nice'd down; it must respond promptly to a live
+# interactive request and evict a batch job, so it cannot be starved behind the work it arbitrates.
+
+[Install]
+WantedBy=default.target
