@@ -132,6 +132,18 @@ the count-vs-order line blurs — the ADR-0019 invariant is the explicit tripwir
 entry; removing it is deleting the config line. No state migration. The CONCUR controller, if built,
 is a feedback wrapper around the existing static gate and falls back to it.
 
+## Implementation status (2026-06-16)
+
+- **Done — Phase 1 perceive** (§1, query tools): `agentosd mcp` — `crates/agentosd/src/mcp.rs`. A
+  minimal MCP server (JSON-RPC 2.0 over stdio, read-only, no NVML/D-Bus/network) exposing `gpu_status`
+  / `gpu_residency` / `gpu_why`, sourced from `keyhole.json` + the ADR-0018 `coexist` plan + telemetry
+  signals (`gpu_why` is sourced, never generated). Verified end-to-end against live data. The act verbs
+  are deliberately absent (the test pins their absence). Status of the ADR overall stays **Proposed** —
+  this is the zero-risk read slice §3 sequences first; the `act` surface still awaits the human +
+  determinism + privacy review.
+- **Next:** the intent verbs (`gpu_request`/`gpu_release` with tier ceiling + identity scoping, open-Q2)
+  after review; Phase 2 (CONCUR AIMD) remains blocked on open-Q1 (a runtime KV-pressure signal).
+
 ## Alternatives considered (from research 0011)
 
 - **Fork `mcp-system-monitor` (Python, read-only).** Rejected: read-only (no act, no legibility of
@@ -154,5 +166,8 @@ is a feedback wrapper around the existing static gate and falls back to it.
    Claude Code ↔ Hermes ↔ agentosd boundary so one agent can't `Release` another's lease?
 3. Is the `gpu_why` telemetry event log rich enough to explain a specific caller's last wait, or does
    the keyhole/telemetry schema need a per-request correlation id?
-4. Does `nvml-wrapper` 0.10 expose `nvmlMemory_v2_t` (the device-wide `reserved` field) for a small
-   refinement to the free-VRAM denominator? (Orthogonal; tracked in research 0011.)
+4. ~~Does `nvml-wrapper` 0.10 expose `nvmlMemory_v2_t` (the device-wide `reserved` field)?~~
+   **Answered (2026-06-16): no.** It exposes only `Device::memory_info()` (v1 total/free/used); the
+   device-wide `reserved` field would need a newer nvml-wrapper or raw FFI. Not worth pursuing —
+   `free_mib` is already device-accurate; the lossy part is per-process attribution, which `reserved`
+   would not fix.
