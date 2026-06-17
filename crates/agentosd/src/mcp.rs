@@ -8,9 +8,14 @@
 //! `gpu_release`) are deliberately NOT here yet — ADR-0020 §3 ships perceive first and alone, with
 //! the intent surface gated behind the determinism + privacy review.
 //!
-//! Tools: `gpu_status` (live VRAM + lease + resident models), `gpu_residency` (warm-pool/heavy-lane
-//! + each model's learned admission footprint), `gpu_why` (plain-language last-contention, sourced
-//! from telemetry — never invented, the ADR-0020 §Consequences honesty rule).
+//! Tools: `gpu_status` (live VRAM + lease tier + resident models), `gpu_residency` (warm-pool/
+//! heavy-lane + each model's learned admission footprint), `gpu_why` (plain-language last-contention,
+//! sourced from telemetry — never invented, the ADR-0020 §Consequences honesty rule).
+//!
+//! Every tool returns a typed `status` ("ok" | "unavailable") so an agent can NEVER read a dead
+//! substrate as a free GPU (the ADR-0003 fail-open-inversion trap). v1 reports the lease *tier* but
+//! not the holder's identity — naming who holds the card needs the act-phase identity plumbing
+//! (ADR-0021), so it is deferred to v2.
 
 use std::io::{BufRead, Write};
 
@@ -109,8 +114,19 @@ fn read_keyhole() -> Option<Value> {
 }
 
 fn gpu_status() -> String {
-    let Some(k) = read_keyhole() else {
-        return json!({"error": "keyhole.json unavailable — is `agentosd keyhole` running?"}).to_string();
+    status_json(read_keyhole()).to_string()
+}
+
+/// Pure shaping of `gpu_status` — separated from IO so the JSON contract is exactly pinnable. A
+/// missing snapshot returns a typed `unavailable` posture, NEVER a zeroed/free reading: an agent
+/// must not mistake a dead substrate for an idle GPU (ADR-0003 fail-open-inversion).
+fn status_json(keyhole: Option<Value>) -> Value {
+    let Some(k) = keyhole else {
+        return json!({
+            "status": "unavailable",
+            "detail": "keyhole.json not found — is `agentosd keyhole` running? a missing snapshot is NOT a free GPU",
+            "source": "keyhole.json",
+        });
     };
     let used = k.pointer("/vram/used_mib").and_then(Value::as_i64).unwrap_or(-1);
     let total = k.pointer("/vram/total_mib").and_then(Value::as_i64).unwrap_or(-1);
@@ -121,21 +137,28 @@ fn gpu_status() -> String {
         .map(|a| a.iter().filter_map(|m| m.get("name").and_then(Value::as_str)).collect())
         .unwrap_or_default();
     json!({
+        "status": "ok",
         "vram": {"free_mib": free, "used_mib": used, "total_mib": total},  // -1 == unknown
-        "lease": {
-            "tier": k.pointer("/lease/tier").and_then(Value::as_str).unwrap_or(""),
-            "holder": k.pointer("/lease/holder").and_then(Value::as_str).unwrap_or(""),
-        },
+        // v1 reports the lease *tier* only; the holder's identity is deferred to v2 (ADR-0021 —
+        // naming who holds the card is identity info that needs the act-phase plumbing).
+        "lease": {"tier": k.pointer("/lease/tier").and_then(Value::as_str).unwrap_or("")},
         "resident_models": resident,
         "source": "keyhole.json",
     })
-    .to_string()
 }
 
 fn gpu_residency() -> String {
-    let Some(plan) = crate::analyze::load_plan() else {
-        return json!({"error": "no telemetry yet — `agentosd telemetry` must run and collect first"})
-            .to_string();
+    residency_json(crate::analyze::load_plan()).to_string()
+}
+
+/// Pure shaping of `gpu_residency`. No plan yet ⇒ typed `unavailable`, not an empty-looking budget.
+fn residency_json(plan: Option<crate::analyze::Plan>) -> Value {
+    let Some(plan) = plan else {
+        return json!({
+            "status": "unavailable",
+            "detail": "no coexist plan yet — `agentosd telemetry` must run and collect first",
+            "source": "coexist plan over telemetry.jsonl",
+        });
     };
     let admit = |name: &str| -> u64 {
         plan.models
@@ -147,12 +170,11 @@ fn gpu_residency() -> String {
     let lane = |names: &[String]| -> Vec<Value> {
         names
             .iter()
-            .map(|n| {
-                json!({"model": n, "admit_mib": admit(n), "reason": plan.reasons.get(n)})
-            })
+            .map(|n| json!({"model": n, "admit_mib": admit(n), "reason": plan.reasons.get(n)}))
             .collect()
     };
     json!({
+        "status": "ok",
         "budget_mib": plan.llm_budget_mib,
         "baseline_mib": plan.baseline_mib,
         "total_mib": plan.total_mib,
@@ -171,31 +193,54 @@ fn gpu_residency() -> String {
         "note": "admit_mib is the learned, size_vram-floored reservation; a model fits warm only if it \
                  is in warm_pool. Phase-3 eviction is not yet active.",
     })
-    .to_string()
 }
 
 fn gpu_why() -> String {
-    // Sourced from the keyhole's lease.preempt narration (ADR-0012) + the coexist verdict — never
-    // generated. Empty preempt is the honest "no contention", not a guess.
-    let preempt = read_keyhole()
-        .and_then(|k| k.pointer("/lease/preempt").and_then(Value::as_str).map(str::to_string))
-        .filter(|s| !s.is_empty());
-    let recent = crate::analyze::load_plan().map(|p| {
-        let s = &p.signals;
-        if s.avoided_swaps > 0 {
-            format!("{} warm-poolable reloads in the window (a bigger warm pool / longer keep-alive would avoid them)", s.avoided_swaps)
-        } else if s.oom_danger_ticks > 0 {
-            format!("free VRAM fell below the safety floor on {} ticks", s.oom_danger_ticks)
-        } else {
-            "no contention recorded in the window".to_string()
+    why_json(read_keyhole(), crate::analyze::load_plan()).to_string()
+}
+
+/// Pure shaping of `gpu_why`. Sourced from the keyhole's `lease.preempt` narration (ADR-0012) + the
+/// coexist signals — NEVER generated. The honesty rule has three distinct states, not two:
+///   * both sources unreadable ⇒ `unavailable` ("blind", explicitly not "calm");
+///   * sources readable, empty preempt ⇒ the calm line ("the card was clear …") — a first-class
+///     honest answer, never a bare null;
+///   * a real preempt ⇒ its recorded narration, verbatim.
+fn why_json(keyhole: Option<Value>, plan: Option<crate::analyze::Plan>) -> Value {
+    if keyhole.is_none() && plan.is_none() {
+        return json!({
+            "status": "unavailable",
+            "detail": "can't see the GPU right now (no keyhole snapshot, no telemetry) — this is 'blind', not 'calm'",
+            "source": "keyhole.json (lease.preempt) + telemetry signals",
+        });
+    }
+    let last_contention = match keyhole.as_ref() {
+        None => "no lease snapshot to read".to_string(),
+        Some(k) => k
+            .pointer("/lease/preempt")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| "the card was clear; nothing waited on your behalf".into()),
+    };
+    let recent_activity = match plan {
+        Some(p) => {
+            let s = &p.signals;
+            if s.avoided_swaps > 0 {
+                format!("{} warm-poolable reloads in the window (a bigger warm pool / longer keep-alive would avoid them)", s.avoided_swaps)
+            } else if s.oom_danger_ticks > 0 {
+                format!("free VRAM fell below the safety floor on {} ticks", s.oom_danger_ticks)
+            } else {
+                "no contention recorded in the window".to_string()
+            }
         }
-    });
+        None => "no telemetry yet".to_string(),
+    };
     json!({
-        "last_contention": preempt.unwrap_or_else(|| "none recorded".into()),
-        "recent_activity": recent.unwrap_or_else(|| "no telemetry yet".into()),
+        "status": "ok",
+        "last_contention": last_contention,
+        "recent_activity": recent_activity,
         "source": "keyhole.json (lease.preempt) + telemetry signals — sourced, not generated",
     })
-    .to_string()
 }
 
 #[cfg(test)]
@@ -246,5 +291,78 @@ mod tests {
         let r = handle_request(&req).unwrap();
         assert_eq!(r["content"][0]["type"], "text");
         assert!(r["content"][0]["text"].is_string());
+    }
+
+    // --- exact-string contract pins (ADR-0020 council gap: a versioned, pinned JSON shape per
+    // perceive verb across the Rust-producer ↔ MCP-consumer boundary) ---
+
+    #[test]
+    fn status_unavailable_is_a_typed_posture_never_a_free_card() {
+        // The fail-open-inversion guard (ADR-0003): a missing snapshot must read as `unavailable`,
+        // not as a zeroed/idle GPU. An agent keys off `status`, not absent fields.
+        assert_eq!(
+            status_json(None),
+            json!({
+                "status": "unavailable",
+                "detail": "keyhole.json not found — is `agentosd keyhole` running? a missing snapshot is NOT a free GPU",
+                "source": "keyhole.json",
+            })
+        );
+    }
+
+    #[test]
+    fn status_ok_pins_the_shape_and_omits_holder_identity() {
+        let k = json!({
+            "vram": {"used_mib": 8000, "total_mib": 24000},
+            "lease": {"tier": "batch", "holder": "comfyui-dream"},
+            "residency": [{"name": "gemma3"}, {"name": "qwen2.5vl"}],
+        });
+        let v = status_json(Some(k));
+        assert_eq!(
+            v,
+            json!({
+                "status": "ok",
+                "vram": {"free_mib": 16000, "used_mib": 8000, "total_mib": 24000},
+                "lease": {"tier": "batch"},
+                "resident_models": ["gemma3", "qwen2.5vl"],
+                "source": "keyhole.json",
+            })
+        );
+        // v1 must NOT leak the holder's identity — deferred to the act phase (ADR-0021).
+        assert!(!v.to_string().contains("comfyui-dream"));
+    }
+
+    #[test]
+    fn residency_unavailable_is_typed_not_an_empty_budget() {
+        assert_eq!(
+            residency_json(None),
+            json!({
+                "status": "unavailable",
+                "detail": "no coexist plan yet — `agentosd telemetry` must run and collect first",
+                "source": "coexist plan over telemetry.jsonl",
+            })
+        );
+    }
+
+    #[test]
+    fn why_blind_is_unavailable_not_calm() {
+        // No keyhole AND no telemetry == "blind". Must be distinct from a clear card.
+        assert_eq!(
+            why_json(None, None),
+            json!({
+                "status": "unavailable",
+                "detail": "can't see the GPU right now (no keyhole snapshot, no telemetry) — this is 'blind', not 'calm'",
+                "source": "keyhole.json (lease.preempt) + telemetry signals",
+            })
+        );
+    }
+
+    #[test]
+    fn why_clear_card_is_a_first_class_calm_line() {
+        // Keyhole readable with an empty preempt is genuinely calm — a real sentence, not a null.
+        let v = why_json(Some(json!({"lease": {"preempt": ""}})), None);
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["last_contention"], "the card was clear; nothing waited on your behalf");
+        assert_eq!(v["recent_activity"], "no telemetry yet");
     }
 }

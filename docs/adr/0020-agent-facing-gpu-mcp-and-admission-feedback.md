@@ -61,14 +61,19 @@ loopback), no network listener.
 
 Tool surface, in two tiers of trust:
 
-- **Perceive (query-only, always safe):**
-  - `gpu_status` → free/used/total VRAM, current lease holder + tier, resident models (from
-    `keyhole.json` + `Status`).
-  - `gpu_residency` → the warm-pool/heavy-lane view + each model's *learned* admission footprint
-    (ADR-0018 `coexist`), so an agent can reason about "will my model fit warm or force a swap?"
-  - `gpu_why` → the legibility verb (goal d): explains the *last* wait/preempt for the caller's
-    tier in plain language ("waited 4s — a Batch dream held the heavy lane; it was reclaimed via
-    `ollama stop`, then your model loaded"). Sourced from the telemetry event log, not invented.
+- **Perceive (query-only, always safe).** Every verb returns a typed `status` (`ok` | `unavailable`)
+  so an agent can never read a dead substrate as a free GPU (the ADR-0003 fail-open-*inversion* trap).
+  - `gpu_status` → free/used/total VRAM, the lease **tier**, and resident models (from `keyhole.json`).
+    v1 reports the tier only, **not the holder's identity** — naming who holds the card is identity
+    information that needs the act-phase plumbing (ADR-0021), so it is deferred to v2.
+  - `gpu_residency` → the warm-pool/heavy-lane view + each model's *learned* admission footprint and
+    its confidence (ADR-0018 `coexist`), so an agent can reason about "will my model fit warm or force
+    a swap?"
+  - `gpu_why` → the legibility verb (goal d): a **system-level** plain-language summary of the last
+    contention, sourced from `keyhole.json`'s `lease.preempt` narration + the telemetry signals —
+    **never generated**. Three honest states, not two: `unavailable` (blind), a first-class calm line
+    (the card was clear, never a bare null), or the recorded preempt narration verbatim. Per-caller
+    phrasing ("why did *my* request wait?") awaits a per-request correlation id (open-Q3).
 
 - **Act (intent-only, code disposes):**
   - `gpu_request(tier, estimate_mib)` → a thin, identity-scoped wrapper over `Acquire`. It returns
@@ -141,6 +146,12 @@ is a feedback wrapper around the existing static gate and falls back to it.
   are deliberately absent (the test pins their absence). Status of the ADR overall stays **Proposed** —
   this is the zero-risk read slice §3 sequences first; the `act` surface still awaits the human +
   determinism + privacy review.
+  - *Council gaps closed (2026-06-16):* every verb now returns a typed `status` (`ok`|`unavailable`)
+    so a dead substrate can't read as a free GPU; `gpu_status` no longer exposes the holder identity
+    (deferred to v2); `gpu_why` distinguishes blind/calm/narration; and each verb has an exact-string
+    contract test pinning its JSON shape (`mcp.rs` — 10 tests, pure shaping split from IO). The
+    remaining council "seven prose additions" (e.g. `busy_retry` naming, `rmcp`, warm-hue tripwire)
+    attach to the **act** phase and are tracked in `docs/design/0020-agent-facing-gpu-council-brief.md`.
 - **Next:** the intent verbs (`gpu_request`/`gpu_release` with tier ceiling + identity scoping, open-Q2)
   after review; Phase 2 (CONCUR AIMD) remains blocked on open-Q1 (a runtime KV-pressure signal).
 
