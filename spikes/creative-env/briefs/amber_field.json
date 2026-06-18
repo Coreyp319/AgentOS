@@ -1,0 +1,16 @@
+{
+  "schema": "0.1.0",
+  "theme": "a waving amber field of grass, stylized like an oil painting",
+  "mood": "calm | pastoral",
+  "palette": ["#b8862f", "#e3c46a", "#f4e3a1", "#7d5e22", "#9bb04a"],
+  "elements": [
+    { "id": "field",   "kind": "grass-instances", "scale": "field", "count": 50000, "layout": "scatter" },
+    { "id": "horizon", "kind": "ground-plane",     "scale": "hero",  "count": 1 }
+  ],
+  "lighting": { "key": "golden-hour-low-sun", "intensity": "low" },
+  "motion":   { "field": "wind-wave", "speed": "slow" },
+  "camera":   { "move": "drift", "subject": "horizon", "arc": "level", "duration_s": 14, "easing": "ease-in-out" },
+  "path":     { "render_as": "mown-trail", "from": "foreground", "to": "horizon" },
+  "render":   { "style": "painterly" },
+  "bindings": { "wind.direction": "window-drag.vector", "wind.gust": "window-drag.speed" }
+}

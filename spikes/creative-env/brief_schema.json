@@ -1,0 +1,114 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "agentos/creative-env/brief-schema/v0",
+  "title": "Creative-environment brief (Design-0023 theme contract)",
+  "description": "The ONLY artifact a model is permitted to emit. Everything downstream (placement, palette, camera spline, post-grade) is deterministic code. Enums are allowlists: an off-vocabulary value is REJECTED, never coerced into geometry. See docs/design/0023-creative-environment-pipeline.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-schema-version": "0.1.0",
+  "required": ["schema", "theme", "mood", "palette", "elements", "lighting", "camera", "path"],
+  "properties": {
+    "schema": {
+      "description": "Brief contract version (SemVer-ish MAJOR.MINOR.PATCH). The two-disposer gate: every consumer (Blender now, Unreal later) MUST agree on MAJOR before disposing a brief. The validator rejects an unknown/incompatible MAJOR rather than silently mis-reading a contract it does not understand.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "x-schema-version": "0.1.0"
+    },
+    "theme": {
+      "description": "Free text, prompt-derived. Coherence does NOT depend on it — the palette + code-placement do. It is metadata for the human + the lucid caption.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "mood": {
+      "description": "Pipe-separated tags drawn from the mood allowlist. Maps to lighting + motion rate, deterministically.",
+      "type": "string",
+      "x-allowlist-tags": ["calm", "pastoral", "reverent", "tense", "playful", "somber", "bright"]
+    },
+    "palette": {
+      "description": "LOCKED. Code clamps every generated material's albedo/emission to the nearest entry here. Coherence is enforced here, not hoped for. 2..8 hex colours.",
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "items": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+    },
+    "elements": {
+      "description": "WHAT to place, not where. Code computes every transform.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "scale", "count"],
+        "properties": {
+          "id":     { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+          "kind":   { "type": "string", "x-allowlist": ["grass-instances", "ground-plane", "column", "vault", "particle", "rock", "tree"] },
+          "scale":  { "type": "string", "x-allowlist": ["small", "large", "hero", "field"] },
+          "count":  { "type": "integer", "minimum": 1, "maximum": 200000 },
+          "layout": { "type": "string", "x-allowlist": ["scatter", "avenue", "radial", "grid"] }
+        }
+      }
+    },
+    "lighting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "intensity"],
+      "properties": {
+        "key":       { "type": "string", "x-allowlist": ["golden-hour-low-sun", "underwater-god-rays", "overcast-soft", "noon-hard", "blue-hour"] },
+        "intensity": { "type": "string", "x-allowlist": ["low", "medium", "high"] }
+      }
+    },
+    "motion": {
+      "description": "Optional. The deterministic animation applied to an element by id. 'field' here names the element id that animates.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": { "type": "string", "x-allowlist": ["wind-wave", "drift", "still"] },
+        "speed": { "type": "string", "x-allowlist": ["slow", "medium", "fast"] }
+      }
+    },
+    "camera": {
+      "description": "INTENT only. Code lays the actual spline + keys the move. move/arc/easing are fixed vocab, never a free camera script.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["move", "subject", "arc", "duration_s", "easing"],
+      "properties": {
+        "move":       { "type": "string", "x-allowlist": ["reveal", "push-in", "orbit", "fly-through", "drift"] },
+        "subject":    { "type": "string", "description": "must reference an element id present in elements[]" },
+        "arc":        { "type": "string", "x-allowlist": ["rising", "level", "descending"] },
+        "duration_s": { "type": "number", "minimum": 1, "maximum": 60 },
+        "easing":     { "type": "string", "x-allowlist": ["linear", "ease-in", "ease-out", "ease-in-out"] }
+      }
+    },
+    "path": {
+      "description": "ONE spline = visible motif (render_as) AND camera rail. from/to are abstract anchors code resolves to layout coordinates.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["render_as", "from", "to"],
+      "properties": {
+        "render_as": { "type": "string", "x-allowlist": ["mown-trail", "stepping-stones", "glowing-trail", "road", "none"] },
+        "from":      { "type": "string", "x-allowlist": ["foreground", "entrance", "left", "right", "center"] },
+        "to":        { "type": "string", "x-allowlist": ["horizon", "nave", "center", "subject"] }
+      }
+    },
+    "render": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "style": { "type": "string", "x-allowlist": ["painterly", "flat", "none"] }
+      }
+    },
+    "bindings": {
+      "description": "Live-interactivity intent. The KEY is a bindable target, the VALUE a desktop signal. Both are allowlisted. Inert in the film artifact; drives the shader uniform in ambient mode (Design-0023 Interactivity). The spike validates them but does not wire the live loop.",
+      "type": "object",
+      "additionalProperties": false,
+      "x-allowlist-keys": ["wind.direction", "wind.gust"],
+      "x-allowlist-values": ["window-drag.vector", "window-drag.speed", "workspace-switch", "none"],
+      "properties": {
+        "wind.direction": { "type": "string" },
+        "wind.gust":      { "type": "string" }
+      }
+    }
+  }
+}

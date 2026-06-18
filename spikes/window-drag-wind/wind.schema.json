@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentos.local/schemas/wind.json",
+  "title": "AgentOS wind.json — desktop window-drag → wind signal",
+  "description": "Sibling of agent.json in $XDG_RUNTIME_DIR/nimbus-aurora/. Written atomically by the agentosd 'wind' sink (dot-prefixed temp + rename, exactly like feed.rs::write_feed). The shader consumer polls it (a Timer-driven poller, NOT sync-XHR — see hills-reactive README) and maps windDir = f(dir), gust = g(gust). EASED/LOW-PASSED state is what the sink writes: the producer (KWin script) emits raw deltas; the sink applies the calm spring (spec §3). Idle / no producer / stale → neutral (gust 0, dir [0,-1]); the shader resolves to its resting motion (idle byte-identical, spec §5).",
+  "type": "object",
+  "required": ["schema", "dir", "gust", "active", "updated_at"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "type": "integer",
+      "const": 1,
+      "description": "Versioned per the ADR-0009 two-consumer lesson. Bump on any breaking shape change; the consumer pins it."
+    },
+    "dir": {
+      "type": "array",
+      "description": "Eased UNIT direction vector in screen space (x right+, y down+, Wayland axis). Magnitude ~1 while a drag is active; held last-good and decayed toward the neutral [0,-1] as gust eases to 0. The shader maps this to its own up-axis (a deterministic consumer-side constant).",
+      "items": { "type": "number", "minimum": -1.0, "maximum": 1.0 },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "gust": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Eased gust strength. A drag NUDGES this up (toward the drag's normalized px/s speed) and the spring eases it back toward 0. Bounded so a fast flick can't blow out the wind."
+    },
+    "active": {
+      "type": "boolean",
+      "description": "True while a drag is in progress (producer-reported). False the moment the drag ends OR when the signal goes stale (sink-decayed). Lets the consumer distinguish a live shove from the gentle ease-back."
+    },
+    "updated_at": {
+      "type": "number",
+      "description": "Wall-clock epoch seconds when the sink last wrote. The consumer treats a wind.json older than STALE_SECS as neutral (fail-open). The sink itself decays gust to 0 and writes a final neutral frame after a drag, so a present-but-old file already reads calm."
+    }
+  },
+  "examples": [
+    { "schema": 1, "dir": [0.0, -1.0], "gust": 0.0, "active": false, "updated_at": 1750000000.0 },
+    { "schema": 1, "dir": [-0.92, 0.39], "gust": 0.61, "active": true, "updated_at": 1750000123.4 }
+  ]
+}

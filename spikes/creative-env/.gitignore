@@ -1,0 +1,6 @@
+# render output (frames, graded frames, move.mp4, scene.blend, render.json) — regenerable
+out/
+
+# python bytecode
+__pycache__/
+*.pyc

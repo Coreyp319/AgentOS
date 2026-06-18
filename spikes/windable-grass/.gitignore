@@ -1,0 +1,3 @@
+# compiled shader + transient grab — regenerable via run.sh
+*.qsb
+out.png
