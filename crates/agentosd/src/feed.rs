@@ -72,18 +72,32 @@ fn ramp(n: u32, lo: f64, hi: f64) -> f64 {
     round3(lo + (hi - lo) * t)
 }
 
-/// Pure mapping: fleet counts + optional gateway info + pending-approval count →
-/// the ambient feed. Precedence: **needs_you > snag > working > idle** — a pending
-/// approval means the agent is blocked waiting on YOU, the most actionable signal.
-pub fn derive_feed(fleet: &FleetCounts, gw: Option<&GatewayInfo>, needs_you: u32) -> AgentFeed {
+/// Pure mapping: fleet counts + optional gateway info + Hermes pending-approval count +
+/// LOCAL lucid review count → the ambient feed. Precedence: **needs_you > snag > working >
+/// idle** — a pending request waiting on YOU is the most actionable signal.
+///
+/// The warm bloom folds two ORIGINS at the count level (ADR-0019 §6, G1): a Hermes
+/// command-approval (gated on the gateway being alive, since the signal lives in gateway RAM)
+/// plus a local lucid request awaiting human review (its OWN liveness gate lives upstream in
+/// `read_lucid_review`, so it survives a Hermes outage — fail-open, ADR-0019 §1). They are
+/// disjoint intent sets summed once → one warm scalar in [0.75, 0.9], regardless of the split.
+/// `lucid_review = 0` reproduces the pre-ADR-0019 output bit-for-bit.
+pub fn derive_feed(
+    fleet: &FleetCounts,
+    gw: Option<&GatewayInfo>,
+    needs_you: u32,
+    lucid_review: u32,
+) -> AgentFeed {
     let active = fleet.running + gw.map(|g| g.active_agents).unwrap_or(0);
-    // A pending approval lives only in the gateway's RAM (P2 recon), so a crashed
-    // gateway could leave a stale needs_you.json. Only honour it while the gateway
-    // is actually alive; the plugin also rewrites an empty file on clean startup.
+    // A Hermes pending approval lives only in the gateway's RAM (P2 recon), so a crashed
+    // gateway could leave a stale needs_you.json. Only honour it while the gateway is alive;
+    // the plugin also rewrites an empty file on clean startup. The lucid count is NOT gated
+    // here — its liveness is checked at read time — so a local review survives Hermes being down.
     let gateway_alive = gw
         .map(|g| matches!(g.gateway_state.as_str(), "running" | "starting" | "degraded"))
         .unwrap_or(false);
-    let pending = if gateway_alive { needs_you } else { 0 };
+    let hermes_pending = if gateway_alive { needs_you } else { 0 };
+    let pending = hermes_pending + lucid_review;
 
     if pending > 0 {
         // the ONE deliberate warm bloom (design-ux) — outranks working/snag.
@@ -151,6 +165,50 @@ pub(crate) fn read_needs_you(path: &Path) -> u32 {
         .unwrap_or(0)
 }
 
+#[derive(Deserialize, Default)]
+struct LucidReviewFile {
+    #[serde(default)]
+    pending_review: u32,
+    #[serde(default)]
+    updated_at: f64,
+}
+
+/// Count of LOCAL lucid requests awaiting human review, from `review.json` (ADR-0019 §6, of
+/// which lucid is the SOLE writer — a different path from the Hermes `needs_you.json`, so the
+/// two producers never collide). Has its OWN liveness gate, decoupled from the Hermes gateway:
+/// a local review blooms even while Hermes is down (fail-open), and retracts within `STALE_SECS`
+/// of the drainer going quiet even though the file lingers. Absent/unparseable/stale → 0.
+pub(crate) fn read_lucid_review(path: &Path, now: f64) -> u32 {
+    const STALE_SECS: f64 = 12.0; // > 3× the drainer tick (≤4s); re-tune if the cadence changes
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<LucidReviewFile>(&s).ok())
+        .filter(|r| now - r.updated_at <= STALE_SECS)
+        .map(|r| r.pending_review)
+        .unwrap_or(0)
+}
+
+/// `$XDG_DATA_HOME/agentos/lucid-queue/<file>` (or `$HOME/.local/share/...`) — the durable lucid
+/// queue dir lucid owns and `feed.rs` only reads.
+pub(crate) fn lucid_data_path(file: &str) -> PathBuf {
+    let base = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+            format!("{home}/.local/share")
+        });
+    PathBuf::from(base).join("agentos").join("lucid-queue").join(file)
+}
+
+/// Wall-clock seconds since the epoch, for the `read_lucid_review` liveness gate.
+fn now_epoch() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
 fn current_uid() -> u32 {
     fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(1000)
 }
@@ -203,6 +261,7 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
     let kanban = hermes_path("kanban.db");
     let gateway = hermes_path("gateway_state.json");
     let needs_you_path = hermes_path("needs_you.json");
+    let lucid_review_path = lucid_data_path("review.json");
     println!("agentosd feed → {}", out.display());
 
     let mut last: Option<AgentFeed> = None;
@@ -210,13 +269,14 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
         let fleet = read_fleet(&kanban).unwrap_or_default();
         let gw = read_gateway(&gateway);
         let needs_you = read_needs_you(&needs_you_path);
-        let feed = derive_feed(&fleet, gw.as_ref(), needs_you);
+        let lucid_review = read_lucid_review(&lucid_review_path, now_epoch());
+        let feed = derive_feed(&fleet, gw.as_ref(), needs_you, lucid_review);
 
         let changed = last.as_ref() != Some(&feed);
         if changed || once {
             match write_feed(&dir, &feed) {
                 Ok(()) if changed => println!(
-                    "[{}] {} (run {}, snag {}, pend {}/{}, approve {}, gw {}) → {}",
+                    "[{}] {} (run {}, snag {}, pend {}/{}, approve {}, review {}, gw {}) → {}",
                     crate::now_hms(),
                     state_word(feed.state),
                     fleet.running,
@@ -224,6 +284,7 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
                     fleet.pending,
                     fleet.total,
                     needs_you,
+                    lucid_review,
                     gw.as_ref().map(|g| g.gateway_state.as_str()).unwrap_or("-"),
                     serde_json::to_string(&feed).unwrap(),
                 ),
@@ -257,7 +318,7 @@ mod tests {
     #[test]
     fn idle_when_empty() {
         assert_eq!(
-            derive_feed(&FleetCounts::default(), None, 0),
+            derive_feed(&FleetCounts::default(), None, 0, 0),
             AgentFeed { state: 0, busy: 0.0, warm: 0.0, snag: 0.0 }
         );
     }
@@ -265,24 +326,24 @@ mod tests {
     #[test]
     fn one_running_task_reads_as_working() {
         assert_eq!(
-            derive_feed(&counts(1, 0), None, 0),
+            derive_feed(&counts(1, 0), None, 0, 0),
             AgentFeed { state: 1, busy: 0.7, warm: 0.0, snag: 0.0 }
         );
     }
 
     #[test]
     fn busy_scales_then_saturates() {
-        assert_eq!(derive_feed(&counts(2, 0), None, 0).busy, 0.8);
-        assert_eq!(derive_feed(&counts(3, 0), None, 0).busy, 0.9);
-        assert_eq!(derive_feed(&counts(4, 0), None, 0).busy, 1.0);
-        assert_eq!(derive_feed(&counts(10, 0), None, 0).busy, 1.0);
+        assert_eq!(derive_feed(&counts(2, 0), None, 0, 0).busy, 0.8);
+        assert_eq!(derive_feed(&counts(3, 0), None, 0, 0).busy, 0.9);
+        assert_eq!(derive_feed(&counts(4, 0), None, 0, 0).busy, 1.0);
+        assert_eq!(derive_feed(&counts(10, 0), None, 0, 0).busy, 1.0);
     }
 
     #[test]
     fn gateway_chat_turns_count_as_working() {
         // No kanban tasks, but the gateway is actively processing 2 turns.
         assert_eq!(
-            derive_feed(&FleetCounts::default(), Some(&gw(2)), 0),
+            derive_feed(&FleetCounts::default(), Some(&gw(2)), 0, 0),
             AgentFeed { state: 1, busy: 0.8, warm: 0.0, snag: 0.0 }
         );
     }
@@ -291,22 +352,22 @@ mod tests {
     fn snag_takes_precedence_over_working() {
         // Busy AND snagged → snag wins, busy is forced to 0.
         assert_eq!(
-            derive_feed(&counts(3, 1), Some(&gw(5)), 0),
+            derive_feed(&counts(3, 1), Some(&gw(5)), 0, 0),
             AgentFeed { state: 4, busy: 0.0, warm: 0.0, snag: 0.6 }
         );
     }
 
     #[test]
     fn snag_scales() {
-        assert_eq!(derive_feed(&counts(0, 1), None, 0).snag, 0.6);
-        assert_eq!(derive_feed(&counts(0, 4), None, 0).snag, 0.9);
+        assert_eq!(derive_feed(&counts(0, 1), None, 0, 0).snag, 0.6);
+        assert_eq!(derive_feed(&counts(0, 4), None, 0, 0).snag, 0.9);
     }
 
     #[test]
     fn pending_approval_lights_needs_you_warm() {
         // gateway alive + 1 pending approval → the warm needs_you bloom (state 2).
         assert_eq!(
-            derive_feed(&FleetCounts::default(), Some(&gw(0)), 1),
+            derive_feed(&FleetCounts::default(), Some(&gw(0)), 1, 0),
             AgentFeed { state: 2, busy: 0.0, warm: 0.75, snag: 0.0 }
         );
     }
@@ -315,7 +376,7 @@ mod tests {
     fn needs_you_outranks_snag_and_working() {
         // busy AND snagged AND a pending approval → needs_you wins; busy+snag forced 0.
         assert_eq!(
-            derive_feed(&counts(3, 2), Some(&gw(5)), 2),
+            derive_feed(&counts(3, 2), Some(&gw(5)), 2, 0),
             AgentFeed { state: 2, busy: 0.0, warm: 0.8, snag: 0.0 }
         );
     }
@@ -323,20 +384,80 @@ mod tests {
     #[test]
     fn needs_you_suppressed_when_gateway_not_alive() {
         // a stale needs_you.json (gateway stopped / file missing) must NOT raise warm.
-        assert_eq!(derive_feed(&FleetCounts::default(), Some(&gw_state("stopped", 0)), 3).warm, 0.0);
-        assert_eq!(derive_feed(&FleetCounts::default(), None, 3).warm, 0.0);
+        assert_eq!(derive_feed(&FleetCounts::default(), Some(&gw_state("stopped", 0)), 3, 0).warm, 0.0);
+        assert_eq!(derive_feed(&FleetCounts::default(), None, 3, 0).warm, 0.0);
         // and it falls through to the real state — a running task still reads as working.
-        assert_eq!(derive_feed(&counts(1, 0), Some(&gw_state("stopped", 0)), 3).state, 1);
+        assert_eq!(derive_feed(&counts(1, 0), Some(&gw_state("stopped", 0)), 3, 0).state, 1);
     }
 
     #[test]
     fn warm_zero_without_pending_approval() {
-        // with no pending approval, warm stays 0 across all working/snag combos.
+        // with no pending approval (and no local review), warm stays 0 across all working/snag combos.
         for running in 0..6 {
             for snagged in 0..6 {
-                assert_eq!(derive_feed(&counts(running, snagged), Some(&gw(running)), 0).warm, 0.0);
+                assert_eq!(derive_feed(&counts(running, snagged), Some(&gw(running)), 0, 0).warm, 0.0);
             }
         }
+    }
+
+    // ---- ADR-0019 §6 (G1): the local lucid review folds additively into the warm bloom ----
+
+    #[test]
+    fn lucid_review_blooms_warm_even_with_dead_gateway() {
+        // The fail-open core (§1): a LOCAL review must light warm while Hermes is down — its
+        // liveness is gated upstream in read_lucid_review, NOT by gateway_alive here.
+        assert_eq!(
+            derive_feed(&FleetCounts::default(), None, 0, 1),
+            AgentFeed { state: 2, busy: 0.0, warm: 0.75, snag: 0.0 }
+        );
+        assert_eq!(
+            derive_feed(&FleetCounts::default(), Some(&gw_state("stopped", 0)), 0, 1).warm,
+            0.75
+        );
+    }
+
+    #[test]
+    fn lucid_and_hermes_pending_sum_into_one_warm_scalar() {
+        // Two disjoint origins (1 Hermes approval + 1 lucid review) sum to pending 2, ramped ONCE.
+        assert_eq!(
+            derive_feed(&FleetCounts::default(), Some(&gw(0)), 1, 1),
+            AgentFeed { state: 2, busy: 0.0, warm: 0.8, snag: 0.0 }
+        );
+        // The sum saturates the warm ramp at 0.9 and never exceeds it (1 Hermes + 3 lucid = 4).
+        assert_eq!(derive_feed(&FleetCounts::default(), Some(&gw(0)), 1, 3).warm, 0.9);
+    }
+
+    #[test]
+    fn lucid_review_zero_adds_no_warm() {
+        // lucid_review = 0 is inert: warm stays 0 across the working/snag matrix (bit-identical).
+        for running in 0..6 {
+            for snagged in 0..6 {
+                assert_eq!(derive_feed(&counts(running, snagged), Some(&gw(running)), 0, 0).warm, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn read_lucid_review_counts_a_fresh_file() {
+        let p = std::env::temp_dir().join(format!("agentos_review_fresh_{}.json", std::process::id()));
+        fs::write(&p, r#"{"schema":1,"pending_review":2,"updated_at":1000.0}"#).unwrap();
+        assert_eq!(read_lucid_review(&p, 1005.0), 2); // 5s old < 12s STALE → live
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn read_lucid_review_retracts_a_stale_file() {
+        let p = std::env::temp_dir().join(format!("agentos_review_stale_{}.json", std::process::id()));
+        fs::write(&p, r#"{"schema":1,"pending_review":3,"updated_at":1000.0}"#).unwrap();
+        assert_eq!(read_lucid_review(&p, 1100.0), 0); // 100s old > 12s → the drainer went quiet
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn read_lucid_review_absent_is_zero() {
+        let p = std::env::temp_dir().join(format!("agentos_review_absent_{}.json", std::process::id()));
+        let _ = fs::remove_file(&p);
+        assert_eq!(read_lucid_review(&p, 1000.0), 0);
     }
 
     #[test]
