@@ -9,3 +9,6 @@
 # Python bytecode (Hermes plugin source)
 __pycache__/
 *.pyc
+
+# transient git worktrees (e.g. the act-verbs worktree) — never commit a nested working tree
+/.claude/worktrees/
