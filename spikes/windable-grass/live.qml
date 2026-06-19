@@ -35,10 +35,18 @@ Window {
     property real mPrevY: 0.0
     // a11y: prefers-reduced-motion (toggle with R). Damps gust/ripple/parallax in-shader.
     property bool reducedMotion: false
+    // D toggles the look: the golden-hour reference render (dream-as-texture) <-> procedural amber.
+    property bool dreamOn: true
 
-    // procedural amber "dream" stand-in so the dreamTex sampler binds to a real texture
-    // (in the real consumer this is the Blender EEVEE render; here uDreamMix=0 anyway).
-    Rectangle {
+    // dream-as-texture: the reference-driven golden-hour render (ref_to_look.py -> dream_ref.png).
+    // The shader warps ONLY the field (horizon-weighted) by the live wind, so this scene bows to
+    // your drags while the sun / sky / structure stay put. D toggles to the procedural look.
+    Image {
+        id: dreamReal
+        source: "dream_ref.png"; visible: false
+        fillMode: Image.Stretch; cache: true; asynchronous: false
+    }
+    Rectangle {                       // on-palette fallback if dream_ref.png is missing
         id: dreamStandin
         width: 256; height: 256; visible: false
         gradient: Gradient {
@@ -47,9 +55,12 @@ Window {
             GradientStop { position: 1.0; color: "#7d5e22" }
         }
     }
+    property bool dreamRealOk: dreamReal.status === Image.Ready
     ShaderEffectSource {
-        id: dreamSrc; sourceItem: dreamStandin; live: false; hideSource: true
-        textureSize: Qt.size(256, 256)
+        id: dreamSrc
+        sourceItem: win.dreamRealOk ? dreamReal : dreamStandin
+        live: false; hideSource: true
+        textureSize: win.dreamRealOk ? Qt.size(1024, 576) : Qt.size(256, 256)
     }
 
     ShaderEffect {
@@ -66,7 +77,7 @@ Window {
         property real     uAgentBusy:  0.0
         property real     uAgentWarm:  0.0
         property real     uAgentSnag:  0.0
-        property real     uDreamMix:   0.0
+        property real     uDreamMix:   win.dreamOn ? 1.0 : 0.0
         property variant  dreamTex:    dreamSrc
         // a11y / liveness (ADR-0023 P2.12). Live viewer has a present producer, so stale=0;
         // reduced-motion is user-togglable (R) to demonstrate the motion-sensitivity damp.
@@ -119,6 +130,7 @@ Window {
         color: "#2a3a1c"; font.pixelSize: 14
         text: "drag to steer the wind · release to calm · R: "
               + (win.reducedMotion ? "reduced-motion ON" : "reduced-motion off")
+              + " · D: " + (win.dreamOn ? "golden-hour look" : "procedural look")
               + " · ⌘Q / Ctrl+Q to quit"
     }
 
@@ -126,6 +138,9 @@ Window {
     Item {
         anchors.fill: parent
         focus: true
-        Keys.onPressed: (e) => { if (e.key === Qt.Key_R) win.reducedMotion = !win.reducedMotion; }
+        Keys.onPressed: (e) => {
+            if (e.key === Qt.Key_R) win.reducedMotion = !win.reducedMotion;
+            else if (e.key === Qt.Key_D) win.dreamOn = !win.dreamOn;
+        }
     }
 }

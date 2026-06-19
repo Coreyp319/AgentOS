@@ -23,9 +23,9 @@ Window {
     // uDreamMix=0 (procedural look), so the dreamTex source only matters for the demo frame.
     Image {
         id: dreamReal
-        source: "../creative-env/out/graded/g_0001.png"
+        source: "dream_ref.png"     // reference-driven golden-hour render (ref_to_look.py)
         visible: false
-        // 640x360 EEVEE frame; fillMode keeps it framed when sampled at uv 0..1.
+        // 1024x576 look; fillMode keeps it framed when sampled at uv 0..1.
         fillMode: Image.Stretch
         cache: true
         asynchronous: false
@@ -46,7 +46,7 @@ Window {
         id: dreamSrc
         sourceItem: win.dreamRealOk ? dreamReal : dreamStandin
         live: false; hideSource: true
-        textureSize: win.dreamRealOk ? Qt.size(640, 360) : Qt.size(256, 256)
+        textureSize: win.dreamRealOk ? Qt.size(1024, 576) : Qt.size(256, 256)
     }
 
     ShaderEffect {

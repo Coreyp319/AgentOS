@@ -1,0 +1,176 @@
+<!doctype html>
+<!--
+  aurora-web.html — WebGL port of nimbus aurora's "Flow" look, for the AgentOS
+  status panel's living backdrop. Faithful to com.nimbus.aurora/contents/shaders/
+  aurora.frag (hash/vnoise/fbm/fbm3, iq domain-warp `flowField`, 5-stop `ramp`),
+  re-palette'd to the instrument deep-navy register (integrations/design/
+  instrument-tokens.md) and kept dark/low-contrast so panel text stays legible.
+
+  Agent reactivity mirrors the wallpaper's grammar (uAgent* uniforms):
+    busy → faster flow + a touch brighter   warm → slow dawn glow low in frame
+    snag → thicker/dimmer, desaturated (NEVER red)
+
+  Deterministic capture: ?t=<sec> renders ONE frame; ?busy= ?warm= ?snag= ?dark=
+  ?intensity= set the mood. No query → live animation.
+  SPDX-License-Identifier: GPL-3.0-or-later  (matches nimbus aurora)
+-->
+<meta charset="utf-8" />
+<title>aurora-web spike</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0e1017; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<canvas id="c"></canvas>
+<script>
+const FRAG = `
+precision highp float;
+uniform vec2  iResolution;
+uniform float iTime;
+uniform float uDark;       // 1 dark, 0 light
+uniform float uBusy;       // 0..1
+uniform float uWarm;       // 0..1
+uniform float uSnag;       // 0..1
+uniform float uIntensity;  // master vividness
+
+float hash(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  float a=hash(i), b=hash(i+vec2(1.0,0.0)), c=hash(i+vec2(0.0,1.0)), d=hash(i+vec2(1.0,1.0));
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+float fbm(vec2 p){ float v=0.0,a=0.55; mat2 r=mat2(0.80,0.60,-0.60,0.80);
+  for(int i=0;i<5;i++){ v+=a*vnoise(p); p=r*p*2.02+11.3; a*=0.5; } return v; }
+float fbm3(vec2 p){ float v=0.0,a=0.6; mat2 r=mat2(0.80,0.60,-0.60,0.80);
+  for(int i=0;i<3;i++){ v+=a*vnoise(p); p=r*p*2.02+11.3; a*=0.5; } return v; }
+
+vec3 ramp(float t, vec3 c0,vec3 c1,vec3 c2,vec3 c3,vec3 c4){
+  t=clamp(t,0.0,1.0)*4.0;
+  if(t<1.0) return mix(c0,c1,t);
+  if(t<2.0) return mix(c1,c2,t-1.0);
+  if(t<3.0) return mix(c2,c3,t-2.0);
+  return mix(c3,c4,t-3.0);
+}
+
+// nimbus aurora flowField (advected domain-warp), verbatim shape.
+float flowField(vec2 base, float t){
+  vec2 q=vec2(fbm3(base+vec2(0.0,0.12*t)), fbm3(base+vec2(5.2,1.7-0.10*t)));
+  vec2 r=vec2(fbm3(base+1.8*q+vec2(1.7,9.2+0.08*t)), fbm3(base+1.8*q+vec2(8.3,2.8-0.07*t)));
+  return fbm(base+2.2*r);
+}
+
+void main(){
+  vec2 res = iResolution;
+  vec2 uv  = gl_FragCoord.xy / res;                       // 0..1, y up
+  vec2 p   = (gl_FragCoord.xy - 0.5*res) / res.y;         // aspect-correct, centered
+
+  // Instrument deep-navy register (dark). A light register kept for parity.
+  vec3 c0,c1,c2,c3,c4;
+  if (uDark > 0.5) {
+    // Deliberately deep + muted: this sits BEHIND translucent glass cards, so the
+    // brightest crest must still leave white text legible. Subtle living flow, not a wallpaper.
+    c0=vec3(0.026,0.034,0.052);   // deepest — near --inst-base
+    c1=vec3(0.042,0.064,0.105);   // deep blue
+    c2=vec3(0.064,0.104,0.168);   // cool blue
+    c3=vec3(0.092,0.156,0.232);   // muted teal
+    c4=vec3(0.150,0.245,0.330);   // soft crest (no bright cyan)
+  } else {
+    c0=vec3(0.900,0.920,0.955);
+    c1=vec3(0.760,0.820,0.910);
+    c2=vec3(0.620,0.720,0.870);
+    c3=vec3(0.500,0.640,0.820);
+    c4=vec3(0.380,0.560,0.780);
+  }
+
+  float t = iTime * 0.6 * (0.6 + 1.0*uBusy);              // calm but visible drift; busy speeds it
+  vec2 base = p*2.8 + vec2(0.12*t, -0.06*t);              // directional advection
+  float f = flowField(base, t);                           // ribbon field
+
+  float field = smoothstep(0.28, 0.82, f);
+  vec3 col = ramp(field, c0,c1,c2,c3,c4);
+
+  // busy: a touch brighter / more saturated
+  col *= (1.0 + 0.22*uBusy);
+
+  // snag: pull toward luma (desaturate) and dim — calm, never red
+  float luma = dot(col, vec3(0.30,0.59,0.11));
+  col = mix(col, vec3(luma), 0.60*uSnag);
+  col *= (1.0 - 0.32*uSnag);
+
+  // warm: the reserved dawn-glow, low in the frame (needs-you)
+  vec3 warmHue = vec3(1.0, 0.60, 0.34);
+  float low  = 1.0 - smoothstep(0.0, 0.60, uv.y);        // strongest at the bottom
+  float glow = low * uWarm * (0.45 + 0.35*flowField(base*0.6, t*0.5));
+  col = mix(col, warmHue, 0.40*glow);
+
+  // very gentle top-down darkening so header text keeps contrast
+  col *= mix(0.90, 1.0, smoothstep(0.0, 0.9, uv.y));
+
+  col *= uIntensity;
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+const VERT = `
+attribute vec2 a;
+void main(){ gl_Position = vec4(a, 0.0, 1.0); }`;
+
+const q = new URLSearchParams(location.search);
+const num = (k, d) => q.has(k) ? parseFloat(q.get(k)) : d;
+const fixedT = q.has('t') ? num('t', 0) : null;
+const mood = { busy: num('busy',0), warm: num('warm',0), snag: num('snag',0),
+               dark: num('dark',1), intensity: num('intensity',1) };
+
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl', { antialias:false, preserveDrawingBuffer:true })
+        || cv.getContext('experimental-webgl', { preserveDrawingBuffer:true });
+console.log('AURORA: gl=' + (gl ? 'ok' : 'NULL'));
+if (!gl) { document.body.style.background = '#ff00ff'; throw new Error('no webgl'); }
+window.addEventListener('error', e => console.log('AURORA: error ' + e.message));
+function sh(type, src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const loc = gl.getAttribLocation(prog, 'a');
+gl.enableVertexAttribArray(loc);
+gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+const U = n => gl.getUniformLocation(prog, n);
+const uRes=U('iResolution'), uTime=U('iTime'), uDark=U('uDark'),
+      uBusy=U('uBusy'), uWarm=U('uWarm'), uSnag=U('uSnag'), uInt=U('uIntensity');
+
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  cv.width = Math.floor(innerWidth*dpr); cv.height = Math.floor(innerHeight*dpr);
+  gl.viewport(0,0,cv.width,cv.height);
+}
+window.addEventListener('resize', resize); resize();
+
+function draw(t){
+  gl.uniform2f(uRes, cv.width, cv.height);
+  gl.uniform1f(uTime, t);
+  gl.uniform1f(uDark, mood.dark);
+  gl.uniform1f(uBusy, mood.busy);
+  gl.uniform1f(uWarm, mood.warm);
+  gl.uniform1f(uSnag, mood.snag);
+  gl.uniform1f(uInt, mood.intensity);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+// Always draw inside rAF so the compositor commits a frame (headless --screenshot
+// won't capture a WebGL buffer drawn synchronously before the first composite).
+// fixedT just pins the shader time so captures are deterministic.
+const t0 = performance.now();
+let frames = 0;
+(function loop(){
+  draw(fixedT !== null ? fixedT : (performance.now() - t0) / 1000);
+  if (frames++ === 1) console.log('AURORA: composited size=' + cv.width + 'x' + cv.height + ' glErr=' + gl.getError());
+  requestAnimationFrame(loop);
+})();
+</script>

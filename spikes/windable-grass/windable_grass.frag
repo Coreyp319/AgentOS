@@ -260,9 +260,11 @@ void main() {
     // === dream-as-texture: warp the generated render by the SAME wind, then grade =======
     // The render carries the LOOK; the wind here is the live MOTION applied to it. The
     // displacement uses the same bend so the baked field bows with the live signal.
-    vec2 warp = vec2(bendAmt * 0.5, baseSway * 0.3);
+    // warp only the FIELD (horizon-weighted) so the wheat bows while the reference render's
+    // sun / sky / structure stay put — a real field bends, the horizon line does not.
+    vec2 warp = vec2(bendAmt * 0.5, baseSway * 0.3) * horizon;
     vec3 dream = texture(dreamTex, uv + warp).rgb;
-    dream      = paletteReduce(dream, 0.18);                     // keep it on-palette (gentle)
+    dream      = paletteReduce(dream, 0.08);                     // keep the reference's golden-hour color (very gentle)
 
     // choose source: procedural fallback (uDreamMix=0) ↔ graded dream (uDreamMix=1).
     vec3 col3 = mix(proc, dream, clamp(uDreamMix, 0.0, 1.0));
