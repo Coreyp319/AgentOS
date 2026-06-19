@@ -73,8 +73,9 @@ plasmoid now ALSO follows the desktop light/dark toggle (per user direction — 
 its QML host (`main.qml`) derives `dark` from `Kirigami.Theme.backgroundColor`
 luminance and injects an `InstrumentPalette` (`contents/ui/InstrumentPalette.qml`,
 QtQuick-only so the dependency-light reps and the harness consume it without Kirigami)
-that swaps to a light frosted register. The reserved warm cue is held identical in
-both registers; accents that would lose contrast on a light surface are darkened.
+that swaps to a light frosted register. The reserved warm *glow/halo* (`warm`) is held
+identical in both registers; its *foreground* text/glyph (`warmText`) and any other accent
+that would lose contrast on a light surface are darkened (a same-family copper for warm).
 
 | Token | Dark | Light | Role |
 |---|---|---|---|
@@ -83,11 +84,12 @@ both registers; accents that would lose contrast on a light surface are darkened
 | `text` | `#e6e9f0` | `#1a1f2c` | primary text |
 | `muted` | `#b4bac8` | `#3c4356` | secondary text |
 | `label` | `#7a8090` | `#5a6173` | quiet labels |
-| `dim` | `#8a90a0` | `#6b7184` | unknown / snag / idle |
+| `dim` | `#8a90a0` | `#5a6173` | unknown / snag / idle (light nudged to ≥4.5:1) |
 | `hairline` | `#262a36` | `#cfd5e2` | 1px separators |
 | `tintHover` | `#1c2230` | `#dde2ee` | row hover |
 | `blue` | `#7aa2ff` | `#2c57c9` | link / acting |
-| `warm` | `#ff9957` | `#ff9957` | **RESERVED** needs-you cue (identical) |
+| `warm` | `#ff9957` | `#ff9957` | **RESERVED** needs-you GLOW/halo FILL (identical across registers) |
+| `warmText` | `#ff9957` | `#a8480f` | **RESERVED** needs-you FOREGROUND (glyph + label) — light darkened to a copper of the SAME warm family because `#ff9957` on `#f1f3f8` is only 1.90:1; `#a8480f` clears AA (~5:1). The bright `warm` stays the glow/halo fill only |
 | `stUp` | `#86b89a` | `#2c7a50` | healthy |
 | `stAmber` | `#d9b45a` | `#8a6310` | transitional |
 
@@ -110,3 +112,24 @@ light register into its `:root` with a `prefers-color-scheme: light` block.
 - **Radius:** `--radius-sm` 9 / `--radius-md` 16 / `--radius-pill` 999.
 - **Blur/glass:** `--blur-raised` 14 / `--blur-overlay` 18, with a no-blur fallback under
   `prefers-reduced-transparency` for the graphics-yield / low-VRAM case.
+
+## Section wash (ember) — condensed-row earned motion
+
+Motion is the off-nominal channel on the condensed SYSTEM rows (ADR-0012 §7 amendment, the
+contained ember). A collapsed **attention** section carries a translucent warm wash **derived from
+`warm` (#FF9957) — never a literal** — gathering from the row's low edge (top stop alpha 0 → bottom
+stop alpha 1), scaled by the opacity envelope below. It **blooms in once on arrival, then holds a
+steady glow — no sustained breath** (product-owner call), so a SYSTEM `attention` is motionless at
+rest and never impersonates the wallpaper's reserved `needs_you` dawn-*breath*. Consumed by
+`FullRepresentation.qml` (the board delegate).
+
+| token | value | meaning |
+|---|---|---|
+| `wash-rest` | `0.09` | steady hold opacity (the level it settles to after the bloom) |
+| `wash-peak` | `0.14` | one-shot bloom-in crest **and** the single reduced-motion still value |
+| `wash-bloom-ms` | `1400` (OutCubic) | bloom-in on the transition *into* attention (the `AuroraRing` curve) |
+| `tint-sunrise-ms` | `2500` (OutCubic) | header tint dawn-in on a real tone change (the HorizonStrip curve); gated by the `_prevTones` latch so a steady poll never re-fires it |
+| `caret-rotate-ms` | `120` (OutCubic) | disclosure caret rotation on toggle (caret leads, tint follows) |
+| `member-fade-ms` | `180` (OutCubic) | member rows fade on expand/collapse (opacity only — height is never tweened) |
+
+Opacity envelope: `washOpacity = reducedMotion ? wash-peak : wash-rest + (wash-peak − wash-rest)·bloom`, where `bloom` ∈ [1→0] decays once over `wash-bloom-ms` on arrival and is 0 thereafter (steady at `wash-rest`). **Reduced-motion** holds at `wash-peak` (a legible still crest) with no bloom. **Honest UNKNOWN:** a stale/unreachable board performs none of this — rows go dim-still.

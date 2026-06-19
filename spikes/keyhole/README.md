@@ -198,11 +198,22 @@ QML import paths confirmed present: `org.kde.plasma.plasmoid` (`PlasmoidItem`),
 
 A `PlasmoidItem`'s `fullRepresentation` is hosted by Plasma in a `PlasmaCore` Dialog whose
 background **is** the translucent, blurred panel-theme surface — the same native KWin blur the
-panel and other tray popups get. No `ShaderEffect`, no `FrostedGlass`, zero GPU competition
-with inference (ADR-0012 §7 satisfied by construction). The harness paints its own quiet-dark
+panel and other tray popups get. The popup BACKGROUND needs no `ShaderEffect` / `FrostedGlass`
+(ADR-0012 §7 satisfied by construction for the chrome). The harness paints its own quiet-dark
 `#12141C` fallback only because it has no Plasma popup host; in the plasmoid that rectangle
 sits *in front of* the blurred dialog background. Mechanism confirmed present
 (`PlasmaCore` Dialog + the running compositor's blur); not separately screenshotted in-panel.
+
+> **Update (2026-06-17):** the GLYPH PORTHOLE (`AuroraRing.qml`) now earns ONE scoped
+> `ShaderEffect` — the real animated nimbus-aurora flow (`porthole.frag.qsb`, the same Flow
+> look as the wallpaper + the status-panel backdrop), superseding §7's literal "no shader" for
+> that single <100px surface while keeping its VRAM intent (see ADR-0012's 2026-06-17 amendment).
+> Distinct from the popup-background claim above (the chrome is still shader-free). De-risked +
+> integrated on the live session: `qml6 portholetest.qml` (mechanism: circular mask + 5 moods +
+> t=2/10/20 motion → `portholetest.png`) and `qml6 ringtest.qml` (integration: glyph legible over
+> the flow → `ringtest.png`). **Capture MUST run on the live session** — offscreen has no GL
+> context, so a `ShaderEffect` grabs as a BLANK frame there (the trap to avoid). Shader compiled
+> with `/usr/lib/qt6/bin/qsb --qt6` (the wallpaper qsb's target set).
 
 ### (5) Finalized `keyhole.json` schema
 

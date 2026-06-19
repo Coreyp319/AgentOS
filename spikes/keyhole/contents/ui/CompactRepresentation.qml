@@ -9,8 +9,10 @@
  * SPDX-License-Identifier: MIT
  */
 import QtQuick
+import QtQuick.Layouts
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
+import org.kde.kirigami as Kirigami
 
 Item {
     id: compact
@@ -24,7 +26,16 @@ Item {
     property var skin: _defaultSkin
     InstrumentPalette { id: _defaultSkin }
 
-    readonly property color warmFg: skin.warm
+    // Claim a full icon-sized SQUARE cell on the panel — the standard panel-icon idiom —
+    // so the porthole matches the icontasks app-icon size instead of collapsing to a
+    // small default. Fill the panel thickness; request a square in the free axis.
+    readonly property bool horizontal: Plasmoid.formFactor === PlasmaCore.Types.Horizontal
+    Layout.fillHeight: horizontal
+    Layout.fillWidth: !horizontal
+    Layout.minimumWidth:  horizontal ? height : Kirigami.Units.gridUnit
+    Layout.minimumHeight: horizontal ? Kirigami.Units.gridUnit : width
+
+    readonly property color warmFg: skin.warmText
     readonly property color fg: skin.text
     readonly property color dimFg: skin.dim
 
@@ -32,32 +43,23 @@ Item {
     // tray→popup zoom reads as one object. Earned (calm at rest, blooms with busy).
     AuroraRing {
         anchors.centerIn: parent
-        glyphSize: Math.round(Math.min(compact.width, compact.height) * 0.58)
+        // the porthole fills the dock cell (the earned outer bloom is allowed to spill;
+        // the compact Item doesn't clip, so a busy/needs-you bloom glows past the edge)
+        diameter: Math.round(Math.min(compact.width, compact.height) * 0.94)
         glyph: compact.model ? compact.model.glyphFor(compact.model.effectiveState) : "—"
-        glyphColor: {
-            var s = compact.model ? compact.model.effectiveState : "unknown"
-            if (s === "needs_you") return compact.warmFg
-            // idle/snag/unknown are quiet; a live working/acting state is full-strength
-            if (s === "idle" || s === "snag" || s === "unknown") return compact.dimFg
-            return compact.fg
-        }
-        // sample the live horizon colour; darken it in the light register so the ring
-        // stays legible on a near-white panel.
-        aurora: compact.model
-            ? (compact.skin.dark ? compact.model.horizonColor
-                                 : Qt.darker(compact.model.horizonColor, 1.7))
-            : Qt.rgba(0.10, 0.13, 0.22, 1.0)
-        intensity: {
-            var s = compact.model ? compact.model.effectiveState : "unknown"
-            if (s === "needs_you") return 1.0
-            if (s === "working" || s === "acting")
-                return Math.max(0.4, Math.min(1.0, compact.model ? compact.model.busy : 0))
-            return 0.0
-        }
-        breathing: {
-            var s = compact.model ? compact.model.effectiveState : "unknown"
-            return s === "working" || s === "needs_you" || s === "acting"
-        }
+        glyphColor: "#ECEFF6"     // always a light ink; state is carried by shape + aurora mood (a11y)
+        hovered: clickArea.containsMouse
+        // the porthole shares the wallpaper palette + the same live floats, so the
+        // keyhole and the nimbus-aurora wallpaper move together.
+        dawnPalette: compact.model ? compact.model.auroraPalette : undefined
+        busy:  compact.model ? compact.model.busy : 0
+        warm:  compact.model ? compact.model.warmFor(compact.model.effectiveState, compact.model.warm) : 0
+        snag:  compact.model ? compact.model.snag : 0
+        unknownState: (compact.model ? compact.model.effectiveState : "unknown") === "unknown"
+        energy: compact.model ? compact.model.auroraEnergyFor(compact.model.effectiveState, compact.model.busy) : 0.95
+        bloom:  compact.model ? compact.model.ringIntensityFor(compact.model.effectiveState, compact.model.busy) : 0.0
+        breathing: compact.model ? compact.model.breathingFor(compact.model.effectiveState) : false
+        emphasized: (compact.model ? compact.model.effectiveState : "unknown") === "needs_you"
         reducedMotion: compact.model ? compact.model.reducedMotion : false
     }
 
@@ -65,8 +67,16 @@ Item {
     // the panel/desktop. NOTE: in the system tray the popup is the tray's own shared
     // dialog (driven by the tray's state, not this `expanded`), so a tray click does not
     // open it — a known Plasma tray-host limitation tracked for follow-up.
+    // screen-reader: the always-visible dock surface exposes its state + the open action
+    Accessible.role: Accessible.Button
+    Accessible.name: compact.model ? compact.model.labelFor(compact.model.effectiveState) : "AgentOS Keyhole"
+    Accessible.onPressAction: compact.plasmoidItem.expanded = !compact.plasmoidItem.expanded
+
     MouseArea {
+        id: clickArea
         anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor    // the dock glyph IS the entry point — make it read as clickable
         onClicked: compact.plasmoidItem.expanded = !compact.plasmoidItem.expanded
     }
 }

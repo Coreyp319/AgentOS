@@ -39,6 +39,15 @@ Item {
     // toggle() rebuilds from.
     property var expanded: ({})
     property var _meta: []
+    property var _prevTones: ({})       // section name -> tone last poll (transition latch)
+
+    // Stable-identity view model. The VIEW binds to THIS, not the `rows` array: a
+    // poll updates rows in place (set) so unchanged delegates persist and the board
+    // is STILL at rest — only a genuine change moves a pixel. Expand/collapse
+    // insert/remove rows so the ListView can fade them. `rows` (the plain array)
+    // stays the deterministic source for boardPx and the headless tests.
+    ListModel { id: boardModel; dynamicRoles: true }
+    property alias rowModel: boardModel
     // Deterministic board height (px) from the row count — the view sizes from THIS,
     // never from ListView.contentHeight (which only counts realized delegates and so
     // collapses to ~0 under any height pressure in a popup). Must match the delegate
@@ -138,6 +147,16 @@ Item {
             meta.push(_sectionMeta(g, members))
         }
         _meta = meta
+        // Latch tone transitions so the earned motion (tint sunrise / attention ember)
+        // fires ONCE on a real change and never on the steady 8s poll. The model
+        // rebuilds wholesale, so the previous tones must be remembered explicitly.
+        var pt = {}
+        for (var t = 0; t < meta.length; ++t) {
+            meta[t].toneChanged = (_prevTones[meta[t].name] !== undefined)
+                                  && (_prevTones[meta[t].name] !== meta[t].tone)
+            pt[meta[t].name] = meta[t].tone
+        }
+        _prevTones = pt
         _rebuildRows()
     }
 
@@ -177,21 +196,81 @@ Item {
         return (ov === undefined) ? true : !ov
     }
 
+    // The colour-blind-safe, count-bearing predicate read aloud by a screen reader and
+    // reused so a tinted header is never a colour-only health assertion. Mirrors
+    // summaryString()'s wording so the two can't drift.
+    function predicateFor(tone, count) {
+        switch (tone) {
+        case "attention":    return count + " need attention"
+        case "transitional": return count + " starting"
+        case "healthy":      return count + " healthy"
+        default:             return count + " idle"
+        }
+    }
+
+    // Every row carries the FULL union of roles (group fields + svc fields). A
+    // ListModel registers its delegate roles from the FIRST element, so a later svc
+    // role would be invisible in the delegate unless it already exists on row 0.
+    function _row(o) {
+        return {
+            key: o.key, kind: o.kind,
+            name: o.name || "", collapsible: o.collapsible === true,
+            collapsed: o.collapsed === true, tone: o.tone || "idle",
+            glyph: o.glyph || "", count: o.count || 0,
+            toneChanged: o.toneChanged === true, predicate: o.predicate || "",
+            group: o.group || "", svcName: o.svcName || "", svcStatus: o.svcStatus || "",
+            svcState: o.svcState || "", svcUrl: o.svcUrl || "", svcTone: o.svcTone || "idle"
+        }
+    }
+
     function _rebuildRows() {
         var out = []
         for (var i = 0; i < _meta.length; ++i) {
             var m = _meta[i]
             var collapsed = isCollapsed(m)
-            out.push({
-                kind: "group", name: m.name,
+            out.push(_row({
+                key: "g:" + m.name, kind: "group", name: m.name,
                 collapsible: m.collapsible, collapsed: collapsed,
-                tone: m.tone, glyph: m.glyph, count: m.count
-            })
+                tone: m.tone, glyph: m.glyph, count: m.count,
+                toneChanged: m.toneChanged === true,
+                predicate: m.collapsible ? predicateFor(m.tone, m.count) : ""
+            }))
             if (!collapsed)
-                for (var j = 0; j < m.members.length; ++j)
-                    out.push({ kind: "svc", svc: m.members[j] })
+                for (var j = 0; j < m.members.length; ++j) {
+                    var s = m.members[j]
+                    out.push(_row({
+                        key: "s:" + m.name + "/" + (s.id || s.name || j),
+                        kind: "svc", group: m.name,
+                        svcName: s.name, svcStatus: s.status,
+                        svcState: s.state, svcUrl: s.url,
+                        svcTone: toneFor(s)
+                    }))
+                }
         }
         rows = out
+        _syncModel(out)
+    }
+
+    // Reconcile boardModel to `out` with the FEWEST ops (keyed): drop gone rows,
+    // insert/move into order, set the rest in place. A no-change poll therefore only
+    // re-sets identical roles (no signal, no churn) → the board is still at rest;
+    // an expand inserts svc rows (ListView fades them in) without disturbing the
+    // sibling sections. This stable identity is what lets a tint Behavior animate a
+    // real tone change instead of being re-created flat every poll.
+    function _syncModel(out) {
+        var wantKeys = {}
+        for (var i = 0; i < out.length; ++i) wantKeys[out[i].key] = true
+        for (var r = boardModel.count - 1; r >= 0; --r)
+            if (!wantKeys[boardModel.get(r).key]) boardModel.remove(r)
+        for (var j = 0; j < out.length; ++j) {
+            var want = out[j]
+            var cur = -1
+            for (var k = j; k < boardModel.count; ++k)
+                if (boardModel.get(k).key === want.key) { cur = k; break }
+            if (cur === -1) boardModel.insert(j, want)
+            else { if (cur !== j) boardModel.move(cur, j, 1); boardModel.set(j, want) }
+        }
+        while (boardModel.count > out.length) boardModel.remove(boardModel.count - 1)
     }
 
     // Flip a condensable section open/closed (no-op on non-condensable ones).

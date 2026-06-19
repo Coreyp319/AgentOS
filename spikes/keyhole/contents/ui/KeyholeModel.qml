@@ -35,6 +35,9 @@ Item {
     property var lease: ({ tier: "", holder: "", preempt: "" })
     property var vram:  ({ used_mib: -1, total_mib: -1 })
     property var residency: []
+    // schema 3: the dominant GPU compute process (NVML) — the attribution Ollama-residency and the
+    // lease daemon both miss, chiefly ComfyUI (the dreaming backend). name "" == none → row hidden.
+    property var workload: ({ name: "", used_mib: -1 })
     property var tokensPerSec: null     // null === UNKNOWN, never synthesized
     // schema 2 (ADR-0019 §6): the local lucid queue, split into two HONEST counts.
     //   held         = "waiting for the graphics card" — CALM weather, count only, NEVER warm.
@@ -87,6 +90,50 @@ Item {
         }
     }
 
+    // --- EARNED ring intensity + breath (ONE source for every surface) -------
+    // Centralised so the tray glyph and the panel header token sample ONE function
+    // (like they sample one horizonColor) — no hand-copied derivations that drift.
+    // EARNED: the bloom is earned by GPU load, not pinned. needs_you is WARM +
+    // present but CALM (a fixed contained floor — warmth asks for you, size does
+    // not); unknown is a faint cold ghost (de-energized, distinct from idle's true
+    // nothing); idle/snag stay byte-quiet (ring invisible).
+    function ringIntensityFor(s, b) {
+        // MONOTONIC with load so states stay distinguishable by glow:
+        //   idle (quiet resting glow) < working/acting (clear bloom) ≤ needs_you (warm).
+        // The working FLOOR sits well above idle so a resident-but-not-generating model
+        // still reads as clearly more energised than rest (fixes "idle == busy").
+        if (s === "needs_you") return 0.62
+        if (s === "working" || s === "acting") return Math.max(0.55, Math.min(1.0, b))
+        if (s === "unknown")  return 0.10
+        if (s === "idle")     return 0.20   // gentle resting glow — VISIBLE but clearly dimmer + cooler + static vs working (departs from ADR-0012 "invisible-at-rest"; see amendment)
+        return 0.0
+    }
+    function breathingFor(s) { return s === "working" || s === "needs_you" || s === "acting" }
+
+    // --- aurora porthole: palette (tracks the active wallpaper) + energy ------
+    // The porthole shares the wallpaper's dawn ramp AND reads the same floats, so the
+    // keyhole and the nimbus-aurora wallpaper move together. wallpaperPalette (5 colour
+    // stops, sky→base) overrides the default ramp when the host samples a static-image
+    // wallpaper; null → the nimbus-aurora ramp (which matches the com.nimbus.aurora shader).
+    property var wallpaperPalette: null
+    readonly property var auroraPalette: (wallpaperPalette && wallpaperPalette.length === 5)
+        ? wallpaperPalette
+        : [ Qt.rgba(0.05,0.06,0.13,1), Qt.rgba(0.30,0.26,0.46,1), Qt.rgba(0.20,0.31,0.64,1),
+            Qt.rgba(0.11,0.17,0.40,1), Qt.rgba(0.04,0.06,0.16,1) ]
+    // Overall brightness of the porthole — calm at idle, lifts under load (density-grows-with-load).
+    function auroraEnergyFor(s, b) {
+        // Wide idle↔working gap so working is "lit from within" and idle is "outline only"
+        // — separable at a GLANCE (frozen), not reliant on the breath.
+        if (s === "working" || s === "acting") return 1.10 + 0.30 * Math.max(0, Math.min(1, b))
+        if (s === "needs_you") return 1.08
+        if (s === "snag")      return 0.90
+        if (s === "unknown")   return 0.68
+        return 0.86   // idle — present but clearly the quietest lit state
+    }
+    // The reserved dawn-glow crests on needs_you regardless of the warm float (warmth is
+    // folded upstream in feed.rs; this guarantees the cue even if the float reads 0).
+    function warmFor(s, w) { return s === "needs_you" ? Math.max(0.85, w) : Math.max(0, w) }
+
     // --- Honest readout helpers (em-dash for any UNKNOWN scalar) -------------
     function emdash() { return "—" }
     function tokString() {
@@ -121,6 +168,15 @@ Item {
         var r = residency[0]
         var mins = Math.round((r.loaded_secs || 0) / 60)
         return r.name + " · loaded " + mins + "m"
+    }
+    // schema 3: the dominant GPU compute process, e.g. "ComfyUI · 21.0 GB". "" when nothing heavy
+    // runs (the producer gates on a heavy-VRAM floor) or under UNKNOWN — the FullRepresentation
+    // HIDES the row on "" rather than showing a lone em-dash, keeping the panel calm at rest.
+    function workloadString() {
+        if (effectiveState === "unknown") return ""
+        if (!workload || !workload.name || workload.name.length === 0) return ""
+        var gb = (workload.used_mib > 0) ? (" · " + (workload.used_mib / 1024).toFixed(1) + " GB") : ""
+        return workload.name + gb
     }
 
     // --- Horizon strip palette (the ONLY color; samples the Aurora dawn) -----
@@ -221,6 +277,9 @@ Item {
         if (d.lease) lease = d.lease
         if (d.vram)  vram  = d.vram
         residency = d.residency || []
+        // schema 3: dominant GPU workload. A schema-≤2 file omits it → hold the empty default,
+        // which reads as "nothing heavy / hide the row", never UNKNOWN.
+        workload = d.workload || ({ name: "", used_mib: -1 })
         // tokens_per_sec: respect null explicitly — do NOT coalesce to 0
         tokensPerSec = (d.tokens_per_sec === undefined) ? null : d.tokens_per_sec
         // schema 2: lucid queue mirror. Backward-compatible — a schema-1 file lacks the field and

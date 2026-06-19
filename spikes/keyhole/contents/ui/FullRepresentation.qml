@@ -24,6 +24,9 @@ Item {
     property var skin: _defaultSkin
     InstrumentPalette { id: _defaultSkin }
     property bool reducedMotion: model ? model.reducedMotion : false
+    // Honest UNKNOWN: a stale/unreachable board performs NO motion (no tint sunrise,
+    // no ember, no breath) — the rows go dim-still instead.
+    readonly property bool servicesAvailable: !!(services && services.available)
     implicitWidth: 360
     implicitHeight: col.implicitHeight + 24
 
@@ -40,7 +43,7 @@ Item {
     readonly property color hairline: skin.hairline
     readonly property color secondaryFg: skin.muted
     readonly property color labelFg: skin.label
-    readonly property color warmFg: skin.warm        // reserved "needs you" hue — apt for attention
+    readonly property color warmFg: skin.warmText    // reserved needs-you FOREGROUND (dual-register, AA-safe)
     readonly property color linkColor: skin.blue
     readonly property color hoverTint: skin.tintHover
     // The glyph-ring aurora: the live HorizonStrip colour, darkened in the light
@@ -53,7 +56,7 @@ Item {
     // Glyph SHAPE (ServicesModel.glyphFor) carries the redundant, never-colour-only cue.
     function toneColor(t) {
         switch (t) {
-        case "attention":    return skin.warm        // failed / down-daemon / split-brain
+        case "attention":    return skin.warmText     // failed / down-daemon / split-brain
         case "transitional": return skin.stAmber     // starting / stopping (amber)
         case "healthy":      return skin.stUp        // up / ran-ok (muted sage)
         default:             return skin.label       // idle / absent / unknown
@@ -97,9 +100,14 @@ Item {
                 glyph: full.model ? full.model.glyphFor(full.model.effectiveState) : "—"
                 label: full.model ? full.model.labelFor(full.model.effectiveState) : "…"
                 state: full.model ? full.model.effectiveState : "unknown"
-                warm:  full.model ? full.model.warm : 0
+                warm:  full.model ? full.model.warmFor(full.model.effectiveState, full.model.warm) : 0
                 aurora: full.glyphAurora
                 busy:  full.model ? full.model.busy : 0
+                snag:  full.model ? full.model.snag : 0
+                energy: full.model ? full.model.auroraEnergyFor(full.model.effectiveState, full.model.busy) : 0.95
+                dawnPalette: full.model ? full.model.auroraPalette : undefined
+                ringIntensity: full.model ? full.model.ringIntensityFor(full.model.effectiveState, full.model.busy) : 0
+                breathing: full.model ? full.model.breathingFor(full.model.effectiveState) : false
                 reducedMotion: full.reducedMotion
             }
             Text {
@@ -130,6 +138,8 @@ Item {
                 text: full.model ? full.model.leaseTierString() : "—"
                 color: full.secondaryFg; font.pixelSize: 13; font.bold: true
                 elide: Text.ElideRight
+                Accessible.role: Accessible.StaticText
+                Accessible.name: "Lease " + (full.model ? full.model.leaseTierString() : "unknown")
             }
             Text { text: "PREEMPT"; color: full.labelFg; font.pixelSize: 11; Layout.alignment: Qt.AlignTop }
             Text {
@@ -137,6 +147,23 @@ Item {
                 text: full.model ? full.model.preemptString() : "—"
                 color: full.secondaryFg; font.pixelSize: 12
                 wrapMode: Text.WordWrap
+            }
+            // WORKLOAD (schema 3): names the dominant GPU compute process — the attribution the
+            // lease/residency rows miss, chiefly ComfyUI (dreaming). The row is PRESENT only when
+            // something heavy runs; at rest both cells hide and the grid collapses (density grows
+            // with load). Both cells share one visibility binding so the 2-column grid stays aligned.
+            Text {
+                text: "WORKLOAD"; color: full.labelFg; font.pixelSize: 11
+                visible: full.model && full.model.workloadString() !== ""
+            }
+            Text {
+                Layout.fillWidth: true
+                visible: full.model && full.model.workloadString() !== ""
+                text: full.model ? full.model.workloadString() : ""
+                color: full.secondaryFg; font.pixelSize: 13; font.bold: true
+                elide: Text.ElideRight
+                Accessible.role: Accessible.StaticText
+                Accessible.name: "Workload " + (full.model ? full.model.workloadString() : "")
             }
         }
 
@@ -170,6 +197,8 @@ Item {
                 Text {
                     text: full.model ? full.model.vramString() : "—"
                     color: full.secondaryFg; font.pixelSize: 14
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: "VRAM " + (full.model ? full.model.vramString() : "unknown")
                 }
                 // VRAM as a nimbus-aurora horizon: the cool dawn ramp (indigo → blue
                 // → violet) fills with usage and brightens with GPU busy. Zero-GPU
@@ -182,15 +211,19 @@ Item {
                     height: 5; radius: 2.5; color: full.hairline
                     visible: full.model && full.model.effectiveState !== "unknown" && full.model.vramFraction() > 0
                     readonly property real lift: full.model ? Math.min(1.0, full.model.busy) : 0.0
+                    // Lighten-with-busy only in the DARK register: lifting a light fill on a light
+                    // track LOSES contrast (drops <3:1 at high busy), so light clamps the body lift
+                    // to 0 and lets the leading-edge crest carry the "brightens with load" feel.
+                    readonly property real bodyLift: full.skin.dark ? lift : 0.0
                     Rectangle {
                         id: vramFill
                         height: parent.height; radius: parent.radius
                         width: parent.width * (full.model ? full.model.vramFraction() : 0)
                         gradient: Gradient {
                             orientation: Gradient.Horizontal
-                            GradientStop { position: 0.0; color: Qt.lighter(full.skin.auroraLo,  1.0 + 0.30 * vramTrack.lift) }
-                            GradientStop { position: 0.6; color: Qt.lighter(full.skin.auroraMid, 1.0 + 0.30 * vramTrack.lift) }
-                            GradientStop { position: 1.0; color: Qt.lighter(full.skin.auroraHi,  1.0 + 0.34 * vramTrack.lift) }
+                            GradientStop { position: 0.0; color: Qt.lighter(full.skin.auroraLo,  1.0 + 0.30 * vramTrack.bodyLift) }
+                            GradientStop { position: 0.6; color: Qt.lighter(full.skin.auroraMid, 1.0 + 0.30 * vramTrack.bodyLift) }
+                            GradientStop { position: 1.0; color: Qt.lighter(full.skin.auroraHi,  1.0 + 0.34 * vramTrack.bodyLift) }
                         }
                         Behavior on width {
                             enabled: !full.reducedMotion
@@ -202,7 +235,8 @@ Item {
                             width: Math.min(3, parent.width)
                             radius: parent.radius
                             visible: parent.width > parent.height
-                            color: Qt.lighter(full.skin.auroraHi, 1.6)
+                            // crest stays saturated in light (lightening an already-light violet washes out)
+                            color: full.skin.dark ? Qt.lighter(full.skin.auroraHi, 1.6) : full.skin.auroraHi
                             opacity: 0.35 + 0.5 * vramTrack.lift
                         }
                     }
@@ -252,23 +286,101 @@ Item {
             clip: true
             interactive: contentHeight > height
             boundsBehavior: Flickable.StopAtBounds
-            model: full.services ? full.services.rows : []
+            // Stable-identity model: unchanged rows persist across polls (still at rest);
+            // expand/collapse insert/remove rows, which these transitions fade.
+            model: full.services ? full.services.rowModel : null
             QQC2.ScrollBar.vertical: QQC2.ScrollBar { policy: QQC2.ScrollBar.AsNeeded }
+
+            // Member rows fade in/out on expand/collapse; siblings glide to their new y.
+            // Height itself is NOT tweened (boardPx is authoritative — a height tween
+            // courts the contentHeight->0 popup-clip bug, and WCAG 2.3.3 flags sliding
+            // panels). Reduced-motion disables every transition.
+            add: Transition { enabled: !full.reducedMotion
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 180; easing.type: Easing.OutCubic } }
+            remove: Transition { enabled: !full.reducedMotion
+                NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 180; easing.type: Easing.OutCubic } }
+            displaced: Transition { enabled: !full.reducedMotion
+                NumberAnimation { properties: "y"; duration: 220; easing.type: Easing.OutCubic } }
+            move: Transition { enabled: !full.reducedMotion
+                NumberAnimation { properties: "y"; duration: 220; easing.type: Easing.OutCubic } }
 
             delegate: Item {
                 id: rowItem
                 width: board.width
-                height: (modelData && modelData.kind === "group") ? 22 : 20
-                // A service that exposes a web UI (non-empty url) is launchable from here:
-                // click opens the web window. Read-only link-out — no state mutation.
-                readonly property string svcUrl: (modelData && modelData.kind === "svc"
-                    && modelData.svc && modelData.svc.url) ? modelData.svc.url : ""
-                // An all-green / all-red section condenses to one collapsible summary
-                // row; clicking it expands the members (progressive disclosure).
-                readonly property bool isGroup: modelData && modelData.kind === "group"
-                readonly property bool groupCollapsible: rowItem.isGroup && modelData.collapsible === true
-                readonly property bool groupCollapsed: rowItem.isGroup && modelData.collapsed === true
-                readonly property bool clickable: rowItem.svcUrl !== "" || rowItem.groupCollapsible
+                height: (model.kind === "group") ? 22 : 20
+
+                // --- identity (ListModel roles; guarded for heterogeneous rows) ----
+                readonly property bool isGroup: model.kind === "group"
+                readonly property bool groupCollapsible: isGroup && model.collapsible === true
+                readonly property bool groupCollapsed: isGroup && model.collapsed === true
+                // A service that exposes a web UI (non-empty url) is launchable: click
+                // opens the web window. Read-only link-out — no state mutation.
+                readonly property string svcUrl: (model.kind === "svc" && model.svcUrl) ? model.svcUrl : ""
+                readonly property bool clickable: svcUrl !== "" || groupCollapsible
+                readonly property string tone: isGroup ? (model.tone || "idle") : (model.svcTone || "idle")
+                // fires true for ONE poll when this section's tone really changed
+                readonly property bool toneChanged: isGroup && model.toneChanged === true && full.servicesAvailable
+
+                // shared activation for mouse + keyboard
+                function activate() {
+                    if (svcUrl !== "") Qt.openUrlExternally(svcUrl)
+                    else if (groupCollapsible && full.services) full.services.toggle(model.name)
+                }
+
+                activeFocusOnTab: clickable
+                Accessible.role: clickable ? Accessible.Button : Accessible.StaticText
+                Accessible.focusable: clickable
+                // never colour-only: the screen reader hears the count-bearing predicate,
+                // not a silent green "DREAMING".
+                Accessible.name: isGroup
+                    ? (model.name + (model.collapsible
+                        ? (". " + model.predicate + ". " + (groupCollapsed ? "collapsed" : "expanded"))
+                        : " section"))
+                    : ((model.svcName || "") + ", " + (model.svcState || ""))
+                Accessible.onPressAction: rowItem.activate()
+                Keys.onReturnPressed: rowItem.activate()
+                Keys.onEnterPressed:  rowItem.activate()
+                Keys.onSpacePressed:  rowItem.activate()
+
+                // ===== ATTENTION EMBER (the headline beat) =========================
+                // A contained warm wash behind a collapsed all-attention row. It
+                // GATHERS FROM BELOW (mirroring the wallpaper dawn that rises from the
+                // low edge), blooms in once on arrival, then holds a STEADY glow — no
+                // sustained breath, so a SYSTEM attention can never be mistaken for the
+                // wallpaper's reserved needs_you breath (ADR-0012 §7).
+                // Pinned constants (canonical in instrument-tokens, `sectionWash`):
+                readonly property real emberRest:  0.09   // steady hold opacity
+                readonly property real emberPeak:  0.14   // bloom-in crest (and reduced-motion still)
+                readonly property bool isAttention: groupCollapsed && tone === "attention" && full.servicesAvailable
+
+                onIsAttentionChanged: if (isAttention && toneChanged && !full.reducedMotion) bloomIn.restart()
+                // one-shot bloom-in (1.0 -> 0.0 over 1400ms) on the transition INTO attention,
+                // settling to the steady hold. Triggered from whichever of toneChanged /
+                // isAttention settles last.
+                property real _bloom: 0.0
+                NumberAnimation { id: bloomIn; target: rowItem; property: "_bloom"
+                    from: 1.0; to: 0.0; duration: 1400; easing.type: Easing.OutCubic; running: false }
+                onToneChangedChanged: if (toneChanged && isAttention && !full.reducedMotion) bloomIn.restart()
+
+                readonly property real _washOpacity: !isAttention ? 0.0
+                    : (full.reducedMotion ? emberPeak
+                       : (emberRest + (emberPeak - emberRest) * _bloom))
+
+                Rectangle {
+                    id: emberWash
+                    anchors.fill: parent
+                    anchors.leftMargin: 2; anchors.rightMargin: 2
+                    radius: 4
+                    visible: rowItem._washOpacity > 0.001
+                    opacity: rowItem._washOpacity
+                    // Derived from skin.warm (the reserved needs-you GLOW hue) — never a
+                    // literal. A contained wash rising from the low edge; clear at the top.
+                    readonly property color w: full.skin.warm
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: Qt.rgba(emberWash.w.r, emberWash.w.g, emberWash.w.b, 0.0) }
+                        GradientStop { position: 1.0; color: Qt.rgba(emberWash.w.r, emberWash.w.g, emberWash.w.b, 1.0) }
+                    }
+                }
 
                 // hover highlight for clickable rows (web-window svc OR a section toggle)
                 Rectangle {
@@ -285,15 +397,13 @@ Item {
                     visible: rowItem.isGroup && !rowItem.groupCollapsible
                     anchors.left: parent.left
                     anchors.bottom: parent.bottom; anchors.bottomMargin: 3
-                    text: (modelData && modelData.name) ? modelData.name : ""
+                    text: rowItem.isGroup ? (model.name || "") : ""
                     color: full.labelFg; font.pixelSize: 10; font.letterSpacing: 1.0
                 }
 
-                // condensable section: when collapsed it IS a single row — the
-                // section header, painted the shared tone's colour (with a leading
-                // shape glyph so it isn't colour-only). Expanded, it reverts to the
-                // quiet header and the member rows below carry the colour. The whole
-                // row is the toggle target.
+                // condensable section: when collapsed it IS a single row — the section
+                // header, painted the shared tone's colour. The tint DAWNS in (2500ms
+                // sunrise) only on a real tone change; otherwise it is set still.
                 RowLayout {
                     visible: rowItem.groupCollapsible
                     anchors.left: parent.left; anchors.right: parent.right
@@ -302,44 +412,50 @@ Item {
                     spacing: 8
                     Text {
                         visible: rowItem.groupCollapsed
-                        text: (modelData && modelData.glyph) ? modelData.glyph : ""
-                        color: full.toneColor(modelData ? modelData.tone : "idle")
+                        text: rowItem.isGroup ? (model.glyph || "") : ""
+                        color: full.toneColor(rowItem.tone)
                         font.pixelSize: 11
                         Layout.preferredWidth: 12
                         horizontalAlignment: Text.AlignHCenter
+                        Behavior on color { enabled: rowItem.toneChanged && !full.reducedMotion
+                            ColorAnimation { duration: 2500; easing.type: Easing.OutCubic } }
                     }
                     Text {
-                        text: (modelData && modelData.name) ? modelData.name : ""
-                        color: rowItem.groupCollapsed
-                               ? full.toneColor(modelData ? modelData.tone : "idle")
-                               : full.labelFg
+                        text: rowItem.isGroup ? (model.name || "") : ""
+                        color: rowItem.groupCollapsed ? full.toneColor(rowItem.tone) : full.labelFg
                         font.pixelSize: 10; font.letterSpacing: 1.0
-                        font.bold: rowItem.groupCollapsed && modelData && modelData.tone === "attention"
+                        font.bold: rowItem.groupCollapsed && rowItem.tone === "attention"
                         Layout.fillWidth: true; elide: Text.ElideRight
+                        Behavior on color { enabled: rowItem.toneChanged && !full.reducedMotion
+                            ColorAnimation { duration: 2500; easing.type: Easing.OutCubic } }
                     }
-                    // quiet disclosure affordance (progressive disclosure)
+                    // disclosure affordance — ONE caret glyph, rotated on toggle (caret leads)
                     Text {
-                        text: rowItem.groupCollapsed ? "▸" : "▾"
+                        text: "▸"
+                        rotation: rowItem.groupCollapsed ? 0 : 90
+                        transformOrigin: Item.Center
                         color: full.labelFg; font.pixelSize: 9; opacity: 0.7
+                        Behavior on rotation { enabled: !full.reducedMotion
+                            NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
                     }
                 }
 
                 // service row: SHAPE glyph (tone-coloured) · name · [↗] · honest state
                 RowLayout {
-                    visible: modelData && modelData.kind === "svc"
+                    visible: model.kind === "svc"
                     anchors.left: parent.left; anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.leftMargin: 6; anchors.rightMargin: 4
                     spacing: 8
                     Text {
-                        text: (full.services && modelData && modelData.svc) ? full.services.glyphFor(modelData.svc.status) : "—"
-                        color: full.toneColor((full.services && modelData && modelData.svc) ? full.services.toneFor(modelData.svc) : "idle")
+                        text: (full.services && model.kind === "svc") ? full.services.glyphFor(model.svcStatus) : "—"
+                        color: full.toneColor(rowItem.tone)
                         font.pixelSize: 12
                         Layout.preferredWidth: 14
                         horizontalAlignment: Text.AlignHCenter
                     }
                     Text {
-                        text: (modelData && modelData.svc) ? modelData.svc.name : ""
+                        text: (model.kind === "svc") ? (model.svcName || "") : ""
                         // link-blue when launchable, so a web-window row reads as clickable
                         color: rowItem.svcUrl !== "" ? full.linkColor : full.secondaryFg
                         font.pixelSize: 12
@@ -351,9 +467,19 @@ Item {
                         color: full.linkColor; font.pixelSize: 11
                     }
                     Text {
-                        text: (modelData && modelData.svc) ? modelData.svc.state : ""
+                        text: (model.kind === "svc") ? (model.svcState || "") : ""
                         color: full.labelFg; font.pixelSize: 11
                     }
+                }
+
+                // keyboard focus ring — a SHAPE outline (not a colour fill) so it stays
+                // legible riding on top of the warm ember wash.
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.margins: 1
+                    radius: 4; color: "transparent"
+                    border.width: 1; border.color: full.skin.text
+                    visible: rowItem.activeFocus
                 }
 
                 // whole-row click target: launch a service's web window, or toggle
@@ -364,12 +490,7 @@ Item {
                     enabled: rowItem.clickable
                     hoverEnabled: enabled
                     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                    onClicked: {
-                        if (rowItem.svcUrl !== "")
-                            Qt.openUrlExternally(rowItem.svcUrl)
-                        else if (rowItem.groupCollapsible && full.services)
-                            full.services.toggle(modelData.name)
-                    }
+                    onClicked: rowItem.activate()
                 }
             }
         }
