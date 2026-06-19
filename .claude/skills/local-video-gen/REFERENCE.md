@@ -53,6 +53,37 @@ realism (ecosystem depth). The hands problem is mitigated, never fully solved.
 
 ---
 
+## Long scenes (chaining I2V segments)
+
+Wan/Hunyuan are trained on ~5 s clips; past ~121 frames they burn/repeat the opening
+frames and speed up motion. For 30 s–1 min, **chain dependent I2V rounds**: seed a first
+frame → I2V → take the **last frame** → I2V again → … → `ffmpeg` concat. This is a
+**sequential pipeline**, not a parallel queue (segment N+1 needs N's last frame), and
+errors **accumulate** (colour/detail/anatomy drift by ~segment 6) — fewer, larger-frame
+segments drift less, and a **clean `--seed-image`** (not the T2V lottery) is the biggest
+anatomy win.
+
+**Tool: `spikes/dreaming/chain_video.py`** (built + smoke-verified 2026-06-17). Wraps
+`comfy_client.py`; per segment it injects the prior last frame into `LoadImage`, sets
+`WanImageToVideo` w/h/length + prompt (re-injected each segment to fight drift), runs the
+Remix NSFW I2V workflow, then `ffmpeg` pulls the last frame and finally concats — **dropping
+the duplicated seam frame** (seg 1 keeps all N; each later seg contributes N−1, else the join
+stutters). Resolves pos/neg via the node whose `positive`/`negative` link *directly* to a
+`CLIPTextEncode` (this workflow routes conditioning through `WanImageToVideo`, which fools
+`comfy_client.pos_neg_text_nodes` into returning pos==neg). On timeout it `POST /interrupt`s
+(rule #4) and `/free`s at the end.
+
+    ./chain_video.py --seed-image still.png --prompt "…" --duration 30   # best anatomy
+    ./chain_video.py --seed-t2v --prompt "…" --segments 6                # self-seed (lottery)
+
+`--duration S` computes segments from `--length` (default 81f); 30 s ≈ 6×81f @ 720×1280.
+Smoke-verified: 2×33f @ 480×832 → 33+32 = **65 frames / 4.06 s @ 16fps**, clean seam. Cost is
+the per-segment tier ×N: ~30 s of good Remix realism ≈ **45 min–3 h**, GPU-locked — an
+overnight/on-demand job (the §Watch-list "good-when-slow" wall ×N). It queues serially behind
+live jobs; free Ollama + `systemctl --user restart comfyui.service` first for a clean ~20 GB.
+
+---
+
 ## Weights & auth
 
 **HuggingFace = no auth.** `https://huggingface.co/<repo>/resolve/main/<file>` — just `wget`/`curl`.
@@ -110,13 +141,30 @@ Helpers built around it: `test_aio.py` (single all-in-one checkpoint → T2V) an
 ## VRAM / OOM / GGUF gotchas (24 GB)
 
 - **Restart ComfyUI for a clean slate** (~3.5 GB desktop baseline, ~20 GB free). Leftover resident
-  models from prior gens cause OOM. Kill by **port** (`fuser -k 8188/tcp`) — never `pkill -f
-  "main.py …"` with a pattern that also matches your own shell command (it kills the tool's shell;
-  symptom: exit code 144).
+  models from prior gens cause OOM. ComfyUI now runs as a **systemd user service** — restart with
+  **`systemctl --user restart comfyui.service`**, NOT `fuser -k 8188/tcp` + manual relaunch: systemd
+  auto-respawns it, so a port-kill races the respawn and you collide on the port / DB lock (seen
+  2026-06-16). If you ever do launch by hand, never `pkill -f "main.py …"` with a pattern that also
+  matches your own shell command (it kills the tool's shell; symptom: exit code 144).
 - **OOM is usually resolution, not the model.** Step down: 640×1152 → 576×1024 → 512×896 → 480×832.
+- **A completing run's speed ceiling is the text-encoder offload, not resolution.** On torch < 2.8
+  ComfyUI falls back to the legacy ModelPatcher (startup warns: *"DynamicVRAM support requires
+  Pytorch 2.8"*) and **under-evicts** — it parks ~8.6 GB of the 10.8 GB umt5 encoder instead of
+  dropping it, so the Wan 2.2 14B expert streams ~8 GB off CPU *every step* even on an otherwise-idle
+  24 GB GPU. Measured 2026-06-16, 81f/720×1280/4+4: **9:47** encoder-parked → **3:16 with `--disable-smart-memory`**
+  (~3.0× faster; both experts then log `loaded completely … full load: True`, zero offload). The flag is
+  now baked into `comfyui.service` + `start-comfyui.sh` (opt out per-launch with `COMFY_SMART_MEMORY=1`).
+  Trade-off: no cross-run model cache, so tight iterate-in-UI loops pay a reload.
+  **Caveat — not bulletproof on torch 2.6:** the flag reliably evicts on a *fresh* server, but a later
+  *warm* run was seen to regress to full offload (`0.00 MB usable`, TE not evicted) with **no contention** —
+  the legacy patcher's nondeterminism. Guaranteed-clean recipe for a heavy run: **`systemctl --user restart
+  comfyui.service` first**. The durable fix is **torch ≥ 2.8** (DynamicVRAM patcher).
 - **VRAM saturation → CPU-offload thrash → catastrophic slowdown.** A non-distilled GGUF run at
   640×1152/81f filled VRAM, forced layer offload to RAM, and ran **>33 min then timed out**. Keep
-  the model+activations inside VRAM.
+  the model+activations inside VRAM. Contention with **live Ollama inference** is the common trigger
+  on this box: Ollama holding 4–5 GB drops ComfyUI's "usable" estimate to near-zero, forcing a
+  whole-model offload (or an outright OOM in self-attention at high frame counts). Free it first
+  (next bullet).
 - **fp8 ≫ GGUF for speed.** GGUF (Q6K/Q8) adds dequant overhead. Use GGUF only when VRAM-bound;
   prefer fp8 safetensors otherwise.
 - **A client timeout doesn't cancel the server job.** The job keeps running and a naive
@@ -200,6 +248,14 @@ One backend (ComfyUI), **two surfaces**:
 measured freeing **0 VRAM**, so eviction needs PID ownership + admission-control + `SIGKILL`
 (ADR-0004/0010 coordinator). Video-gen **XOR** live inference on the GPU. A dream is a cached file
 the wallpaper *may* play — reversible, never a state mutation (ADR-0005 spirit).
+
+**Freeing Ollama's VRAM by hand (until the lease lands):** `ollama` runs as a **system service**
+(`ollama.service`, as the `ollama` user), so its runner is **not killable as your user** — it needs
+root. Worse, **`ollama stop <model>` can wedge**: a model pinned by a live client (Hermes'
+connection pool) sticks in `Stopping…` indefinitely, even after keep-alive expiry (seen 2026-06-16
+with 16 open connections; two `ollama stop` calls had no effect). The reclaim that actually works is
+**`sudo systemctl restart ollama.service`**. This is the substrate thesis in miniature: cooperative
+`stop`/`/free` fail, and only privileged PID-owned admission control reliably reclaims the GPU.
 
 **Output the wallpaper consumes:** short seamless-loop `webm`/`mp4`, keyed off `agent.json` state,
 played by a QML `Video` element (not yet built). Generation is offline/cached to avoid live VRAM

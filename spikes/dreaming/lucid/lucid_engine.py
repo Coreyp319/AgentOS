@@ -38,7 +38,11 @@ import comfy_client as cc  # noqa: E402
 import lucid_models  # noqa: E402  (registry: the beat model is an editable affiliation, not hardcoded)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO_WF = os.path.join(HERE, "..", "workflows", "Wan2.2-Remix-NSFW-i2v-v3.0.json")
+# Non-distilled GGUF i2v (Enhanced nolight, real CFG + 20 steps) + NSFW-22 explicit-anatomy LoRA on the
+# LOW-noise expert only (high stays 0.0 — see LORA_HIGH/LORA_LOW): fixes the distilled Remix's melt
+# AND the LoRA-on-high "anatomy from within anatomy" regression. ~4x the time per beat. Revert to pure
+# non-distilled = enhNSFW-nolight-i2v.api.json; to distilled = LUCID_WORKFLOW=<remix .json>.
+REPO_WF = os.path.join(HERE, "..", "workflows", "lucid-nolight-nsfw-i2v.api.json")
 WORKFLOW = os.environ.get("LUCID_WORKFLOW", os.path.abspath(REPO_WF))
 INPUT_DIR = os.path.join(cc.COMFY_ROOT, "input")
 DREAMS_DIR = os.environ.get(
@@ -55,13 +59,42 @@ MODEL = os.environ.get("LUCID_MODEL") or lucid_models.get("narrator", "qwen2.5vl
 
 DEFAULT_W, DEFAULT_H, DEFAULT_LEN = 720, 1280, 33  # ~2s portrait @16fps; matches the
 # workflow's baked WanImageToVideo length and stays under the VRAM-thrash line (ADR-0014 §6)
+# A user-chosen "next segment length" is bounded HERE (code disposes): at 720x1280 on the non-distilled
+# GGUF, beats past 49f (3s) run past the 1800s gen timeout (and toward the VRAM-thrash line); Wan's latent
+# stride wants 4k+1 frame counts. 17..49f ≈ 1..3s @16fps. (Raise once a faster expert — fp8 — lands.)
+MIN_LEN, MAX_LEN = 17, 49
+# I2V ModelSamplingSD3 shift. Shared by BOTH i2v paths, so the default stays 8.0: that is the distilled
+# Remix's baked schedule AND a sane 720x1280 value (Wan shift tracks resolution, not distillation —
+# higher res wants higher shift). Drop to ~5.0 via LUCID_SHIFT to calm motion on the non-distilled graph;
+# do NOT lower it on the Remix path.
+DEFAULT_SHIFT = float(os.environ.get("LUCID_SHIFT", "8.0"))
+# Explicit-anatomy LoRA (NSFW-22) strength, SPLIT BY EXPERT. The HIGH-noise expert lays out bodies, so an
+# explicit-anatomy LoRA there fights the layout and melts anatomy ("anatomy from within anatomy") — the
+# #1 distortion cause after lightning. Keep it OFF high (0.0) and ON low (~0.6): the playbook's
+# low-noise-only rule. Tune live with LUCID_I2V_LORA_HIGH / LUCID_I2V_LORA_LOW and restart.
+LORA_HIGH = float(os.environ.get("LUCID_I2V_LORA_HIGH", "0.0"))
+LORA_LOW = float(os.environ.get("LUCID_I2V_LORA_LOW", "0.6"))
+
+
+def clamp_length(n):
+    """Snap a proposed segment length to a Wan-friendly 4k+1 count inside the VRAM-safe band.
+    A bad/oversized/None request can never thrash the GPU — the model proposes, code disposes."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return DEFAULT_LEN
+    n = max(MIN_LEN, min(MAX_LEN, n))
+    return ((n - 1) // 4) * 4 + 1   # snap down to 4k+1 (latent stride)
 
 SYS_SFW = (
     "You are the narrator of a SILENT, looping dream video. Given the story so far "
     "and what is on screen now, propose {n} distinct 'what happens next' choices. "
     "Each: a 2-5 word button LABEL, and a vivid image-to-video MOTION prompt "
     "(camera movement + subject motion, present tense, concrete, under 40 words) "
-    "that continues smoothly FROM THE CURRENT FRAME. Keep it SFW. "
+    "that continues smoothly FROM THE CURRENT FRAME. Favor SUBTLE motion that keeps the subject in "
+    "the SAME pose and framing (small gestures, breathing, shifting weight, hair, fabric, gaze, "
+    "gentle camera) — NOT turning away, walking off, or large repositioning; the current "
+    "composition must stay in view. Keep it SFW. "
     "RED LINE (never violate): no minors, no real or identifiable real people. "
     'Return ONLY JSON: {{"beats":[{{"label":"...","prompt":"..."}}]}}.'
 )
@@ -150,6 +183,8 @@ def _set_widgets(wf, prompt, image_name, seed, w, h, length, output_prefix=None)
             wv[0] = seed
         elif t == "WanImageToVideo":
             nd["widgets_values"] = [w, h, length, 1]
+        elif t == "ModelSamplingSD3":   # both experts: calmer motion, stay near the seed pose
+            wv[0] = DEFAULT_SHIFT
         elif t == "VHS_VideoCombine" and isinstance(wv, dict):
             # %date% tokens only expand in ComfyUI's UI frontend; submitted via the API
             # they're taken literally (a dir named "%date:...%"). Use a clean, anchor-
@@ -158,15 +193,62 @@ def _set_widgets(wf, prompt, image_name, seed, w, h, length, output_prefix=None)
             wv["filename_prefix"] = output_prefix or ("lucid/" + os.path.splitext(image_name)[0])
 
 
+def _is_api_graph(wf):
+    """True for an already-converted /prompt API graph (dict of class_type nodes) vs a UI workflow.
+    Lets WORKFLOW be either the UI Remix graph OR a non-distilled API graph (the anti-melt swap)."""
+    return isinstance(wf, dict) and "nodes" not in wf and bool(wf) and all(
+        isinstance(v, dict) and "class_type" in v for v in wf.values())
+
+
+def _api_prompt_node(api):
+    """The positive CLIPTextEncode id: the node whose positive/negative inputs link DIRECTLY to a
+    CLIPTextEncode (Wan routes conditioning through WanImageToVideo, so don't trust slot order)."""
+    for n in api.values():
+        p, q = n.get("inputs", {}).get("positive"), n.get("inputs", {}).get("negative")
+        if isinstance(p, list) and isinstance(q, list) and \
+           api.get(p[0], {}).get("class_type") == "CLIPTextEncode" and \
+           api.get(q[0], {}).get("class_type") == "CLIPTextEncode":
+            return p[0]
+    return None
+
+
+def _set_widgets_api(api, prompt, image_name, seed, w, h, length, output_prefix=None):
+    """Parameterize a non-distilled API-format i2v graph (UnetLoaderGGUF experts) — the same knobs
+    _set_widgets sets on the UI Remix graph. Negative stays the graph's baked anatomy-quality text."""
+    pos = _api_prompt_node(api)
+    if pos:
+        api[pos]["inputs"]["text"] = prompt
+    for n in api.values():
+        ct, ins = n["class_type"], n["inputs"]
+        if ct == "LoadImage":
+            ins["image"] = image_name
+        elif ct == "WanImageToVideo":
+            ins["width"], ins["height"], ins["length"] = w, h, length
+        elif ct == "ModelSamplingSD3":
+            ins["shift"] = DEFAULT_SHIFT
+        elif ct == "KSamplerAdvanced":
+            ins["noise_seed"] = seed
+        elif ct == "LoraLoaderModelOnly":
+            name = ins.get("lora_name", "")          # high-noise expert lays out bodies → keep LoRA off it
+            ins["strength_model"] = LORA_HIGH if "-H-" in name else LORA_LOW
+        elif ct == "VHS_VideoCombine":
+            ins["filename_prefix"] = output_prefix or ("lucid/" + os.path.splitext(image_name)[0])
+
+
 def run_beat(prompt, first_frame_name, seed=None,
              w=DEFAULT_W, h=DEFAULT_H, length=DEFAULT_LEN, timeout=1800, output_prefix=None):
-    """Parameterize the Remix-i2v workflow and generate one clip. Returns mp4 path."""
+    """Parameterize the i2v workflow (UI Remix OR non-distilled API graph) and generate one clip."""
+    length = clamp_length(length)   # defensive: never trust a caller-supplied frame count
     if seed is None:
         seed = random.randint(1, 2**31)
     with open(WORKFLOW) as f:
         wf = json.load(f)
-    _set_widgets(wf, prompt, first_frame_name, seed, w, h, length, output_prefix)
-    api = cc.ui_to_api(wf)
+    if _is_api_graph(wf):                          # non-distilled GGUF graph (anti-melt) — drive directly
+        api = dict(wf)
+        _set_widgets_api(api, prompt, first_frame_name, seed, w, h, length, output_prefix)
+    else:                                          # UI Remix graph — widgets then convert
+        _set_widgets(wf, prompt, first_frame_name, seed, w, h, length, output_prefix)
+        api = cc.ui_to_api(wf)
     files, _hist = cc.generate(api, timeout=timeout)
     if not files:
         raise RuntimeError("generation produced no video")

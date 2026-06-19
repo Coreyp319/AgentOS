@@ -96,6 +96,14 @@
   }
   .wrap { max-width: 940px; margin: 0 auto; padding: var(--sp-8) var(--sp-6) var(--sp-10); }
 
+  /* ── living aurora backdrop ──────────────────────────────────────────
+     A WebGL port of nimbus aurora's Flow look (spikes/ambient-backdrop), muted to
+     the instrument register and driven by the agent mood from keyhole.json. Sits
+     BEHIND the glass cards; the body gradient above stays as the no-WebGL fallback. */
+  #auroraBg { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0;
+    display: block; pointer-events: none; }
+  .wrap { position: relative; z-index: 1; }   /* content rides above the backdrop */
+
   /* The horizon strip — the keyhole instrument's signature gesture (HorizonStrip.qml): a 2px
      line that breathes slowly at rest so the panel reads as *alive and watching*, not frozen.
      3.2s breath, deliberately desynced from the 4s poll. Freezes (holds) when attention>0 —
@@ -202,6 +210,7 @@
          box-shadow: 0 0 0 4px var(--st-idle-ring); transition: background .4s, box-shadow .4s; }
   .dot.up      { background: var(--st-up);    box-shadow: 0 0 0 4px var(--st-up-ring); }
   .dot.ok      { background: transparent;     box-shadow: inset 0 0 0 2px var(--st-up); opacity: .82; }
+  .dot.idle    { background: transparent;     box-shadow: inset 0 0 0 2px var(--st-idle); opacity: .85; } /* on-demand backend: dormant by design, hollow ⇒ not the solid grey of a daemon that's down */
   .dot.starting{ background: var(--st-amber); box-shadow: 0 0 0 4px var(--st-amber-ring); animation: breathe 1.6s ease-in-out infinite; }
   .dot.stopping{ background: var(--st-amber); box-shadow: 0 0 0 4px var(--st-amber-ring); animation: breathe 1.6s ease-in-out infinite; }
   .dot.failed  { background: var(--st-red);   box-shadow: 0 0 0 4px var(--st-red-ring), 0 0 7px color-mix(in srgb, var(--st-red) 38%, transparent); }
@@ -254,6 +263,7 @@
 </style>
 </head>
 <body>
+  <canvas id="auroraBg" aria-hidden="true"></canvas>
   <div class="wrap">
     <div class="horizon" aria-hidden="true"></div>
     <header>
@@ -286,7 +296,7 @@
   </div>
 
 <script>
-  const STATE_RANK = { failed: 0, starting: 1, stopping: 1, down: 2, unknown: 3, up: 4, ok: 5, absent: 6 };
+  const STATE_RANK = { failed: 0, starting: 1, stopping: 1, down: 2, unknown: 3, up: 4, idle: 5, ok: 5, absent: 6 };
   let lastSig = "";       // only re-render when the service set actually changes (avoids focus/aria churn)
   let prevAttn = new Set(); // ids that needed attention last tick — to detect the recovery moment
 
@@ -478,6 +488,116 @@
   tick();
   setInterval(tick, 4000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+</script>
+
+<!-- Living aurora backdrop — WebGL Flow (spikes/ambient-backdrop), agent-mood reactive.
+     GPU-considerate: pauses when the tab is hidden; static single frame under reduced-motion. -->
+<script>
+(function () {
+  const cv = document.getElementById("auroraBg");
+  if (!cv) return;
+  const gl = cv.getContext("webgl", { antialias:false, alpha:false })
+          || cv.getContext("experimental-webgl", { alpha:false });
+  if (!gl) return;  // no WebGL → the body gradient remains as the backdrop
+
+  const FRAG = `
+precision highp float;
+uniform vec2 iResolution; uniform float iTime;
+uniform float uBusy; uniform float uWarm; uniform float uSnag; uniform float uIntensity;
+float hash(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
+float vnoise(vec2 p){ vec2 i=floor(p),f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  float a=hash(i),b=hash(i+vec2(1.0,0.0)),c=hash(i+vec2(0.0,1.0)),d=hash(i+vec2(1.0,1.0));
+  return mix(mix(a,b,u.x),mix(c,d,u.x),u.y); }
+float fbm(vec2 p){ float v=0.0,a=0.55; mat2 r=mat2(0.80,0.60,-0.60,0.80);
+  for(int i=0;i<5;i++){ v+=a*vnoise(p); p=r*p*2.02+11.3; a*=0.5; } return v; }
+float fbm3(vec2 p){ float v=0.0,a=0.6; mat2 r=mat2(0.80,0.60,-0.60,0.80);
+  for(int i=0;i<3;i++){ v+=a*vnoise(p); p=r*p*2.02+11.3; a*=0.5; } return v; }
+vec3 ramp(float t,vec3 c0,vec3 c1,vec3 c2,vec3 c3,vec3 c4){ t=clamp(t,0.0,1.0)*4.0;
+  if(t<1.0) return mix(c0,c1,t); if(t<2.0) return mix(c1,c2,t-1.0);
+  if(t<3.0) return mix(c2,c3,t-2.0); return mix(c3,c4,t-3.0); }
+float flowField(vec2 base,float t){
+  vec2 q=vec2(fbm3(base+vec2(0.0,0.12*t)),fbm3(base+vec2(5.2,1.7-0.10*t)));
+  vec2 r=vec2(fbm3(base+1.8*q+vec2(1.7,9.2+0.08*t)),fbm3(base+1.8*q+vec2(8.3,2.8-0.07*t)));
+  return fbm(base+2.2*r); }
+void main(){
+  vec2 res=iResolution; vec2 uv=gl_FragCoord.xy/res;
+  vec2 p=(gl_FragCoord.xy-0.5*res)/res.y;
+  vec3 c0=vec3(0.026,0.034,0.052), c1=vec3(0.042,0.064,0.105), c2=vec3(0.064,0.104,0.168),
+       c3=vec3(0.092,0.156,0.232), c4=vec3(0.150,0.245,0.330);
+  float t=iTime*0.6*(0.6+1.0*uBusy);
+  vec2 base=p*2.8+vec2(0.12*t,-0.06*t);
+  float f=flowField(base,t);
+  float field=smoothstep(0.28,0.82,f);
+  vec3 col=ramp(field,c0,c1,c2,c3,c4);
+  col*=(1.0+0.22*uBusy);
+  float luma=dot(col,vec3(0.30,0.59,0.11));
+  col=mix(col,vec3(luma),0.60*uSnag); col*=(1.0-0.32*uSnag);
+  vec3 warmHue=vec3(1.0,0.60,0.34);
+  float low=1.0-smoothstep(0.0,0.60,uv.y);
+  float glow=low*uWarm*(0.45+0.35*flowField(base*0.6,t*0.5));
+  col=mix(col,warmHue,0.40*glow);
+  col*=mix(0.90,1.0,smoothstep(0.0,0.9,uv.y));
+  col*=uIntensity;
+  gl_FragColor=vec4(col,1.0);
+}`;
+  const VERT = "attribute vec2 a; void main(){ gl_Position=vec4(a,0.0,1.0); }";
+  function sh(t,s){ const o=gl.createShader(t); gl.shaderSource(o,s); gl.compileShader(o); return o; }
+  const prog=gl.createProgram();
+  gl.attachShader(prog,sh(gl.VERTEX_SHADER,VERT));
+  gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FRAG));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) return;
+  gl.useProgram(prog);
+  const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+  const loc=gl.getAttribLocation(prog,"a"); gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+  const U=n=>gl.getUniformLocation(prog,n);
+  const uRes=U("iResolution"),uTime=U("iTime"),uBusy=U("uBusy"),uWarm=U("uWarm"),uSnag=U("uSnag"),uInt=U("uIntensity");
+
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // eased mood (target ← /status.json, current → shader) so transitions are gentle
+  const cur={busy:0,warm:0,snag:0}, tgt={busy:0,warm:0,snag:0};
+  async function pollMood(){
+    try { const d=await (await fetch("/status.json",{cache:"no-store"})).json();
+      const m=d.mood||{}; tgt.busy=+m.busy||0; tgt.warm=+m.warm||0; tgt.snag=+m.snag||0; } catch(e){}
+  }
+  pollMood(); setInterval(pollMood, 4000);
+
+  function resize(){ const dpr=Math.min(devicePixelRatio||1,1.5);
+    cv.width=Math.floor(innerWidth*dpr); cv.height=Math.floor(innerHeight*dpr);
+    gl.viewport(0,0,cv.width,cv.height); }
+  addEventListener("resize", resize); resize();
+
+  // Advance an internal clock from a *clamped* per-frame delta rather than absolute wall time.
+  // The browser coalesces rAF while the pointer is idle, then bursts on the next mouse move;
+  // an absolute clock would jump the flow field forward by the whole gap in one frame, which
+  // reads as the backdrop lurching the instant you touch the mouse. Capping the step (~3 frames)
+  // makes a stall resume as a smooth crawl — never a leap. lastNow resets on stop() (tab hide).
+  let simTime = 0, lastNow = 0;
+  function frame(now){
+    const k = reduce ? 1 : 0.05;
+    cur.busy+=(tgt.busy-cur.busy)*k; cur.warm+=(tgt.warm-cur.warm)*k; cur.snag+=(tgt.snag-cur.snag)*k;
+    if (lastNow) simTime += Math.min((now - lastNow) / 1000, 0.05);
+    lastNow = now;
+    gl.uniform2f(uRes,cv.width,cv.height);
+    gl.uniform1f(uTime, reduce ? 8.0 : simTime);
+    gl.uniform1f(uBusy,cur.busy); gl.uniform1f(uWarm,cur.warm); gl.uniform1f(uSnag,cur.snag);
+    gl.uniform1f(uInt,1.0);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+  }
+  if (reduce) {                        // static: a few rAF frames so it composites, then stop
+    let n=0; const once=now=>{ frame(now); if(++n<3) requestAnimationFrame(once); };
+    requestAnimationFrame(once);
+  } else {
+    let raf=0;
+    const loop=now=>{ frame(now); raf=requestAnimationFrame(loop); };
+    const start=()=>{ if(!raf) raf=requestAnimationFrame(loop); };
+    const stop =()=>{ if(raf){ cancelAnimationFrame(raf); raf=0; lastNow=0; } };
+    document.addEventListener("visibilitychange",()=> document.hidden ? stop() : start());
+    start();
+  }
+})();
 </script>
 </body>
 </html>

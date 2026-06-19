@@ -57,6 +57,25 @@ class UnitStatus(unittest.TestCase):
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["state"], "ran ✓")
 
+    def test_on_demand_inactive_is_idle_not_down(self):
+        # A coordinator-spawned backend (ComfyUI) is dormant until asked — "on-demand", never "down".
+        r = self.status({"unit": "comfyui.service", "kind": "on_demand"},
+                        show=show_output(LoadState="loaded", ActiveState="inactive",
+                                         SubState="dead", Result="success"))
+        self.assertEqual(r["status"], "idle")
+        self.assertEqual(r["state"], "on-demand")
+
+    def test_on_demand_active_is_up(self):
+        # When something IS dreaming, the on-demand backend reads as a normal running service.
+        r = self.status({"unit": "comfyui.service", "kind": "on_demand"},
+                        show=show_output(LoadState="loaded", ActiveState="active",
+                                         SubState="running", Result="success"))
+        self.assertEqual(r["status"], "up")
+
+    def test_idle_on_demand_is_calm(self):
+        # Dormant on-demand must not raise attention (unlike a down daemon).
+        self.assertFalse(sp._is_attention({"status": "idle", "kind": "on_demand", "reach": ""}))
+
     def test_watch_active_is_ready(self):
         r = self.status({"unit": "w.path", "kind": "watch"},
                         show=show_output(LoadState="loaded", ActiveState="active",

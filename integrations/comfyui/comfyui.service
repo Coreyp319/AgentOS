@@ -6,6 +6,10 @@ Documentation=file://%h/Documents/AgentOS/integrations/comfyui/README.md
 # so the idle server only holds the CUDA context (~0.5 GiB). Job-time VRAM is arbitrated by
 # the agentosd VRAM coordinator / lease (ADR-0006/0010), which evicts this lane on preempt.
 After=graphical-session.target
+# Start-limit keys live in [Unit] (systemd v229+). In [Service] they are silently ignored — the
+# rate-limit never applies AND systemd logs a parse warning on every daemon reload.
+StartLimitIntervalSec=120
+StartLimitBurst=4
 
 [Service]
 Type=simple
@@ -13,13 +17,14 @@ WorkingDirectory=%h/ComfyUI
 # Mirrors spikes/dreaming/start-comfyui.sh, but self-contained (no dependency on spikes/).
 # --listen 127.0.0.1: API + UI loopback-only (the dreaming client uses COMFY_HOST=127.0.0.1:8188).
 # --preview-method latent2rgb: near-free live denoise preview; no extra model/VRAM.
-ExecStart=%h/ComfyUI/.venv/bin/python %h/ComfyUI/main.py --listen 127.0.0.1 --port 8188 --preview-method latent2rgb
+# --disable-smart-memory: fully unload models after use (esp. the 10.8 GiB umt5 text encoder) so the
+#   Wan 2.2 14B expert loads fully resident instead of streaming ~8 GiB off CPU each step. Trade-off:
+#   no cross-run model cache. Mirrors start-comfyui.sh (the dream path). (OOM fix, diagnosed 2026-06-16.)
+ExecStart=%h/ComfyUI/.venv/bin/python %h/ComfyUI/main.py --listen 127.0.0.1 --port 8188 --preview-method latent2rgb --disable-smart-memory
 Environment="PATH=%h/ComfyUI/.venv/bin:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Best-effort lane: restart on crash, but don't thrash if it OOM-loops at startup.
 Restart=on-failure
 RestartSec=10
-StartLimitIntervalSec=120
-StartLimitBurst=4
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=30

@@ -60,6 +60,17 @@ button{ font:inherit }
   border-radius:var(--radius-sm); padding:12px 14px; cursor:pointer }
 .ghost:hover{ border-color:var(--inst-muted) }
 .row{ display:flex; gap:8px; margin-top:10px; flex-wrap:wrap }
+/* next-segment length picker — a calm segmented control above the beats; the chosen length
+   applies to whichever beat (or custom turn) you fire next. */
+.seglen{ margin:6px 0 12px }
+.seglen-label{ display:block; color:var(--inst-label); font-size:var(--fs-xs); margin-bottom:6px }
+.seglen-opts{ display:flex; gap:6px; flex-wrap:wrap }
+.lenbtn{ flex:1 1 0; min-width:44px; text-align:center; background:transparent;
+  border:1px solid var(--hairline); color:var(--inst-muted); border-radius:var(--radius-sm);
+  padding:7px 0; cursor:pointer }
+.lenbtn:hover{ border-color:var(--inst-blue) }
+.lenbtn.on{ background:var(--blue-wash); border-color:var(--inst-blue); color:var(--inst-blue); font-weight:600 }
+.lenbtn:disabled{ opacity:.5; cursor:default }
 /* likeness consent — the one "needs you" warm cue (B2/ADR-0017): a real-person seed needs the user
    to assert they have the right. Warm accent, never alarming red (that stays reserved for danger). */
 .consent{ margin-top:12px; padding:12px 14px; border-radius:var(--radius-sm);
@@ -82,11 +93,20 @@ a{ color:var(--inst-blue) }
   aspect-ratio:16/10; background:#090b11; box-shadow:0 24px 64px -42px #000 }
 .aurora{ position:absolute; inset:-24%; filter:blur(42px) saturate(115%); opacity:0; animation:develop 7s 1s ease forwards }
 .aurora i{ position:absolute; border-radius:50%; mix-blend-mode:screen; display:block }
-.aurora i:nth-child(1){ width:46%; height:60%; left:8%; top:14%; background:radial-gradient(circle,#5fd0c8,transparent 62%); animation:drift1 19s ease-in-out infinite }
-.aurora i:nth-child(2){ width:54%; height:64%; right:4%; top:6%; background:radial-gradient(circle,#8aa6ff,transparent 62%); animation:drift2 23s ease-in-out infinite }
-.aurora i:nth-child(3){ width:50%; height:56%; left:24%; bottom:0; background:radial-gradient(circle,#6f7bd6,transparent 62%); animation:drift3 27s ease-in-out infinite }
+/* the canonical cool aurora ramp (instrument-tokens.md: auroraLo/Mid/Hi) — indigo -> blue -> violet,
+   the same GPU-pressure "dawn" the keyhole halo + VRAM gauge wear, so a glance at the tray shows the
+   colour the dream is made of. Screen-blended over the near-black stage, the ramp values bloom bright. */
+.aurora i:nth-child(1){ width:46%; height:60%; left:8%; top:14%; background:radial-gradient(circle,#27306E,transparent 62%); animation:drift1 19s ease-in-out infinite }
+.aurora i:nth-child(2){ width:54%; height:64%; right:4%; top:6%; background:radial-gradient(circle,#8A6BDC,transparent 62%); animation:drift2 23s ease-in-out infinite }
+.aurora i:nth-child(3){ width:50%; height:56%; left:24%; bottom:0; background:radial-gradient(circle,#4A5AD2,transparent 62%); animation:drift3 27s ease-in-out infinite }
 .grain{ position:absolute; inset:0; opacity:.05; mix-blend-mode:overlay; pointer-events:none;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") }
+/* develop-resolve: the finished frame blooms IN over the developed aurora, in the same box, then the
+   real <video> takes over (Chain). object-fit + bg match the player so the resolve lands on the player. */
+.stage .poster-reveal{ position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#090b11;
+  opacity:0; transition:opacity .9s ease; z-index:1 }
+.stage.poster-in .poster-reveal{ opacity:1 }
+@media (prefers-reduced-motion:reduce){ .stage .poster-reveal{ transition:none } }
 .cap{ position:absolute; left:0; right:0; bottom:0; padding:22px; z-index:2;
   background:linear-gradient(0deg,rgba(9,11,17,.86),transparent) }
 .beat-q{ font-family:var(--display); font-style:italic; font-weight:380; font-size:1.4rem; line-height:1.28;
@@ -105,6 +125,17 @@ a{ color:var(--inst-blue) }
 .thumb img{ width:100%; aspect-ratio:9/16; object-fit:cover; display:block }
 .thumb .cap2{ font-size:10px; color:var(--inst-muted); padding:3px 4px; text-align:left;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+
+/* play the whole dream in order, optionally on repeat — a quiet toolbar under the player */
+.player-bar{ display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap }
+.pbtn{ display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:2.5em; background:transparent;
+  border:1px solid var(--hairline); color:var(--inst-muted); border-radius:var(--radius-sm); padding:7px 12px;
+  font-size:var(--fs-sm); cursor:pointer }   /* min-height clears the WCAG 2.5.8 24px target, scales with text */
+.pbtn:hover:not(:disabled){ border-color:var(--inst-muted); color:var(--inst-text) }
+.pbtn:disabled{ opacity:.4; cursor:default }
+.pbtn.on{ border-color:var(--inst-blue); color:var(--inst-blue); background:var(--blue-wash) }
+.pbtn .ic{ font-size:.95em; line-height:1 }
+.player-pos{ font-size:var(--fs-xs); color:var(--inst-label); font-variant-numeric:tabular-nums }
 
 .flash{ position:fixed; left:50%; top:14px; transform:translateX(-50%); z-index:50; max-width:90vw;
   background:var(--inst-deep); border:1px solid var(--st-red-line); color:var(--st-red);

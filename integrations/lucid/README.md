@@ -33,6 +33,24 @@ Then add it to the status panel by appending this to `integrations/status-panel/
   Ollama) and **fails open** to the ambient shader when any is missing — it never claims ready when
   it can't see, and never forces a GPU load.
 
+## Running it — one owner of :8765
+Lucid is the **sole owner** of `127.0.0.1:8765`. Normally it runs as the `agentos-lucid` user
+service (installed by `apply.sh`); the status panel just links to it. Don't launch a second copy by
+hand and let it race the service — that's the EADDRINUSE crash-loop. `lucid_web.py` now arbitrates:
+
+- A bare `python3 lucid_web.py` that finds the port already served by lucid **yields** (prints, exits
+  0 — so the service never crash-loops); if a *non-lucid* process holds it, it exits 1 with a clear
+  message instead of looping.
+- To iterate on the code, take the port from the service with `./dev.sh run` (= `lucid_web.py
+  --takeover`): it SIGTERMs the incumbent lucid (which releases its warm-keep lease and exits first),
+  then serves from your terminal. `./dev.sh restart` hands the port back to the service.
+
+```
+./dev.sh            # restart the service + follow its log (normal path)
+./dev.sh run        # run lucid here, taking :8765 from the service (dev iteration)
+./dev.sh stop       # stop the service
+```
+
 ## Still owed (ADR-0015)
 Seed-image upload + the face/likeness guard (B2 — currently start a session via the CLI:
 `spikes/dreaming/lucid/lucid_linear.py start web --image <opening.png>`), ComfyUI warm-keep, the

@@ -199,7 +199,7 @@ def beats_for_tip(session, n=4, roll=True):
 
 
 # ---------------- one leased, confirmed-evicted, gated video beat ----------------
-def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=False):
+def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=False, length=None):
     """B1 dance: actively evict beat model (`ollama stop`) + confirm -> lease -> generate -> release. Returns clip path,
     or None to skip the turn (fail open). The prompt MUST already have passed S.gate_prompt.
     Private sessions render to a sealed subdir and the clip is moved to tmpfs (ADR-0016).
@@ -228,7 +228,7 @@ def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=F
                 return None
             scope = ST._priv_output_dir(session) if private else None  # never a global output walk
             return ST.place_clip(session, private, _newest_clip(scope))
-        clip, _seed = E.run_beat(prompt, anchor_frame,
+        clip, _seed = E.run_beat(prompt, anchor_frame, length=length,
                                  output_prefix=ST.output_prefix(session, private))
         return ST.place_clip(session, private, clip)  # private: move out of shared output -> tmpfs
     except Exception as e:
@@ -254,8 +254,10 @@ def _newest_clip(scope_dir=None):
     return best
 
 
-def step(session, prompt, label, tier="batch", external_lease=False, is_current=None):
+def step(session, prompt, label, tier="batch", external_lease=False, is_current=None, length=None):
     """One linear turn: gate the prompt (both paths), generate under lease, append a node.
+    `length` (optional) is the caller's chosen next-segment frame count; clamped in lucid_engine
+    (code disposes) and recorded on the node so the chain can show per-segment duration.
     `tier` (default "batch") preserves the interactive callers; the ADR-0019 drainer passes
     "best-effort" so a held re-run is structurally preemptible by Tier::Interactive (fail-open).
     `external_lease=True` (warm-keep) threads through to generate_video so a caller holding the
@@ -273,7 +275,9 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
     private = ST.is_private(session)
     chain = load_chain(session)
     parent = chain["nodes"][-1]
-    clip = generate_video(session, gated, parent["out_frame"], tier=tier, external_lease=external_lease)
+    seg_len = E.clamp_length(length)
+    clip = generate_video(session, gated, parent["out_frame"], tier=tier,
+                          external_lease=external_lease, length=seg_len)
     if clip is None:
         log("turn skipped (fail open) — chain unchanged")
         return None
@@ -284,7 +288,7 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
     ref_name, abs_path = ST.frame_ref(session, private, f"{session}_n{nid}.png")
     out_frame = E.extract_last_frame(clip, ref_name, out_path=abs_path)  # store owns the path
     node = {"id": nid, "parent": parent["id"], "label": label, "prompt": gated,
-            "seed": None, "clip": clip, "out_frame": out_frame}
+            "seed": None, "clip": clip, "out_frame": out_frame, "length": seg_len}
     chain["nodes"].append(node)
     save_chain(session, chain)
     return node

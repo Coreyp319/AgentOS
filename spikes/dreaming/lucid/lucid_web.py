@@ -11,13 +11,18 @@ isn't, and never forces a GPU load. Wears the shared instrument "glass" register
 
 Endpoints:
   GET  /            the page
-  GET  /healthz     200 "ok"  (the status panel's reachability probe)
+  GET  /healthz     200 "ok"  (status-panel reachability probe; X-Lucid-Pid header = owner PID)
   GET  /api/state   readiness (coordinator/comfyui/ollama) + current chain + validated beats
   POST /api/dream   one gated, leased turn (same-origin guarded) — {prompt|choose, label}
 
-Run: python3 lucid_web.py   (port LUCID_WEB_PORT, default 8765; loopback only)
+Single owner of :PORT. Normally runs as the `agentos-lucid` user service (the status panel links
+to it). A bare `python3 lucid_web.py` that finds the port already served by lucid YIELDS (prints +
+exits 0, so the service never crash-loops on EADDRINUSE); pass `--takeover` (or LUCID_TAKEOVER=1)
+to replace the incumbent, which releases its lease and exits 0 first. Dev helper: integrations/lucid/dev.sh.
+Host/port via LUCID_WEB_HOST / LUCID_WEB_PORT (default 127.0.0.1:8765, loopback only).
 """
 import base64
+import errno
 import hmac
 import io
 import json
@@ -103,7 +108,7 @@ def _supersede_turn():
         TURN.update(phase="idle", label=None, error=None, started=None)
 
 
-def _run_turn(prompt, label, epoch=None):
+def _run_turn(prompt, label, epoch=None, length=None):
     """Worker: drive ONE leased turn, then record an honest outcome (never a silent no-op).
     Warm-keep: ensure the session's batch lease (spawn ComfyUI once, reuse after) and hand it to
     step() as external — step neither Spawns nor Releases, so ComfyUI stays warm across beats.
@@ -118,7 +123,8 @@ def _run_turn(prompt, label, epoch=None):
             phase, err = "skipped", None
         else:
             is_current = (lambda: _epoch_current(epoch)) if epoch is not None else None
-            node = L.step(SESSION, prompt, label, external_lease=True, is_current=is_current)
+            node = L.step(SESSION, prompt, label, external_lease=True, is_current=is_current,
+                          length=length)
             phase, err = ("done" if node else "skipped"), None
     except SystemExit as e:        # red-line gate refused the prompt (B3)
         phase, err = "refused", str(e)
@@ -368,6 +374,12 @@ h1{font-size:1.4rem;font-weight:600;margin:0 0 2px}
 .ghost{background:transparent;border:1px solid var(--hairline);color:var(--inst-muted);
  border-radius:var(--radius-sm);padding:12px 14px;font:inherit;cursor:pointer}.ghost:hover{border-color:var(--inst-muted)}
 .row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.seglen{margin:6px 0 12px}
+.seglen-label{display:block;color:var(--inst-label);font-size:var(--fs-xs);margin-bottom:6px}
+.seglen-opts{display:flex;gap:6px;flex-wrap:wrap}
+.lenbtn{flex:1 1 0;min-width:44px;text-align:center;background:transparent;border:1px solid var(--hairline);color:var(--inst-muted);border-radius:var(--radius-sm);padding:7px 0;cursor:pointer}
+.lenbtn:hover{border-color:var(--inst-blue)}
+.lenbtn.on{background:var(--blue-wash);border-color:var(--inst-blue);color:var(--inst-blue);font-weight:600}
 input[type=text]{width:100%;background:var(--inst-deep);border:1px solid var(--hairline);color:var(--inst-text);
  border-radius:var(--radius-sm);padding:11px 14px;font:inherit;margin-top:10px}
 .note{color:var(--inst-label);font-size:var(--fs-xs)}
@@ -411,7 +423,7 @@ Each clip is made one at a time, so it never crowds out your other apps for the 
 </div><script>
 const CSRF=document.querySelector('meta[name=csrf]').content;
 const E=s=>(s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let LAST=null,lastSig='',BEATS=[],BEATS_FOR=-1,burnArmed=false,burnMsg='',delArmed=false,delMsg='',lastAnn='',flashT=null;
+let LAST=null,lastSig='',BEATS=[],BEATS_FOR=-1,burnArmed=false,burnMsg='',delArmed=false,delMsg='',lastAnn='',flashT=null,SEGLEN=33;
 let dreamTimer=null,dreamStartMs=0;
 
 function fmt(t){const m=Math.floor(t/60),s=t%60;return m+':'+String(s).padStart(2,'0');}
@@ -507,7 +519,12 @@ function build(s){const r=s.readiness,t=s.turn;let h='';
   else if(t.phase==='refused')h+=`<div class=banner>That direction isn't something Lucid can make. `
    +`Try a different turn.</div>`;
   if(r.can_dream){
-   h+=`<div id=beats><div class=note>considering the next moves…</div></div>`
+   h+=`<div class=seglen><span class="seglen-label">Length of the next moment</span><div class="seglen-opts">`
+    +[[17,'1s'],[33,'2s'],[49,'3s']].map(o=>  // capped at 3s: 720x1280 GGUF beats past 49f run past the gen timeout
+      `<button type=button data-len="${o[0]}" class="lenbtn${SEGLEN===o[0]?' on':''}" `
+      +`onclick="setLen(${o[0]})">${o[1]}</button>`).join('')
+    +`</div></div>`
+    +`<div id=beats><div class=note>considering the next moves…</div></div>`
     +`<input id=own type=text placeholder="…or type what happens next" `
     +`onkeydown="if(event.key==='Enter')dreamOwn()">`;
   }else h+=`<div class=note>Choosing what happens next switches on once everything above is ready.</div>`;
@@ -552,15 +569,27 @@ async function loadBeats(){const el=document.getElementById('beats');if(!el)retu
  const el2=document.getElementById('beats');if(!el2)return;
  el2.innerHTML=BEATS.length?paintBeats(BEATS):'<div class=note>No suggestions — type your own below.</div>';}
 
+// A restart mints a fresh per-process CSRF token, so an OLD tab's POSTs get a silent 403 and the
+// button just appears dead. Detect that one case and recover honestly: tell the user, then reload
+// to pick up a fresh token. Returns parsed JSON, or null when it has taken over a stale session.
+function staleReload(){flash('Lucid restarted — refreshing your session…');setTimeout(()=>location.reload(),1400);}
+async function jpost(url,body){
+ const res=await fetch(url,{method:'POST',
+  headers:{'Content-Type':'application/json','X-Lucid-Token':CSRF},
+  body:body===undefined?undefined:JSON.stringify(body)});
+ if(res.status===403){staleReload();return null;}   // stale CSRF after a restart — reload to recover
+ return res.json();}
+
 async function post(body){let j;
- try{j=await(await fetch('/api/dream',{method:'POST',
-  headers:{'Content-Type':'application/json','X-Lucid-Token':CSRF},body:JSON.stringify(body)})).json();}
+ try{j=await jpost('/api/dream',body);}
  catch(e){flash('Could not reach Lucid — try again.');return;}
+ if(j===null)return;                 // stale session: staleReload() is taking over
  if(j.error)flash(j.error);
  lastSig='';load();}                // force an immediate repaint into the 'dreaming' state
-function dream(i){const b=BEATS[i];if(b)post({prompt:b.prompt,label:b.label});}
+function setLen(n){SEGLEN=n;document.querySelectorAll('.lenbtn').forEach(b=>b.classList.toggle('on',+b.dataset.len===n));}
+function dream(i){const b=BEATS[i];if(b)post({prompt:b.prompt,label:b.label,length:SEGLEN});}
 function dreamOwn(){const el=document.getElementById('own');const v=el?el.value.trim():'';
- if(v)post({prompt:v,label:'custom'});}
+ if(v)post({prompt:v,label:'custom',length:SEGLEN});}
 
 // --- seed upload + B2 likeness guard (preserved from the upload feature; consent flow intact) ---
 function fileB64(f){return new Promise(r=>{const rd=new FileReader();rd.onload=()=>r(rd.result.split(',')[1]);rd.readAsDataURL(f);});}
@@ -571,8 +600,9 @@ async function startDream(consent){
  const body={private:priv};
  if(f){body.image_b64=await fileB64(f);body.consent=!!consent;msg.textContent='🔎 checking your image for real-person likeness…';btn.disabled=true;}
  else if(text){body.text=text;body.consent=!!consent;msg.textContent='✦ painting your opening…';btn.disabled=true;}
- let j;try{j=await(await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json','X-Lucid-Token':CSRF},body:JSON.stringify(body)})).json();}
+ let j;try{j=await jpost('/api/start',body);}
  catch(e){if(btn)btn.disabled=false;msg.textContent='Could not reach Lucid — try again.';return;}
+ if(j===null){if(btn)btn.disabled=false;return;}   // stale session — reloading to refresh the token
  if(btn)btn.disabled=false;
  if(j.blocked){
    if(j.requires_consent){if(confirm(j.reason+'\\n\\nContinue?'))return startDream(true);msg.textContent='Cancelled.';return;}
@@ -586,8 +616,9 @@ async function startDream(consent){
 function armBurn(){burnArmed=true;burnMsg='';if(LAST)paint(LAST);}
 function cancelBurn(){burnArmed=false;if(LAST)paint(LAST);}
 async function doBurn(){burnArmed=false;let j;
- try{j=await(await fetch('/api/burn',{method:'POST',headers:{'X-Lucid-Token':CSRF}})).json();}
+ try{j=await jpost('/api/burn');}
  catch(e){flash('Burn could not run — try again.');return;}
+ if(j===null)return;
  if(j.failed&&j.failed.length)burnMsg='!Some traces could NOT be wiped and remain on disk: '
   +j.failed.join('; ')+'. They are retried at next start; delete by hand to be certain.';
  else burnMsg='This dream is gone — '+(j.burned||0)+' location(s) wiped.';
@@ -596,8 +627,9 @@ async function doBurn(){burnArmed=false;let j;
 function armDel(){delArmed=true;delMsg='';if(LAST)paint(LAST);}
 function cancelDel(){delArmed=false;if(LAST)paint(LAST);}
 async function doDelete(){delArmed=false;let j;
- try{j=await(await fetch('/api/delete',{method:'POST',headers:{'X-Lucid-Token':CSRF}})).json();}
+ try{j=await jpost('/api/delete');}
  catch(e){flash('Delete could not run — try again.');return;}
+ if(j===null)return;
  if(j.failed&&j.failed.length)delMsg='!Some files could NOT be deleted: '+j.failed.join('; ')
   +'. Delete by hand to be certain.';
  else delMsg='';   // success — the dream is gone; the page returns to Start
@@ -614,13 +646,15 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, extra=None):
         if isinstance(body, str):
             body = body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -677,8 +711,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path == "/healthz":
-            return self._send(200, "ok", "text/plain")
+        if path == "/healthz":   # X-Lucid-Pid lets a second instance ID this owner (yield/takeover)
+            return self._send(200, "ok", "text/plain", {"X-Lucid-Pid": str(os.getpid())})
         if path == "/api/state":
             return self._send(200, json.dumps(state()), "application/json")
         if path == "/api/beats":   # slow (Ollama) — fetched separately so the page never blocks
@@ -828,6 +862,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({"error": "Not ready yet — " + "; ".join(rd["why"])}),
                               "application/json")
         prompt, label = req.get("prompt"), req.get("label", "custom")
+        length = req.get("length")   # optional next-segment length; lucid_engine.clamp_length disposes
         if not prompt:
             return self._send(200, json.dumps({"error": "That suggestion is no longer available — pick again."}),
                               "application/json")
@@ -841,7 +876,7 @@ class Handler(BaseHTTPRequestHandler):
                     {"error": "A dream is already in flight — one beat at a time."}), "application/json")
             epoch = TURN["epoch"]   # this turn's generation; a later start/delete/burn bumps it to supersede
             TURN.update(phase="dreaming", label=label, error=None, started=time.monotonic())
-        threading.Thread(target=_run_turn, args=(prompt, label, epoch), daemon=True).start()
+        threading.Thread(target=_run_turn, args=(prompt, label, epoch, length), daemon=True).start()
         return self._send(202, json.dumps({"ok": True, "started": True}), "application/json")
 
 
@@ -868,10 +903,80 @@ def _burn_private_on_stop():
         print(f"on-stop burn skipped: {e}", flush=True)
 
 
+def _incumbent_lucid_pid():
+    """PID of the lucid already serving :PORT (read from its /healthz `X-Lucid-Pid` header), or 0 if
+    the port's holder doesn't answer as lucid (free, or some other service). Decides a collision."""
+    try:
+        with urllib.request.urlopen(f"http://{HOST}:{PORT}/healthz", timeout=1.0) as r:
+            pid = r.headers.get("X-Lucid-Pid", "")
+        return int(pid) if pid.isdigit() else 0
+    except Exception:
+        return 0
+
+
+def _terminate_incumbent(pid, grace=6.0):
+    """SIGTERM the incumbent lucid — it releases its warm-keep lease and exits 0 via its own handler —
+    then wait for it to go, escalating to SIGKILL if it won't. Returns once the PID is gone."""
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 2.0)):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)            # liveness probe (signal 0 — no-op while alive)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        if sig is signal.SIGKILL:
+            print(f"[lucid] incumbent pid {pid} survived SIGKILL", flush=True)
+
+
+def _bind_server():
+    """Bind the HTTP server on (HOST, PORT), arbitrating single-ownership so a manual run and the
+    systemd service never crash-loop on EADDRINUSE (the orphan-port bug).
+
+    Default = YIELD: if another lucid already serves :PORT, print and exit 0 — systemd treats it as
+    success, so no restart storm; if a NON-lucid process holds the port, exit 1 (a real conflict).
+    Opt-in `--takeover` / LUCID_TAKEOVER=1 (interactive dev only — the service never sets it, so there
+    is no service↔dev ping-pong): SIGTERM the incumbent lucid, then bind once the port frees."""
+    takeover = "--takeover" in sys.argv or os.environ.get("LUCID_TAKEOVER") == "1"
+    terminated = False
+    for _ in range(40):                       # after a takeover, retry the bind for up to ~8s
+        server = ThreadingHTTPServer((HOST, PORT), Handler, bind_and_activate=False)
+        try:
+            server.server_bind()              # allow_reuse_address (SO_REUSEADDR) is set first
+            server.server_activate()
+            return server
+        except OSError as e:
+            server.server_close()
+            if e.errno != errno.EADDRINUSE:
+                raise
+        if terminated:                        # already evicted the incumbent — just wait for the port
+            time.sleep(0.2)
+            continue
+        pid = _incumbent_lucid_pid()
+        if pid == 0:
+            print(f"[lucid] {HOST}:{PORT} is held by a non-lucid process — refusing to start. Free it "
+                  f"(`fuser -k {PORT}/tcp`) or set LUCID_WEB_PORT.", flush=True)
+            sys.exit(1)
+        if not takeover:
+            print(f"[lucid] already serving at http://{HOST}:{PORT} (pid {pid}) — not starting a second "
+                  f"instance. Use the `agentos-lucid` service; pass --takeover to replace it.", flush=True)
+            sys.exit(0)
+        print(f"[lucid] --takeover: replacing incumbent lucid (pid {pid}) on {HOST}:{PORT}", flush=True)
+        _terminate_incumbent(pid)
+        terminated = True
+    print(f"[lucid] could not bind {HOST}:{PORT} after takeover — giving up.", flush=True)
+    sys.exit(1)
+
+
 def main():
     if "--burn-private" in sys.argv:   # systemd ExecStop hook — see _burn_private_on_stop
         _burn_private_on_stop()
         return
+    server = _bind_server()            # single-owner arbitration of :PORT — yields/exits cleanly on a collision
     try:  # sweep private clip/frame orphans whose tmpfs session is gone (crash/logout) — ADR-0016
         reaped = L.ST.reap_orphans()
         if reaped:
@@ -889,7 +994,7 @@ def main():
     signal.signal(signal.SIGINT, _shutdown)
     threading.Thread(target=_lease_reaper, daemon=True).start()
     print(f"Lucid web → http://{HOST}:{PORT}  (session '{SESSION}')", flush=True)
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    server.serve_forever()
 
 
 if __name__ == "__main__":

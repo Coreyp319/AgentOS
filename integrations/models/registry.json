@@ -23,40 +23,44 @@
       "id": "narrator",
       "role": "Story suggestions (next-beat)",
       "purpose": "Proposes the 3–4 'what happens next' choices each turn, and expands the chosen one into a motion prompt. Output is schema-validated and red-line-filtered before it can reach the GPU.",
-      "model": "gemma4:latest",
+      "model": "qwen2.5vl:3b",
       "runtime": "ollama",
-      "size_gb": 9.6,
-      "source": "ollama (local) — Gemma 4",
+      "size_gb": 3.2,
+      "source": "ollama library: qwen2.5vl:3b (Qwen2.5-VL 3B vision)",
       "local": true,
       "safety_critical": false,
       "used_by": ["Lucid beat-gen"],
-      "notes": "Evicted (keep_alive:0) before the video step so it never co-resides with the 24GB i2v model."
+      "alternatives": [
+        "gemma4:latest — 9.6GB, richer suggestions but slow/wedge-prone to evict; it blocked the video step every turn (the bug fixed here)",
+        "moondream — 1.7GB, smallest/fastest to evict but weaker structured-JSON beat-gen"
+      ],
+      "notes": "Small on purpose: force_evict (ollama stop — the ADR-0018 lever) frees it in ~3s before the heavy i2v lease, and it can coexist with the lighter video models (no eviction needed). Shares qwen2.5vl:3b with B2, so one small model covers both roles. Was gemma4:latest (9.6GB), which evicted slowly and wedged — skipping the dream every turn (ADR-0015 §3)."
     },
     {
       "id": "t2i-opening",
       "role": "Text-to-opening (describe → image)",
       "purpose": "Renders the dream's opening frame from a typed description. The result still passes B2 (a t2i can render a person too).",
-      "model": "sd_turbo.safetensors",
+      "model": "divingIllustriousReal_v40VAE.safetensors",
       "runtime": "comfyui",
-      "size_gb": 4.9,
-      "source": "huggingface: stabilityai/sd-turbo",
+      "size_gb": 6.5,
+      "source": "huggingface: BusterBoo99xX/divingIllustriousReal_v40VAE (Illustrious/SDXL, mirror of the Civitai model)",
       "local": true,
       "safety_critical": false,
       "used_by": ["Lucid text-to-opening"],
-      "notes": "Fast (1–4 steps). The description passes the red-line gate first; generation is predict-before-load so it refuses rather than OOMs."
+      "notes": "Illustrious/SDXL (~28 steps, cfg ~5, 768x1344 = 9:16 to match the i2v frame). Replaced SD-Turbo, which was SFW-only and 512px so it could not seed a pose/anatomy-correct NSFW opening. The description still passes the red-line gate; B2 likeness-gates the rendered frame; predict-before-load refuses rather than OOMs."
     },
     {
       "id": "i2v-dream",
       "role": "Dream video (image → video)",
       "purpose": "The actual dream: animates the current frame into the next clip, last-frame → first-frame, steered by the chosen beat.",
-      "model": "Wan2.2-Remix-i2v-14b (high+low)",
+      "model": "Wan2.2 Enhanced-NSFW nolightning GGUF Q6K (high+low)",
       "runtime": "comfyui",
-      "size_gb": 21.8,
-      "source": "local ComfyUI checkpoint (Wan 2.2 Remix i2v 14B)",
+      "size_gb": 24.0,
+      "source": "local ComfyUI unet GGUF (wan22_enhNSFW_nolight_cf_Q6K_high/low) via workflows/enhNSFW-nolight-i2v.api.json",
       "local": true,
       "safety_critical": false,
       "used_by": ["Lucid dream loop"],
-      "notes": "The heavy one. Runs only through the VRAM coordinator lease (Spawn/confirm-evict/Release); live inference always outranks it."
+      "notes": "Non-distilled (real CFG ~3.5, 20 steps) — replaced the distilled Wan2.2-Remix i2v, whose lightning high-noise expert melted anatomy ('anatomy from within anatomy'). Costs ~4x the time per beat; that is the price of not melting. The heavy one: runs only through the VRAM coordinator lease (Spawn/confirm-evict/Release); live inference always outranks it. Revert via LUCID_WORKFLOW=<the Remix .json>."
     }
   ]
 }

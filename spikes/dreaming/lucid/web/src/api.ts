@@ -7,7 +7,7 @@ export type Readiness = {
 }
 export type DreamNode = {
   id: number; parent: number; label: string; prompt: string
-  clip: string | null; out_frame: string
+  clip: string | null; out_frame: string; length?: number   // chosen segment frame count (@16fps); absent on the opening
 }
 export type Chain = { nodes: DreamNode[] } | null
 export type TurnPhase = 'idle' | 'dreaming' | 'done' | 'skipped' | 'refused' | 'error'
@@ -76,7 +76,7 @@ function useStateMutation<V>(fn: (v: V) => Promise<any>, resets: unknown[][] = [
   })
 }
 
-export const useDream = () => useStateMutation((b: { prompt: string; label: string }) => post('/api/dream', b))
+export const useDream = () => useStateMutation((b: { prompt: string; label: string; length?: number }) => post('/api/dream', b))
 export const useStart = () =>
   useStateMutation((b: { private: boolean; image_b64?: string; text?: string; consent?: boolean }) =>
     post('/api/start', b), [['beats']])

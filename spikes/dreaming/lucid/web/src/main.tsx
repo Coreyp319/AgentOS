@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MotionConfig } from 'motion/react'
 import '@fontsource-variable/fraunces' // self-hosted, bundled into dist — NO CDN (per the type review)
 import './theme.css'
 import App from './App'
@@ -15,7 +16,12 @@ const qc = new QueryClient({
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={qc}>
-      <App />
+      {/* motion/react does NOT honour prefers-reduced-motion unless told to; the CSS media query can't
+          reach JS-driven transitions. reducedMotion="user" collapses every <motion.*> to instant under
+          the OS preference — the script-layer counterpart to theme.css's reduced-motion fork. */}
+      <MotionConfig reducedMotion="user">
+        <App />
+      </MotionConfig>
     </QueryClientProvider>
   </React.StrictMode>,
 )

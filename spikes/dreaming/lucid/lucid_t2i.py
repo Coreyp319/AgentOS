@@ -23,10 +23,11 @@ import lucid_safety as S    # noqa: E402  (the red-line prompt gate)
 import lucid_models         # noqa: E402  (model registry — single source of truth)
 
 CKPT = os.environ.get("LUCID_T2I_CKPT") or lucid_models.get("t2i-opening", "sd_turbo.safetensors")
-EST_MIB = int(os.environ.get("LUCID_T2I_EST_MIB", "6500"))   # SD-Turbo weights + working set
-STEPS = int(os.environ.get("LUCID_T2I_STEPS", "4"))   # SD-Turbo: 1-4 steps
-CFG = float(os.environ.get("LUCID_T2I_CFG", "1.0"))   # SD-Turbo: cfg 1.0
-NEG = "text, watermark, logo, low quality, blurry, deformed, extra limbs"
+EST_MIB = int(os.environ.get("LUCID_T2I_EST_MIB", "8500"))   # SDXL/Illustrious weights + working set
+STEPS = int(os.environ.get("LUCID_T2I_STEPS", "28"))   # Illustrious (SDXL): ~25-30 steps (not turbo)
+CFG = float(os.environ.get("LUCID_T2I_CFG", "5.0"))    # Illustrious (SDXL): cfg ~5
+NEG = ("worst quality, low quality, jpeg artifacts, text, watermark, logo, blurry, "
+       "deformed, bad anatomy, extra limbs, extra fingers, fused fingers, mutated hands")
 _IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
@@ -56,7 +57,7 @@ def _workflow(prompt, seed, w, h):
     }
 
 
-def generate_opening(prompt, out_path, w=512, h=512, seed=None, timeout=180):
+def generate_opening(prompt, out_path, w=768, h=1344, seed=None, timeout=180):   # 9:16 portrait, SDXL-friendly (matches the i2v frame)
     """Gate the prompt, render one t2i frame, copy it to out_path. Returns out_path.
     Raises ValueError if the prompt is red-lined, RuntimeError if generation fails."""
     gated = S.gate_prompt(prompt)

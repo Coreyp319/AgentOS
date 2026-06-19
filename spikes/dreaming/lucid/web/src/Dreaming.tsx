@@ -1,31 +1,21 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
 import type { Turn } from './api'
 
 const fmt = (t: number) => `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
 
-// the signature moment: the dream developing out of the dark while the GPU generates the next clip.
+// The companion card to the develop hero, which now lives in <Chain>'s player box (so the finished clip
+// can resolve out of the aurora in place). This carries the honest "still working" line + the elapsed
+// timer while the GPU generates the next beat.
 export default function Dreaming({ turn }: { turn: Turn }) {
-  // tick elapsed locally (seeded from the server) so the aurora isn't re-mounted on every poll
-  const start = useRef(Date.now() - (turn.elapsed ?? 0) * 1000)
+  // tick elapsed locally (seeded once from the server) so it advances smoothly between the 2.5s state polls
   const [secs, setSecs] = useState(turn.elapsed ?? 0)
   useEffect(() => {
-    const id = setInterval(() => setSecs(Math.max(0, Math.floor((Date.now() - start.current) / 1000))), 1000)
+    const id = setInterval(() => setSecs((s) => s + 1), 1000)
     return () => clearInterval(id)
   }, [])
-  const label = turn.label && turn.label !== 'custom' ? turn.label : null
   return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
-      style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div className="stage" aria-busy="true">
-        <div className="aurora"><i /><i /><i /></div>
-        <div className="grain" />
-        <div className="cap">
-          <p className="beat-q" style={label ? undefined : { opacity: 0.6 }}>
-            {label ? `“${label}”` : 'the next moment is forming…'}
-          </p>
-        </div>
-      </div>
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
       <div className="card">
         <div className="dreamrow">
           <span>

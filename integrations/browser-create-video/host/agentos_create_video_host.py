@@ -30,7 +30,7 @@ import sys
 
 # Absolute path to the governed launcher, templated in by apply.sh. The literal default below
 # lets the script run uninstalled (self-test); apply.sh rewrites this line to the real path.
-LAUNCHER = "@LAUNCHER@"
+LAUNCHER = "/home/corey/Documents/AgentOS/spikes/dreaming/lucid/create_from_image.py"
 
 # The web-image schemes we forward. Mirror the launcher's _fetch_raw allowlist, MINUS file:// —
 # a web page must not reach local files through us (the Dolphin ServiceMenu owns local files, with

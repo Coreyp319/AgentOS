@@ -20,6 +20,7 @@ export function ReadinessCard({ r }: { r: Readiness }) {
       {!r.can_dream && (
         <div className="banner">
           Can't dream right now — {r.why.join('; ')}. When a piece is missing, Lucid steps back and leaves your wallpaper untouched.
+          <div className="note" style={{ marginTop: 4 }}>Lucid keeps checking — this turns back on by itself when the piece is back.</div>
         </div>
       )}
     </div>

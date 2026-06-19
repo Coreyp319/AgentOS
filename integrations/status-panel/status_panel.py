@@ -83,9 +83,11 @@ def _unit_status(svc: dict, run=_run) -> dict:
     side effects, so the status branching is unit-testable without shelling out."""
     scope = svc.get("scope", "user")
     # kind shapes what "healthy" means:
-    #   daemon — expected to stay active (inactive ⇒ down)
-    #   watch  — a .path/.timer; active/waiting ⇒ "ready"
-    #   task   — a oneshot/launcher that exits after doing its job; clean exit ⇒ "ran ✓", not down
+    #   daemon    — expected to stay active (inactive ⇒ down)
+    #   watch     — a .path/.timer; active/waiting ⇒ "ready"
+    #   task      — a oneshot/launcher that exits after its job; clean exit ⇒ "ran ✓", not down
+    #   on_demand — a backend started only when something needs it (coordinator-spawned ComfyUI);
+    #               dormant ⇒ "idle" (calm, never an alarm), running ⇒ up. See ADR-0015.
     kind = svc.get("kind", "daemon")
 
     # Resolve the unit id. `match` (glob) entries — e.g. the xdg-autostart wallpaper unit,
@@ -124,8 +126,14 @@ def _unit_status(svc: dict, run=_run) -> dict:
     elif active == "deactivating":
         status = "stopping"
     elif active in ("inactive", "dead", ""):
-        # A fire-and-forget task that exited cleanly did its job — that's "ok", not "down".
-        status = "ok" if kind == "task" else ("absent" if load == "not-found" else "down")
+        # Down ≠ bad for non-daemons. A task that exited cleanly did its job ("ok"); an on-demand
+        # backend (coordinator-spawned ComfyUI) is just dormant until asked ("idle"). Neither alarms.
+        if kind == "task":
+            status = "ok"
+        elif kind == "on_demand":
+            status = "idle"
+        else:
+            status = "absent" if load == "not-found" else "down"
     else:
         status = "unknown"
 
@@ -136,6 +144,8 @@ def _unit_status(svc: dict, run=_run) -> dict:
         label = "not installed"
     elif status == "ok":
         label = "ran ✓"
+    elif status == "idle":
+        label = "on-demand"
     elif status == "up" and kind == "watch":
         label = "ready"  # a .path/.timer that's armed and waiting for its trigger
     elif status == "up" and sub in ("running", "listening", "waiting", "exited", "mounted"):
@@ -169,6 +179,27 @@ def _reachable(url: str) -> str:
         return "unreachable"
 
 
+def read_mood() -> dict:
+    """The agent mood for the living backdrop (panel.html), read from the keyhole feed
+    ($XDG_RUNTIME_DIR/nimbus-aurora/keyhole.json). Absent/unreadable → calm idle, so the
+    backdrop just drifts. Read-only; never blocks the panel over a missing file."""
+    calm = {"state": "idle", "busy": 0.0, "warm": 0.0, "snag": 0.0}
+    rt = os.environ.get("XDG_RUNTIME_DIR", "")
+    if not rt:
+        return calm
+    try:
+        d = json.loads((Path(rt) / "nimbus-aurora" / "keyhole.json").read_text())
+        f = d.get("floats", {})
+        return {
+            "state": d.get("state", "idle"),
+            "busy": float(f.get("busy", 0.0)),
+            "warm": float(f.get("warm", 0.0)),
+            "snag": float(f.get("snag", 0.0)),
+        }
+    except Exception:
+        return calm
+
+
 def _is_attention(s: dict) -> bool:
     # Genuinely actionable: a failed unit, a daemon that should be up but is down, or
     # something that's "up" yet not answering its port (a split-brain). Tasks that ran,
@@ -196,7 +227,10 @@ def build_status(catalog=None, run=_run, reach=_reachable) -> dict:
             st = _unit_status(svc, run=run)
             # Probe reachability whenever a health URL exists (not just when "up"): a
             # failed-but-still-serving service is a split-brain worth surfacing, not hiding.
-            reach_state = reach(svc.get("health", "")) if svc.get("health") and st["status"] != "absent" else ""
+            # EXCEPT a dormant on-demand backend (status "idle") — "unreachable" is expected
+            # there (nothing's asked for it yet), so probing only manufactures a false "no response".
+            do_probe = svc.get("health") and st["status"] not in ("absent", "idle")
+            reach_state = reach(svc.get("health", "")) if do_probe else ""
             services.append({
                 "id": svc.get("id", "?"),
                 "name": svc.get("name", "(unnamed)"),
@@ -218,11 +252,11 @@ def build_status(catalog=None, run=_run, reach=_reachable) -> dict:
 
     summary = {
         "total": len(services),
-        "healthy": sum(1 for s in services if s["status"] in ("up", "ok")),
+        "healthy": sum(1 for s in services if s["status"] in ("up", "ok", "idle")),
         "attention": sum(1 for s in services if _is_attention(s)),
     }
     return {"groups": catalog.get("groups", []), "services": services,
-            "summary": summary, "generated_at": time.time()}
+            "summary": summary, "mood": read_mood(), "generated_at": time.time()}
 
 
 def why(svc_id: str, run=_run) -> dict:
