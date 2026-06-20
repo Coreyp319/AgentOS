@@ -98,8 +98,10 @@
 
   /* ── living aurora backdrop ──────────────────────────────────────────
      A WebGL port of nimbus aurora's Flow look (spikes/ambient-backdrop), muted to
-     the instrument register and driven by the agent mood from keyhole.json. Sits
-     BEHIND the glass cards; the body gradient above stays as the no-WebGL fallback. */
+     the instrument register. A single, steady, NON-reactive drift — deliberately not
+     wired to agent mood, so it never lurches when the fleet gets busy (the keyhole tray
+     is where live state is shown). Sits BEHIND the glass cards; the body gradient above
+     stays as the no-WebGL fallback. */
   #auroraBg { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0;
     display: block; pointer-events: none; }
   .wrap { position: relative; z-index: 1; }   /* content rides above the backdrop */
@@ -490,8 +492,9 @@
   document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
 </script>
 
-<!-- Living aurora backdrop — WebGL Flow (spikes/ambient-backdrop), agent-mood reactive.
-     GPU-considerate: pauses when the tab is hidden; static single frame under reduced-motion. -->
+<!-- Living aurora backdrop — WebGL Flow (spikes/ambient-backdrop): one steady, non-reactive
+     drift (no agent-mood input, so it never lurches). GPU-considerate: pauses when the tab is
+     hidden; static single frame under reduced-motion / software GL. -->
 <script>
 (function () {
   const cv = document.getElementById("auroraBg");
@@ -503,7 +506,6 @@
   const FRAG = `
 precision highp float;
 uniform vec2 iResolution; uniform float iTime;
-uniform float uBusy; uniform float uWarm; uniform float uSnag; uniform float uIntensity;
 float hash(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
 float vnoise(vec2 p){ vec2 i=floor(p),f=fract(p); vec2 u=f*f*(3.0-2.0*f);
   float a=hash(i),b=hash(i+vec2(1.0,0.0)),c=hash(i+vec2(0.0,1.0)),d=hash(i+vec2(1.0,1.0));
@@ -524,20 +526,12 @@ void main(){
   vec2 p=(gl_FragCoord.xy-0.5*res)/res.y;
   vec3 c0=vec3(0.026,0.034,0.052), c1=vec3(0.042,0.064,0.105), c2=vec3(0.064,0.104,0.168),
        c3=vec3(0.092,0.156,0.232), c4=vec3(0.150,0.245,0.330);
-  float t=iTime*0.6*(0.6+1.0*uBusy);
+  float t=iTime*0.36;                  /* one fixed drift rate (the old resting speed) — no mood term, so the timeline never rescales/lurches */
   vec2 base=p*2.8+vec2(0.12*t,-0.06*t);
   float f=flowField(base,t);
   float field=smoothstep(0.28,0.82,f);
   vec3 col=ramp(field,c0,c1,c2,c3,c4);
-  col*=(1.0+0.22*uBusy);
-  float luma=dot(col,vec3(0.30,0.59,0.11));
-  col=mix(col,vec3(luma),0.60*uSnag); col*=(1.0-0.32*uSnag);
-  vec3 warmHue=vec3(1.0,0.60,0.34);
-  float low=1.0-smoothstep(0.0,0.60,uv.y);
-  float glow=low*uWarm*(0.45+0.35*flowField(base*0.6,t*0.5));
-  col=mix(col,warmHue,0.40*glow);
-  col*=mix(0.90,1.0,smoothstep(0.0,0.9,uv.y));
-  col*=uIntensity;
+  col*=mix(0.90,1.0,smoothstep(0.0,0.9,uv.y));   /* gentle fixed vertical falloff (cosmetic) */
   gl_FragColor=vec4(col,1.0);
 }`;
   const VERT = "attribute vec2 a; void main(){ gl_Position=vec4(a,0.0,1.0); }";
@@ -553,18 +547,24 @@ void main(){
   const loc=gl.getAttribLocation(prog,"a"); gl.enableVertexAttribArray(loc);
   gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
   const U=n=>gl.getUniformLocation(prog,n);
-  const uRes=U("iResolution"),uTime=U("iTime"),uBusy=U("uBusy"),uWarm=U("uWarm"),uSnag=U("uSnag"),uInt=U("uIntensity");
+  const uRes=U("iResolution"),uTime=U("iTime");
 
-  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  // eased mood (target ← /status.json, current → shader) so transitions are gentle
-  const cur={busy:0,warm:0,snag:0}, tgt={busy:0,warm:0,snag:0};
-  async function pollMood(){
-    try { const d=await (await fetch("/status.json",{cache:"no-store"})).json();
-      const m=d.mood||{}; tgt.busy=+m.busy||0; tgt.warm=+m.warm||0; tgt.snag=+m.snag||0; } catch(e){}
+  // Treat an unaccelerated WebGL context (SwiftShader / llvmpipe / software) like reduced-motion:
+  // a full-screen flow field on a CPU rasteriser stutters badly — far calmer to hold one frame
+  // than to lurch. (Check the real cause once via about:gpu / chrome://gpu if it's still static.)
+  function softwareGL(){
+    try {
+      const e = gl.getExtension("WEBGL_debug_renderer_info");
+      const r = e ? String(gl.getParameter(e.UNMASKED_RENDERER_WEBGL)) : "";
+      return /swiftshader|llvmpipe|software|basic render|softpipe/i.test(r);
+    } catch (_) { return false; }
   }
-  pollMood(); setInterval(pollMood, 4000);
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches || softwareGL();
 
-  function resize(){ const dpr=Math.min(devicePixelRatio||1,1.5);
+  // Render the backdrop at CSS-pixel resolution (DPR 1): it's a soft, low-frequency navy haze
+  // sitting behind blurred glass cards — supersampling it is wasted fill-rate AND a larger
+  // backdrop-filter blur source to recompute every frame. The DOM/text stays crisp regardless.
+  function resize(){ const dpr=1;
     cv.width=Math.floor(innerWidth*dpr); cv.height=Math.floor(innerHeight*dpr);
     gl.viewport(0,0,cv.width,cv.height); }
   addEventListener("resize", resize); resize();
@@ -576,14 +576,10 @@ void main(){
   // makes a stall resume as a smooth crawl — never a leap. lastNow resets on stop() (tab hide).
   let simTime = 0, lastNow = 0;
   function frame(now){
-    const k = reduce ? 1 : 0.05;
-    cur.busy+=(tgt.busy-cur.busy)*k; cur.warm+=(tgt.warm-cur.warm)*k; cur.snag+=(tgt.snag-cur.snag)*k;
     if (lastNow) simTime += Math.min((now - lastNow) / 1000, 0.05);
     lastNow = now;
     gl.uniform2f(uRes,cv.width,cv.height);
     gl.uniform1f(uTime, reduce ? 8.0 : simTime);
-    gl.uniform1f(uBusy,cur.busy); gl.uniform1f(uWarm,cur.warm); gl.uniform1f(uSnag,cur.snag);
-    gl.uniform1f(uInt,1.0);
     gl.drawArrays(gl.TRIANGLES,0,3);
   }
   if (reduce) {                        // static: a few rAF frames so it composites, then stop
