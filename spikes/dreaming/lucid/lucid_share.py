@@ -34,6 +34,7 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -548,21 +549,46 @@ _RECEIPT_STATE = {
 _INVERSE_HERMES = "<p class=inverse>Hermes has read this. A chat can&#8217;t be taken back.</p>"
 # the Lucid inverse is a cross-origin DEEP-LINK to the dream view (which owns /api/delete) — never an
 # inline delete: the share key authenticates only /api/start, and a share-side delete would be a false
-# promise (the dream lives in lucid_web). Both links are host-rewritten to the dream origin client-side.
+# promise (the dream lives in lucid_web). The server authors a best-effort real href (so the links work
+# with JS off); the client JS (RECEIPT_PAGE) then refines it to the exact origin when present.
 _LINKS_LUCID = ('<div class=links>'
-                '<a id=open class=link href="#">open the dream &#8599;</a>'
-                '<a id=del class="link sub" href="#">open the dream view to delete it</a>'
+                '<a id=open class=link href="__DREAM__">open the dream &#8599;</a>'
+                '<a id=del class="link sub" href="__DREAM__">open the dream view to delete it</a>'
                 '</div>')
 
+# hostname[:port] only — excludes the underscore on purpose (so a crafted Host can neither break out of
+# the href attribute nor resurrect a __TOKEN__ during templating; html.escape leaves underscores intact).
+_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]+(?::\d{1,5})?$")
 
-def _render_receipt(r: dict) -> str:
+
+def _dream_origin(host: str, proto: str) -> "str | None":
+    """Best-effort dream-view origin for the receipt's NO-JS link, derived from the request's host
+    (the exact tailnet host the phone navigated to) + LUCID_PORT. Behind `tailscale serve` the original
+    host arrives as X-Forwarded-Host and the scheme as X-Forwarded-Proto, so do_GET passes those with
+    Host as the fallback. Returns None for a missing/implausible host so the link falls back to '#'
+    (the client JS still rewrites it when on). The host is reflected only to the same requester and is
+    validated + escaped, so a crafted header can't reach another user or inject markup."""
+    host = (host or "").split(",", 1)[0].strip()      # first hop only, if a proxy chained the header
+    if not _HOST_RE.match(host):
+        return None
+    hostname = host.rsplit(":", 1)[0] if ":" in host else host
+    scheme = proto if proto in ("http", "https") else "https"   # the only reachable path is TLS tailnet
+    suffix = "" if LUCID_PORT in (80, 443) else f":{LUCID_PORT}"
+    return f"{scheme}://{hostname}{suffix}/"
+
+
+def _render_receipt(r: dict, dream_origin: "str | None" = None) -> str:
     """Render a receipt as the SM-1 'develop' hero — the dream's COLOUR blooming out of the dark,
     NEVER a copy of the photo (/r/<id> is unauthenticated, so it serves no source-image bytes). The
-    proposed-vs-executed distinction is carried by a server-authored WORD + luminance, not by motion."""
+    proposed-vs-executed distinction is carried by a server-authored WORD + luminance, not by motion.
+    dream_origin (when known) makes the Lucid open/delete links work with JS off; client JS still refines."""
     dest = r.get("dest")
     cls, word = _RECEIPT_STATE.get(dest, ("held", "Proposed — not yet acted"))
     inverse = _INVERSE_HERMES if dest == "hermes-chat" else ""
-    links = _LINKS_LUCID if dest == "lucid" else ""
+    # resolve __DREAM__ inside the links fragment (escaped + charset-validated) BEFORE page assembly,
+    # so no __DREAM__ token survives to collide with the message substitution; '#' falls back to the
+    # client-JS rewrite when the host is unknown.
+    links = _LINKS_LUCID.replace("__DREAM__", _esc(dream_origin) if dream_origin else "#") if dest == "lucid" else ""
     # static, server-authored fragments first; the (escaped) dynamic message LAST, so an escaped value
     # can never resurrect a __TOKEN__ (html.escape does not escape underscores).
     page = (RECEIPT_PAGE
@@ -648,7 +674,12 @@ class Handler(BaseHTTPRequestHandler):
             # leaks whether an id ever existed, and a keyboard user keeps a focusable way back to Share.
             if not r or (int(time.time()) - r.get("ts", 0) > RECEIPT_TTL):
                 return self._send(404, NOTFOUND_PAGE, "text/html; charset=utf-8")
-            return self._send(200, _render_receipt(r), "text/html; charset=utf-8")
+            # X-Forwarded-* carry the real tailnet host/scheme behind `tailscale serve`; Host is the
+            # fallback. Lets the receipt's Lucid links work with JS off (client JS refines when on).
+            origin = _dream_origin(
+                self.headers.get("X-Forwarded-Host") or self.headers.get("Host", ""),
+                self.headers.get("X-Forwarded-Proto", ""))
+            return self._send(200, _render_receipt(r, origin), "text/html; charset=utf-8")
         return self._send(404, "not found", "text/plain")
 
     def _authed(self) -> bool:

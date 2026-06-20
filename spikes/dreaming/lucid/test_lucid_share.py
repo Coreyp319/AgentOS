@@ -185,9 +185,35 @@ def test_receipt_no_token_resurrection():
     print("ok  receipt: a message mimicking __TOKENS__/html stays inert (escaped-last guard)")
 
 
-def _get(url):
+def test_dream_origin_builds_and_rejects():
+    # the no-JS fallback source: real host[:port] → dream origin on LUCID_PORT (8799 in this env);
+    # implausible/crafted hosts → None so the link safely falls back to '#' (client JS still refines).
+    assert S._dream_origin("4090.tail096c29.ts.net", "https") == "https://4090.tail096c29.ts.net:8799/"
+    assert S._dream_origin("4090.tail096c29.ts.net:8770", "https") == "https://4090.tail096c29.ts.net:8799/", \
+        "the inbound :8770 must be replaced by the dream's LUCID_PORT, not preserved"
+    assert S._dream_origin("box, evil.example", "https") == "https://box:8799/", "only the first proxy hop is used"
+    assert S._dream_origin("box", "") == "https://box:8799/", "missing proto defaults to https (tailnet is TLS)"
+    for bad in ("", "evil\"></a><script>", "a b", "javascript:alert(1)", "_under.ts.net", "[::1]"):
+        assert S._dream_origin(bad, "https") is None, f"{bad!r} must be rejected (→ None → '#')"
+    print("ok  receipt: _dream_origin builds a real origin from a sane host, rejects crafted ones")
+
+
+def test_receipt_nojs_link_has_real_href():
+    # MUST work with JS off: given the request host, the lucid open/delete links carry a real href
+    # (not href=\"#\"); without a known host they fall back to '#' for the client JS to rewrite.
+    page = S._render_receipt({"dest": "lucid", "message": "x"}, "https://4090.tail096c29.ts.net:8799/")
+    assert page.count('href="https://4090.tail096c29.ts.net:8799/"') == 2, \
+        "both lucid links (open + delete) must carry the real server-authored href for no-JS"
+    assert 'href="#"' not in page, "no dead href=# should remain once the host is known"
+    nohost = S._render_receipt({"dest": "lucid", "message": "x"})
+    assert nohost.count('href="#"') == 2, "with no known host the links fall back to '#' (client JS refines)"
+    print("ok  receipt: lucid links carry a real no-JS href when the host is known, '#' otherwise")
+
+
+def _get(url, headers=None):
+    req = urllib.request.Request(url, headers=headers or {})
     try:
-        with urllib.request.urlopen(url) as r:
+        with urllib.request.urlopen(req) as r:
             return r.status, r.read().decode(), dict(r.headers)
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode(), dict(e.headers)
@@ -241,6 +267,19 @@ def test_live_malformed_receipt_id_404(base):
     print("ok  receipt(live): malformed / traversal / oversized ids all 404 (no fs access)")
 
 
+def test_live_receipt_nojs_href_from_forwarded_host(base):
+    # behind `tailscale serve` the real tailnet host arrives as X-Forwarded-Host; the receipt must
+    # author a real, JS-free href to the dream view (host kept, port → LUCID_PORT, scheme from X-F-Proto).
+    j = _post_share(base, "lucid", "")
+    assert j.get("ok") and j.get("receipt"), j
+    code, body, _ = _get(base + "/r/" + j["receipt"],
+                         {"X-Forwarded-Host": "4090.tail096c29.ts.net:8770", "X-Forwarded-Proto": "https"})
+    assert code == 200, code
+    assert 'href="https://4090.tail096c29.ts.net:8799/"' in body, "no-JS link must point at the dream origin"
+    assert 'href="#"' not in body, "no dead href=# once the forwarded host is known"
+    print("ok  receipt(live): X-Forwarded-Host yields a real no-JS dream link (port→LUCID_PORT)")
+
+
 def main():
     srv = ThreadingHTTPServer(("127.0.0.1", 8799), _Mock)         # the lucid upstream the door proxies
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -259,10 +298,13 @@ def main():
     test_esc_chokepoint_escapes()
     test_receipt_every_dest_has_focusable_backlink()
     test_receipt_no_token_resurrection()
+    test_dream_origin_builds_and_rejects()
+    test_receipt_nojs_link_has_real_href()
     test_live_roundtrip_drops_caption_has_csp(base)
     test_live_unknown_and_expired_both_404(base)
     test_live_capture_page_csp_no_remote_fonts(base)
     test_live_malformed_receipt_id_404(base)
+    test_live_receipt_nojs_href_from_forwarded_host(base)
     real.shutdown()
     srv.shutdown()
     print("\nALL PASS")
