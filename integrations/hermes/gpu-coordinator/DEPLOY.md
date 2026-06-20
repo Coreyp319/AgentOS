@@ -87,6 +87,43 @@ Endpoints this exposes (see research 0013):
 - `GET /health/detailed` — rich liveness
 - `GET /v1/capabilities` — machine-readable feature discovery
 
+## (Optional) wire AgentOS introspection into Hermes (MCP)
+
+Gives every Hermes session — including the Telegram bot on the go — three
+**read-only** GPU-introspection tools from the `agentosd mcp` server (ADR-0020
+Phase 1, JSON-RPC over stdio): `gpu_status` (free/used/total VRAM + lease tier +
+resident models), `gpu_residency` (warm-pool/heavy-lane plan + each model's
+learned admission footprint), `gpu_why` (plain-language last-contention, sourced
+from telemetry, never invented).
+
+Prereq: the `agentosd keyhole` + `agentosd telemetry` producers must be running
+(the MCP reads `keyhole.json` + the `coexist` plan over `telemetry.jsonl`; it
+touches no NVML/D-Bus/network itself). Register the server with Hermes:
+
+```bash
+# add the stdio server (discovery-first: probes it, lists the 3 tools).
+# answer Y at the "Enable all 3 tools?" prompt.
+hermes mcp add agentos --command /home/corey/.local/bin/agentosd --args mcp
+# (or, against the venv directly:)
+#   ~/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main mcp add agentos \
+#     --command /home/corey/.local/bin/agentosd --args mcp
+```
+
+Persists to `~/.hermes/config.yaml` under `agentos:` (`command`/`args`/`enabled`).
+Verify + restart to load into the gateway (Telegram):
+
+```bash
+hermes mcp test agentos        # expect: ✓ Connected, 3 tools discovered
+systemctl --user restart hermes-gateway.service
+grep "MCP server 'agentos'" ~/.hermes/logs/agent.log | tail -1
+# expect: registered 3 tool(s): mcp_agentos_gpu_status, _residency, _why
+```
+
+Then from any session (e.g. Telegram): *"how much GPU VRAM is free?"* invokes
+`gpu_status`. **Perceive-only** — the act verbs (`gpu_request`/`gpu_release`) are
+gated behind the ADR-0021 act-tier/identity plumbing, not exposed here.
+Remove with `hermes mcp remove agentos`.
+
 ## Activate
 
 ```bash
