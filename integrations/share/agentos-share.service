@@ -1,0 +1,31 @@
+[Unit]
+Description=AgentOS Share — phone→box ingest hub (127.0.0.1:8770)
+Documentation=file://%h/Documents/AgentOS/docs/adr/0027-agentos-share-phone-ingest-hub.md
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Self-contained stdlib+PIL hub (ADR-0027). Loopback-only; tailscale serve fronts it (tailnet-only).
+# Routes a shared photo to Lucid (proxies :8765 /api/start with X-Share-Key), Hermes-chat (proxies
+# :8642 with the on-box key), Hermes-task (Phase 2 — honest "not yet"), or Claude (INERT proposal).
+ExecStart=/usr/bin/python3 %h/Documents/AgentOS/spikes/dreaming/lucid/lucid_share.py
+Environment="LUCID_SHARE_HOST=127.0.0.1"
+Environment="LUCID_SHARE_PORT=8770"
+Environment="LUCID_BASE=http://127.0.0.1:8765"
+Environment="HERMES_BASE=http://127.0.0.1:8642"
+# The tailnet HTTPS origin the PWA is served from, so the browser PWA's CSRF/Origin check passes.
+Environment="SHARE_EXTRA_ORIGINS=https://4090.tail096c29.ts.net:8770"
+# Optional overrides + the on-box Hermes key live here (chmod 600). '-' = fine if the file is absent.
+EnvironmentFile=-%h/.config/agentos/share.env
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=5
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

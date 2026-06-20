@@ -13,12 +13,13 @@
 set -euo pipefail
 
 # UIs safe to expose (port -> label). Edit to taste.
-PORTS=(8765 9123 9124 9119)
+PORTS=(8765 9123 9124 9119 8770)
 declare -A LABEL=(
   [8765]="Lucid — dream UI"
   [9123]="status panel"
   [9124]="models panel"
   [9119]="Hermes board"
+  [8770]="AgentOS Share — phone ingest hub"
 )
 
 _need_tailscale() {

@@ -1,11 +1,18 @@
-# ADR-0027 — AgentOS Share: phone → desktop ingest hub (STUB / Proposed)
+# ADR-0027 — AgentOS Share: phone → desktop ingest hub
 
-Status: **Proposed** (stub). Supersedes nothing; net-new. Companion brief:
-`docs/design/0027-agentos-share-ingest-hub-brief.md`.
+Status: **Proposed** (Phase 0/1 built, live, and e2e-verified 2026-06-20 — the Lucid + Hermes-chat
+doors and the Claude inert-proposal inbox — committed `85830b4`/`5bac7a6`/`6c91f20`; Phase 2
+(Hermes-task) and Phase 3 (Claude execution) are sequenced behind the named blocking gates below).
+Supersedes nothing; net-new. Companion design artifacts: the discourse brief
+`docs/design/0027-agentos-share-ingest-hub-brief.md` and the council final (10/10 gap plan + market
+position) `docs/design/0027-agentos-share-council-final.md`.
 
-Maturity: proposal-of-a-proposal. None of the surfaces below exist in the repo yet. The only
-built, exposed photo-from-phone surface is the Lucid spike (`spikes/dreaming/lucid/lucid_web.py`).
-This ADR is the contract to write before code lands.
+Maturity: Phase 0/1 shipped. The hub is a dedicated `spikes/dreaming/lucid/lucid_share.py` (stdlib +
+PIL on :8770, tailnet-only via `tailscale serve`; `test_lucid_share.py`, 19/19), with install units
+in `integrations/share/` and the `:8770` exposure added to `agentosd-remote.sh`. The only edit to the
+concurrently-rewritten `lucid_web.py` was the ~15-line `X-Share-Key` acceptance on `/api/start`.
+Phase 2/3 remain the contract to honor before that code lands — this ADR is now the record of the
+shipped slice plus the gates on the rest.
 
 ## Context
 The user wants to share a photo (+ optional caption) from their iPhone into the agentic desktop,
