@@ -1,6 +1,6 @@
 # Brief 0004 — model-currency scout: keep dreaming on the best model the machine can run
 
-- Status: Brief / pre-ADR (conceptual — no code yet)
+- Status: Promoted to ADR-0024 (2026-06-19) — extended to the inference LLM + a coexistence-aware fit gate; still unbuilt
 - Date: 2026-06-16
 - Relates to: ADR-0001 (Hermes owns cron/agents; don't reinvent), ADR-0005 (apply/rollback tx),
   ADR-0006 (Hermes plugin → D-Bus lease), ADR-0009 (dreaming: one ComfyUI backend, SFW Surface A),

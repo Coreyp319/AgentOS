@@ -170,3 +170,53 @@ gate.
 - **Next (gated on the experiment):** the narrow `ollama stop → measure → re-`admit`→ deny/SIGKILL`
   evictor (§2 + acceptance criteria); feed the corrected footprint into the *existing scalar* admission
   (NOT a warm-set accountant, §1); the gated/reversible config *apply*; the live-test harness (§5).
+
+## Amendment (2026-06-19): Phase 3 is the "model-mix" actuator — design-council verdict
+
+A proposal to build a **dynamic VRAM model-mix controller** ("continuously keep the GPU on the
+optimal model SET for the whole workload") went to the AgentOS design council (7 personas). The
+verdict: that ambition **is this ADR's Phase 3** — promoting the read-only `analyze.rs` analyzer to
+*actuating* — not a new capability. Recorded here so Phase 3 is built as designed, not reinvented.
+Feasibility 6/10 and vision-fit 6/10, both capped by unspiked actuation primitives + an undocumented
+framing drift. The binding clarifications:
+
+1. **Referee, not optimizer.** The blessed net-new is exactly §1–§2: the corrected per-model
+   footprint as a better `est_mib` into the **existing scalar `admit`** + the narrow `ollama stop →
+   measure → re-admit → deny/SIGKILL` reclaim + the gated reversible config apply. A tick-by-tick
+   resident-set control loop = the "second VRAM accountant" §1 forbids (ADR-0001/0002 violation).
+   Drop "optimal SET / continuously / quant-aware" framing.
+2. **Gate on the data — this may not be justified.** Build the evictor only if the running experiment
+   reports contention (`signals.avoided_swaps > 0` or `oom_danger_ticks > 0`). `analyze.rs` already
+   emits "no pressure → `MAX_LOADED=1` sufficient; Phase 3 not justified yet" — honor it.
+3. **v0 PREREQUISITE — close the off-lease eviction gap first.** The failure that motivated this (a
+   standing ComfyUI holding 13.3 GB **outside the lease** → the 27B inference model 87% on CPU at
+   1.5 tok/s, 2026-06-19) is not fixable by an evictor that can only reach lease-owned jobs. Bring
+   standing ComfyUI under the lease (`Spawn`/process-group reclaim — **not** `AdoptScope`; it is not a
+   flatpak, see ADR-0022) or give it an idle-unload policy. This is the value-bearing slice (success =
+   208s → GPU-speed); the controller is "worse than pointless" without it.
+4. **Residency-only in v1; quant-downshift deferred to the scout.** Quant choice is a capability/
+   consent decision with an uncalibrated footprint — it belongs to ADR-0024 (Hermes scout, proposal-
+   only), with its own ADR, never the live actuating loop.
+5. **Actuator shape:** declarative desired-state *data* (`analyze.rs::Plan`) → pure diff → **one
+   greedy corrective action per tick** → gated by the existing scalar `admit` under the `Inner` lock
+   against **one fresh NVML read** (no TOCTOU). Idempotent (anti-strobe for free), replayable, GPU-free
+   testable. Invariants (per the resource-safety / determinism / rust panels): ONE serialization point
+   (the actuator is a *client* of the lease's locked apply path, never a 2nd actor); **never hold
+   `Inner` across I/O** (decide under lock, evict off-lock like `perform_reclaim`); a **separate tokio
+   task** (copy `wind.rs`), async reqwest not blocking; **measure-don't-predict after `ollama stop`**
+   (agentosd doesn't own Ollama's PID — poll free until it rises, bounded, fail-open); keep
+   `analyze.rs` read-only and **fail-CLOSED** in the actuator (don't import its fail-to-calm leniency);
+   load-before-evict where budget allows, **fail-closed to the current good mix** on partial failure
+   (never land halfway); anti-strobe dwell on warm eviction; routine churn = silent `residency[]`
+   state, only an evicted *active* model earns one calm toast.
+6. **Primitives to spike before actuation ships:** `ollama stop → poll-until-freed → re-admit`
+   (comments-only today, `main.rs:30`); a `size_vram < size` post-load **offload detector + rollback**
+   ("never CPU-offload" is enforceable as detect-and-reject, NOT as a guarantee — `size_vram` is itself
+   the offload-masking signal). **Drop ComfyUI `POST /free`** from the lever set: measured-dead (frees
+   0 MiB, ADR-0010 §5); the trustworthy ComfyUI lever is the lease reclaim from item 3.
+
+**Status stays Proposed.** When the gated evictor is built, move to Accepted *here* (with the
+experiment's go/no-go numbers) — do not write a separate "controller" ADR. Market framing (sourced,
+council): the real uncontested wedge is the **cross-engine GPU referee** (LLM + diffusion + graphics
+on one desktop GPU, fail-open, never-wedge) — not "optimal mix"; see
+`memory/dynamic-model-mix-council-verdict.md`.
