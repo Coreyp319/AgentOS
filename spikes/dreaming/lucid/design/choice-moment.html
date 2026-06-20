@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lucid · choice-moment spike</title>
+<!--
+  THROWAWAY SPIKE (ADR-0023) — the on-stage "what happens next" choice moment.
+  Goal: judge the COMPOSITION + TIMING before porting into Chain.tsx / wiring the generator.
+    · choices live in the STAGE GUTTERS (left/right of the 9:16 clip), never over the image
+    · the clip drops to SLOW-MO and loops while you choose (the dream, suspended)
+    · option previews are EAGER — they stream into the cards DURING playback (mocked here on a timer),
+      so they're already there at the decision; cancel-on-pick reclaims the GPU for the real beat
+    · scaffolding (the dashed control bar) is spike-only, not part of the real UI
+-->
+<style>
+:root{
+  --inst-base:#12141c; --inst-deep:#161a28; --inst-horizon:#1a2238;
+  --inst-text:#e6e9f0; --inst-muted:#8a90a0; --inst-label:#878c9b;
+  --inst-blue:#7aa2ff; --brand-warm:#e0884f;
+  --glass:rgba(38,42,54,.46); --hairline:rgba(255,255,255,.07);
+  --blue-wash:color-mix(in srgb,var(--inst-blue) 11%,transparent);
+  --display:"Fraunces Variable",Georgia,"Times New Roman",serif;
+  --fs-sm:.8125rem; --fs-xs:.75rem; --radius-sm:9px; --radius-md:16px;
+}
+*{box-sizing:border-box}
+body{margin:0;color:var(--inst-text);font:15px/1.55 system-ui,sans-serif;min-height:100vh;
+  background:radial-gradient(1000px 600px at 80% -10%,color-mix(in srgb,var(--inst-blue) 8%,transparent),transparent 60%),
+   linear-gradient(160deg,var(--inst-base),var(--inst-deep) 45%,var(--inst-horizon));-webkit-font-smoothing:antialiased}
+.wrap{max-width:920px;margin:0 auto;padding:28px 20px 60px;display:flex;flex-direction:column;gap:14px}
+.brand{display:flex;align-items:baseline;gap:12px}
+.mark{font-family:var(--display);font-weight:360;font-size:2.2rem;line-height:1;letter-spacing:-.01em}
+.tag{font-family:var(--display);font-style:italic;font-size:1rem;color:var(--inst-muted)}
+
+/* ---- the stage: wide frame, the portrait clip floating in it, gutters for choices ---- */
+.stage{position:relative;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--hairline);
+  height:clamp(420px,62vh,600px);background:#070810;box-shadow:0 24px 64px -42px #000}
+/* the "clip" — a mocked dream frame (gradient + grain) with a slow pan; slows further on the dwell */
+.clip{position:absolute;top:50%;left:50%;width:auto;height:90%;aspect-ratio:9/16;transform:translate(-50%,-50%);
+  border-radius:11px;overflow:hidden;background:#070810;
+  box-shadow:0 44px 100px -34px rgba(0,0,0,.92),inset 0 0 0 1px rgba(255,255,255,.09);z-index:2}
+.clip .img{position:absolute;inset:-8%;background:
+  radial-gradient(50% 42% at 32% 24%,#8A6BDC,transparent 60%),
+  radial-gradient(54% 50% at 72% 70%,#27306E,transparent 62%),
+  radial-gradient(60% 56% at 50% 92%,#4A5AD2,transparent 64%),#0a0c18;
+  animation:pan 14s ease-in-out infinite alternate}
+.stage.dwell .clip .img{animation-duration:52s}            /* slow-mo dwell */
+.stage.dwell .clip{box-shadow:0 44px 120px -30px rgba(138,107,220,.4),inset 0 0 0 1px rgba(255,255,255,.09)}
+.clip .grain{position:absolute;inset:0;opacity:.06;mix-blend-mode:overlay;pointer-events:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+/* the colour spill anchoring the portrait in the wide stage */
+.spill{position:absolute;top:50%;left:50%;transform:translate(-50%,-52%) scale(1.12);width:78%;height:92%;
+  filter:blur(54px) saturate(1.35);opacity:.5;z-index:0;border-radius:50%;
+  background:radial-gradient(50% 50% at 40% 30%,#8A6BDC,transparent 60%),radial-gradient(60% 60% at 70% 70%,#27306E,transparent 62%)}
+.vig{position:absolute;inset:0;z-index:3;pointer-events:none;
+  background:radial-gradient(120% 78% at 50% 44%,transparent 44%,rgba(7,8,12,.6))}
+.cap{position:absolute;left:0;right:0;bottom:0;z-index:4;padding:20px 22px;
+  background:linear-gradient(0deg,rgba(9,11,17,.86),transparent)}
+.eyebrow{font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.08em;color:rgba(230,233,240,.6);margin-bottom:6px}
+.beat-q{font-family:var(--display);font-style:italic;font-weight:380;font-size:1.36rem;line-height:1.28;margin:0;max-width:30ch}
+.dwell-tag{position:absolute;top:14px;left:16px;z-index:5;font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+  color:rgba(230,233,240,.55);opacity:0;transition:opacity .6s}
+.stage.dwell .dwell-tag{opacity:1}
+
+/* ---- the gutter choices: glowing "possible" branches growing from the frame ---- */
+.gutter{position:absolute;top:0;bottom:0;z-index:4;width:clamp(150px,22%,210px);display:flex;flex-direction:column;
+  justify-content:center;gap:18px;padding:18px 14px;pointer-events:none}
+.gutter.left{left:0;align-items:flex-start}
+.gutter.right{right:0;align-items:flex-end}
+.choice{pointer-events:auto;display:flex;flex-direction:column;gap:9px;width:100%;max-width:196px;
+  background:rgba(12,16,32,.5);border:1px solid var(--hairline);border-radius:12px;padding:11px;
+  backdrop-filter:blur(10px);cursor:pointer;text-align:left;color:inherit;font:inherit;
+  opacity:0;transform:translateY(8px) scale(.97);transition:opacity .5s ease,transform .5s ease,border-color .2s}
+.stage.reveal .choice{opacity:1;transform:none}
+.stage.reveal .choice:nth-child(1){transition-delay:.05s}
+.stage.reveal .choice:nth-child(2){transition-delay:.16s}
+.choice:hover{border-color:var(--inst-blue);transform:translateY(-2px)}
+.choice .thumb{position:relative;width:100%;aspect-ratio:9/16;max-height:190px;border-radius:8px;overflow:hidden;
+  border:1px dashed color-mix(in srgb,var(--inst-blue) 45%,transparent);background:#0c1020}
+/* dashed placeholder until the eager preview lands */
+.choice .thumb .ph{position:absolute;inset:0;display:grid;place-items:center;color:rgba(230,233,240,.4);
+  font-size:var(--fs-xs);letter-spacing:.06em;background:
+   radial-gradient(62% 52% at 50% 38%,color-mix(in srgb,var(--inst-blue) 22%,transparent),transparent)}
+.choice .thumb .ph .spin{width:16px;height:16px;border-radius:50%;border:2px solid rgba(122,162,255,.25);
+  border-top-color:var(--inst-blue);animation:spin 1s linear infinite;margin-bottom:7px}
+/* the arrived preview — a mocked dream frame; fades over the placeholder */
+.choice .thumb .preview{position:absolute;inset:0;opacity:0;transition:opacity .7s ease;background-size:cover}
+.choice.ready .thumb{border-style:solid;border-color:color-mix(in srgb,var(--inst-blue) 55%,transparent)}
+.choice.ready .thumb .preview{opacity:1}
+.choice.ready .thumb .ph{opacity:0}
+.choice .label{font-size:13.5px;font-weight:600;color:var(--inst-text)}
+.choice .prompt{font-family:var(--display);font-style:italic;font-weight:380;font-size:.82rem;line-height:1.36;color:var(--inst-muted)}
+.choice .poss{font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:rgba(230,233,240,.45)}
+/* connector: a glowing line from the frame edge to each card (echoes the dream-tree future edges) */
+.links{position:absolute;inset:0;z-index:3;pointer-events:none;opacity:0;transition:opacity .6s}
+.stage.reveal .links{opacity:1}
+.links path{stroke:var(--inst-blue);stroke-width:1.4;fill:none;stroke-dasharray:3 8;
+  filter:drop-shadow(0 0 4px rgba(122,162,255,.5));animation:flow 3.2s linear infinite}
+
+/* compose-your-own — a slim pill centered under the caption */
+.compose{position:absolute;left:50%;bottom:84px;transform:translateX(-50%) translateY(8px);z-index:5;
+  display:flex;align-items:center;gap:8px;background:rgba(12,16,32,.6);border:1px solid var(--hairline);
+  border-radius:999px;padding:7px 8px 7px 15px;backdrop-filter:blur(10px);opacity:0;transition:opacity .5s,transform .5s;
+  transition-delay:.26s}
+.stage.reveal .compose{opacity:1;transform:translateX(-50%)}
+.compose input{background:transparent;border:none;color:var(--inst-text);font:inherit;width:200px;outline:none}
+.compose input::placeholder{color:var(--inst-muted)}
+.compose button{flex:0 0 auto;width:30px;height:30px;border-radius:50%;border:none;background:var(--inst-blue);
+  color:#0c0e15;font-weight:700;cursor:pointer}
+
+/* ---- spike scaffolding (not the real UI) ---- */
+.scaffold{border:1px dashed color-mix(in srgb,var(--inst-blue) 35%,transparent);border-radius:var(--radius-md);
+  padding:13px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;font-size:var(--fs-sm);color:var(--inst-muted)}
+.scaffold b{color:var(--inst-text);font-weight:600}
+.scaffold .seg{display:inline-flex;border:1px solid var(--hairline);border-radius:var(--radius-sm);overflow:hidden}
+.scaffold .seg button{background:transparent;border:none;color:var(--inst-muted);padding:6px 11px;cursor:pointer;font:inherit}
+.scaffold .seg button.on{background:var(--blue-wash);color:var(--inst-blue)}
+.scaffold .go{background:var(--blue-wash);border:1px solid color-mix(in srgb,var(--inst-blue) 45%,transparent);
+  color:var(--inst-blue);border-radius:var(--radius-sm);padding:7px 14px;cursor:pointer;font:inherit;font-weight:600}
+.scaffold label{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+.status{font-size:var(--fs-xs);color:var(--inst-label)}
+
+@keyframes pan{from{transform:translate(-3%,-2%) scale(1.06)}to{transform:translate(3%,2%) scale(1.12)}}
+@keyframes flow{to{stroke-dashoffset:-28}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){
+  .clip .img,.links path,.spin{animation:none!important}
+  .choice,.compose,.links{transition:none!important}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><span class="mark">Lucid</span><span class="tag">— the choice moment (spike)</span></div>
+
+  <!-- spike scaffolding: drive the sequence; not part of the shipped UI -->
+  <div class="scaffold">
+    <button class="go" id="replay">▶ Play beat &amp; reach the choice</button>
+    <span>reveal:</span>
+    <span class="seg" id="trigger">
+      <button data-t="end" class="on">on end (slow-mo)</button>
+      <button data-t="hover">on hover</button>
+      <button data-t="always">always</button>
+    </span>
+    <label><input type="checkbox" id="rm"> reduced motion</label>
+    <span class="status" id="status">idle</span>
+  </div>
+
+  <div class="stage" id="stage">
+    <div class="spill"></div>
+    <div class="clip"><div class="img"></div><div class="grain"></div></div>
+    <div class="dwell-tag">slow · choose your next moment</div>
+
+    <svg class="links" id="links" preserveAspectRatio="none"></svg>
+
+    <div class="gutter left" id="gL"></div>
+    <div class="gutter right" id="gR"></div>
+
+    <div class="compose">
+      <input placeholder="describe the next moment…">
+      <button aria-label="Dream this">→</button>
+    </div>
+
+    <div class="vig"></div>
+    <div class="cap">
+      <div class="eyebrow">it deepens · 0:02</div>
+      <p class="beat-q">“the light folds inward, and the hills begin to breathe”</p>
+    </div>
+  </div>
+</div>
+
+<script>
+// mocked options — in the real app these come from /api/beats (held per tip). Each gets an EAGER preview.
+const OPTIONS = [
+  { side:'L', label:'it deepens',  prompt:'the light folds inward and the hills breathe',
+    preview:'radial-gradient(60% 50% at 40% 30%,#8A6BDC,transparent 62%),radial-gradient(55% 55% at 70% 75%,#27306E,transparent 60%),#0a0c18' },
+  { side:'R', label:'it scatters', prompt:'the aurora shatters into drifting embers',
+    preview:'radial-gradient(55% 45% at 60% 28%,#E0884F,transparent 60%),radial-gradient(60% 60% at 35% 78%,#4A5AD2,transparent 62%),#0a0c18' },
+];
+
+const stage = document.getElementById('stage');
+const gL = document.getElementById('gL'), gR = document.getElementById('gR');
+const links = document.getElementById('links');
+const statusEl = document.getElementById('status');
+let trigger = 'end';
+const timers = [];
+const clearTimers = () => { while(timers.length) clearTimeout(timers.shift()); };
+const after = (ms, fn) => timers.push(setTimeout(fn, ms));
+const setStatus = t => statusEl.textContent = t;
+
+function buildCards(){
+  gL.innerHTML = ''; gR.innerHTML = '';
+  return OPTIONS.map(o => {
+    const el = document.createElement('button');
+    el.className = 'choice';
+    el.innerHTML = `
+      <div class="thumb">
+        <div class="ph"><span class="spin"></span>rendering…</div>
+        <div class="preview" style="background-image:${o.preview}"></div>
+      </div>
+      <span class="poss">possible next moment</span>
+      <span class="label">${o.label}</span>
+      <span class="prompt">${o.prompt}</span>`;
+    el.addEventListener('click', () => pick(o.label));
+    (o.side === 'L' ? gL : gR).appendChild(el);
+    return el;
+  });
+}
+
+function drawLinks(){
+  const r = stage.getBoundingClientRect();
+  links.setAttribute('viewBox', `0 0 ${r.width} ${r.height}`);
+  const cx = r.width/2, cy = r.height*0.5;
+  let d = '';
+  document.querySelectorAll('.choice').forEach(c => {
+    const cr = c.getBoundingClientRect();
+    const tx = (cr.left - r.left) + cr.width/2, ty = (cr.top - r.top) + cr.height*0.4;
+    const mx = (cx + tx)/2;
+    d += `M${cx} ${cy} C${mx} ${cy},${mx} ${ty},${tx} ${ty} `;
+  });
+  links.innerHTML = `<path d="${d}"/>`;
+}
+
+function pick(label){
+  setStatus(`picked “${label}” → cancel in-flight previews, generate the real beat`);
+  stage.classList.remove('reveal','dwell');
+  // (real app: cancel pending preview renders here, then POST /api/dream)
+}
+
+function runSequence(){
+  clearTimers();
+  stage.classList.remove('reveal','dwell');
+  const cards = buildCards();
+
+  // 1) the beat plays at normal speed. The GPU is idle — so we EAGER-render the next options now.
+  setStatus('beat playing · GPU idle → eager-rendering next glimpses…');
+  // previews stream in DURING playback (mocked arrival times), so they're ready before the choice
+  after(900,  () => { cards[0].classList.add('ready'); setStatus('glimpse 1 ready…'); });
+  after(1700, () => { cards[1].classList.add('ready'); setStatus('glimpse 2 ready · both ahead of the choice'); });
+
+  // 2) the clip ends → slow-mo dwell + the choices bloom into the gutters (already rendered)
+  after(2600, () => {
+    stage.classList.add('dwell');
+    if (trigger !== 'hover') { stage.classList.add('reveal'); requestAnimationFrame(drawLinks); }
+    setStatus(trigger === 'hover' ? 'dwell · hover the stage to reveal the choices'
+                                  : 'dwell · slow-mo loop · choose a branch (or compose your own)');
+  });
+}
+
+// reveal-trigger toggle (spike-only)
+document.getElementById('trigger').addEventListener('click', e => {
+  const b = e.target.closest('button'); if(!b) return;
+  [...e.currentTarget.children].forEach(x => x.classList.toggle('on', x===b));
+  trigger = b.dataset.t;
+  if (trigger === 'always'){ stage.classList.add('reveal'); requestAnimationFrame(drawLinks); }
+});
+stage.addEventListener('mouseenter', () => {
+  if (trigger === 'hover' && stage.classList.contains('dwell')){ stage.classList.add('reveal'); requestAnimationFrame(drawLinks); }
+});
+stage.addEventListener('mouseleave', () => { if (trigger === 'hover') stage.classList.remove('reveal'); });
+document.getElementById('rm').addEventListener('change', e => {
+  document.documentElement.style.setProperty('scroll-behavior','auto');
+  stage.style.setProperty('--rm', e.target.checked ? '1':'0');
+  if (e.target.checked) document.head.insertAdjacentHTML('beforeend','<style>*{animation-duration:.001s!important;transition-duration:.001s!important}</style>');
+});
+document.getElementById('replay').addEventListener('click', runSequence);
+window.addEventListener('resize', () => { if(stage.classList.contains('reveal')) drawLinks(); });
+
+// build idle cards on load, then auto-run once
+buildCards();
+after(400, runSequence);
+</script>
+</body>
+</html>

@@ -46,6 +46,10 @@ HOST = os.environ.get("LUCID_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LUCID_WEB_PORT", "8765"))
 SESSION = os.environ.get("LUCID_WEB_SESSION", "web")
 ORIGIN_OK = {f"http://{HOST}:{PORT}", f"http://localhost:{PORT}"}
+# Extra trusted origins (comma-separated) — e.g. a tailnet HTTPS name behind `tailscale serve`
+# so Lucid works on the go. The per-process CSRF token stays the primary guard (a cross-origin
+# page can't read it); this only widens the defense-in-depth Origin allowlist to declared names.
+ORIGIN_OK |= {o.strip() for o in os.environ.get("LUCID_EXTRA_ORIGINS", "").split(",") if o.strip()}
 # the built React bundle (self-hosted, no CDN); served as the primary surface when present
 WEB_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
 HAS_DIST = os.path.isdir(WEB_DIST)   # fixed at startup — avoid a stat() on every (polled) GET
@@ -108,7 +112,7 @@ def _supersede_turn():
         TURN.update(phase="idle", label=None, error=None, started=None)
 
 
-def _run_turn(prompt, label, epoch=None, length=None):
+def _run_turn(prompt, label, epoch=None, length=None, parent_id=None):
     """Worker: drive ONE leased turn, then record an honest outcome (never a silent no-op).
     Warm-keep: ensure the session's batch lease (spawn ComfyUI once, reuse after) and hand it to
     step() as external — step neither Spawns nor Releases, so ComfyUI stays warm across beats.
@@ -124,7 +128,7 @@ def _run_turn(prompt, label, epoch=None, length=None):
         else:
             is_current = (lambda: _epoch_current(epoch)) if epoch is not None else None
             node = L.step(SESSION, prompt, label, external_lease=True, is_current=is_current,
-                          length=length)
+                          length=length, parent_id=parent_id)
             phase, err = ("done" if node else "skipped"), None
     except SystemExit as e:        # red-line gate refused the prompt (B3)
         phase, err = "refused", str(e)
@@ -312,22 +316,23 @@ def state():
     chain = chain_or_none()
     return {"session": SESSION, "readiness": readiness(), "chain": chain,
             "private": L.ST.is_private(SESSION) or bool(chain and chain.get("private")),
-            "turn": turn_snapshot()}
+            "turn": turn_snapshot(),
+            "engine": {"active": L.E.current_engine(), "options": ["wan", "10eros"]}}
 
 
-def beats():
-    """The HELD per-frame menu (ADR-0015 §1: "no reroll"). The model proposes once per chain tip and
-    the proposal is persisted on the node (lucid_linear.beats_for_tip); every later read re-serves it
-    verbatim, so the suggestions can't change under the user on a reload / second tab / a skipped
-    fail-open turn. Frozen while a beat is in flight — the tip can't change mid-turn, so the held menu
-    stands and we never roll a fresh one against a frame the user already picked from."""
+def beats(node_id=None):
+    """The HELD per-frame menu (ADR-0015 §1: "no reroll"). The model proposes once per node and the
+    proposal is persisted on it (lucid_linear.beats_for_node); every later read re-serves it verbatim,
+    so the suggestions can't change under the user on a reload / second tab / a skipped fail-open turn.
+    `node_id` (optional) is the beat the menu grounds on — default the tip (continue), an earlier id to
+    branch a new take from it. Frozen while a beat is in flight — never roll against a picked-from frame."""
     if chain_or_none() is None:
         return []
     with TURN_LOCK:
         rolling = TURN["phase"] != "dreaming"   # in-flight: serve what's held, never roll a new menu
     try:
-        with BEATS_LOCK:                        # one roll per tip even under concurrent reads
-            return L.beats_for_tip(SESSION, roll=rolling)
+        with BEATS_LOCK:                        # one roll per node even under concurrent reads
+            return L.beats_for_node(SESSION, node_id, roll=rolling)
     except Exception:
         return []
 
@@ -384,7 +389,13 @@ input[type=text]{width:100%;background:var(--inst-deep);border:1px solid var(--h
  border-radius:var(--radius-sm);padding:11px 14px;font:inherit;margin-top:10px}
 .note{color:var(--inst-label);font-size:var(--fs-xs)}
 a{color:var(--inst-blue)}
-.clip{font-size:var(--fs-xs);color:var(--inst-muted);margin:4px 0}.clip.here{color:var(--inst-text)}
+.clip{font-size:var(--fs-xs);color:var(--inst-muted);margin:6px 0}.clip.here{color:var(--inst-text)}
+.clip small{display:block;color:var(--inst-label);font-size:var(--fs-xs);margin-top:1px}
+.clip.here small{color:var(--inst-muted)}
+.tag-mature{display:inline-block;font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+ padding:1px 6px;border-radius:999px;color:var(--brand-warm);
+ border:1px solid color-mix(in srgb,var(--brand-warm) 45%,transparent);
+ background:color-mix(in srgb,var(--brand-warm) 9%,transparent)}
 .private .lock,.lock{color:var(--inst-text);font-weight:600}
 .flash{max-width:760px;margin:0 auto 6px;color:var(--st-red);font-size:var(--fs-sm);opacity:0;transition:opacity .2s}
 .flash.show{opacity:1}
@@ -447,9 +458,11 @@ function sig(s){const r=s.readiness,t=s.turn,c=s.chain;
   t.phase,burnArmed,burnMsg,delArmed,delMsg].join('|');}   // elapsed is ticked locally, not via sig
 
 function chainCard(n){let h=`<div class=card><b>Your dream so far</b> · ${n.length} frame(s)`;
- n.forEach((x,i)=>{const last=i===n.length-1;
-  h+=`<div class="clip${last?' here':''}" title="${E(x.clip?x.clip.split('/').pop():'')}">`
-   +`${last?'▸ ':''}${E(x.label||'opening')}</div>`;});
+ n.forEach((x,i)=>{const last=i===n.length-1;const txt=x.prompt||x.caption||'';   // the motion prompt behind each clip
+  h+=`<div class="clip${last?' here':''}" title="${E(txt||(x.clip?x.clip.split('/').pop():''))}">`
+   +`${last?'▸ ':''}${E(x.label||'opening')}`
+   +(x.rating==='mature'?` <span class=tag-mature>mature</span>`:``)
+   +(txt?`<small>${E(txt)}</small>`:``)+`</div>`;});
  return h+`</div>`;}
 
 // persistent dreams are saved on disk — disclose retention + a two-step delete that wipes every sink
@@ -716,7 +729,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/state":
             return self._send(200, json.dumps(state()), "application/json")
         if path == "/api/beats":   # slow (Ollama) — fetched separately so the page never blocks
-            return self._send(200, json.dumps({"beats": beats()}), "application/json")
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query).get("node", [None])[0]   # which beat to grow from (default tip)
+            nid = int(q) if (q is not None and q.lstrip("-").isdigit()) else None
+            return self._send(200, json.dumps({"beats": beats(nid)}), "application/json")
         if path == "/api/clip":
             return self._serve_media("clip")
         if path == "/api/frame":
@@ -731,7 +747,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
-        if path not in ("/api/dream", "/api/burn", "/api/start", "/api/delete",
+        if path not in ("/api/dream", "/api/burn", "/api/start", "/api/delete", "/api/engine",
+                        "/api/note", "/api/note/delete",
                         "/api/queue/retry", "/api/queue/dismiss", "/api/queue/approve"):
             return self._send(404, "not found", "text/plain")
         # CSRF: a state-changing POST must carry the per-process token embedded in the page (a
@@ -751,6 +768,27 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(n) or "{}") if n else {}
         except Exception:
             return self._send(400, json.dumps({"error": "bad request"}), "application/json")
+        if path == "/api/engine":   # ADR-0023: live i2v engine toggle (wan <-> 10eros)
+            prev = L.E.current_engine()
+            active = L.E.set_engine(req.get("engine"))
+            if active != prev:
+                _release_lease()    # next beat re-admits/re-spawns with the new engine's VRAM estimate
+            return self._send(200, json.dumps({"ok": True, "engine": active}), "application/json")
+        if path == "/api/note":   # ADR-0023: attach a moment annotation to a node (spatial+semantic feed-forward)
+            # Tiny + synchronous (no worker): just a guarded chain write. add_note clamps t, validates the
+            # tag, and red-line-gates the untrusted text — a bad tag / failing text maps to a 200 {error}.
+            try:
+                note = L.add_note(SESSION, int(req.get("node")), req.get("t", 0.0),
+                                  req.get("tag"), req.get("text", ""))
+            except (ValueError, TypeError) as e:
+                return self._send(200, json.dumps({"error": str(e)}), "application/json")
+            return self._send(200, json.dumps({"ok": True, "note": note}), "application/json")
+        if path == "/api/note/delete":   # ADR-0023: drop a moment annotation by id (idempotent)
+            try:
+                ok = L.remove_note(SESSION, int(req.get("node")), req.get("id"))
+            except (ValueError, TypeError) as e:
+                return self._send(200, json.dumps({"error": str(e)}), "application/json")
+            return self._send(200, json.dumps({"ok": bool(ok)}), "application/json")
         if path in ("/api/queue/retry", "/api/queue/dismiss", "/api/queue/approve"):
             # ADR-0019: the human disposes a held/needs-review request (CSRF + Origin checked above).
             # The id is validated INSIDE lucid_hub (no traversal); a bad id maps to 400. Durable spool
@@ -863,6 +901,8 @@ class Handler(BaseHTTPRequestHandler):
                               "application/json")
         prompt, label = req.get("prompt"), req.get("label", "custom")
         length = req.get("length")   # optional next-segment length; lucid_engine.clamp_length disposes
+        pv = req.get("parent")       # optional: branch a new take from this beat (default None = the tip)
+        parent_id = int(pv) if isinstance(pv, (int, float)) or (isinstance(pv, str) and pv.lstrip("-").isdigit()) else None
         if not prompt:
             return self._send(200, json.dumps({"error": "That suggestion is no longer available — pick again."}),
                               "application/json")
@@ -876,7 +916,7 @@ class Handler(BaseHTTPRequestHandler):
                     {"error": "A dream is already in flight — one beat at a time."}), "application/json")
             epoch = TURN["epoch"]   # this turn's generation; a later start/delete/burn bumps it to supersede
             TURN.update(phase="dreaming", label=label, error=None, started=time.monotonic())
-        threading.Thread(target=_run_turn, args=(prompt, label, epoch, length), daemon=True).start()
+        threading.Thread(target=_run_turn, args=(prompt, label, epoch, length, parent_id), daemon=True).start()
         return self._send(202, json.dumps({"ok": True, "started": True}), "application/json")
 
 

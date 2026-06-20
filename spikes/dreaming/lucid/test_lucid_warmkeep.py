@@ -33,7 +33,8 @@ class WarmKeep(unittest.TestCase):
             self.spawns.append(tier)
             return f"tok{len(self.spawns)}"
 
-        def fake_step(session, prompt, label, tier="batch", external_lease=False, is_current=None):
+        def fake_step(session, prompt, label, tier="batch", external_lease=False, is_current=None,
+                      length=None, **_kw):   # tolerate _run_turn's length= (and future kwargs)
             self.steps.append({"prompt": prompt, "external_lease": external_lease})
             return {"id": len(self.steps)}   # a truthy node -> phase "done"
 
@@ -107,7 +108,8 @@ class EpochGuard(unittest.TestCase):
             W.TURN.update(phase="dreaming", label="l1", started=0.0)
         seen = {}
 
-        def fake_step(session, prompt, label, tier="batch", external_lease=False, is_current=None):
+        def fake_step(session, prompt, label, tier="batch", external_lease=False, is_current=None,
+                      length=None, **_kw):
             seen["before"] = is_current()      # still the live turn at the start of the persist window
             W._supersede_turn()                # a /api/start (or delete/burn) lands mid-beat
             seen["after"] = is_current()       # now superseded

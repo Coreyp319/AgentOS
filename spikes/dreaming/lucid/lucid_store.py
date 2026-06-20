@@ -140,6 +140,21 @@ def frame_ref(session, private, name):
     return f"{sub}/{name}", os.path.join(d, name)
 
 
+def frame_abs(session, private, out_frame):
+    """Absolute path of an EXISTING anchor frame from its stored `out_frame` ref — READ-ONLY (no dir
+    side effects, unlike frame_ref which mkdir-or-validates). Used by the grounding pass to read the
+    current frame off disk. Strict-basename validated (no traversal); private frames resolve into the
+    sealed input subdir. Raises ValueError on a bad name (fail-closed, never a guessed path)."""
+    _require(session)
+    import lucid_engine as E
+    base = os.path.basename(out_frame or "")
+    if not valid_name(base):
+        raise ValueError(f"invalid frame ref {out_frame!r}")
+    if not private:
+        return os.path.join(E.INPUT_DIR, base)
+    return os.path.join(E.INPUT_DIR, f".lucid-priv-{session}", base)
+
+
 def output_prefix(session, private):
     """ComfyUI VHS filename_prefix. Private clips render into a private subdir we then drain."""
     _require(session)

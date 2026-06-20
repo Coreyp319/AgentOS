@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+@font-face { font-family:'Inter'; src:url('fonts/Inter-Variable.woff2') format('woff2-variations'); font-weight:100 900; font-display:swap; }
+@font-face { font-family:'JetBrains Mono'; src:url('fonts/jetbrains-mono-variable.woff2') format('woff2-variations'); font-weight:100 800; font-display:swap; }
+* { box-sizing:border-box; }
+html,body { margin:0; }
+::-webkit-scrollbar { width:0; height:0; }
+@keyframes coBreath { 0%,100%{ transform:scale(1); opacity:.85; } 50%{ transform:scale(1.35); opacity:1; } }
+@media (prefers-reduced-motion: reduce) { .co-trans { transition:none !important; } .co-breath { animation:none !important; } }
+</style>
+</helmet>
+<div style="min-height:100vh; width:100%; display:grid; place-items:center; padding:36px; background:radial-gradient(140% 120% at 50% -10%, #1a1d27 0%, #0d0e14 45%, #060709 100%); font-family:'Inter',system-ui,sans-serif;">
+
+  <div style="position:relative; width:940px; height:642px; border-radius:24px; overflow:hidden; background:#070810; border:1px solid rgba(255,255,255,.08); box-shadow:0 50px 120px -30px rgba(0,0,0,.85), 0 0 0 1px rgba(255,255,255,.03), inset 0 1px 0 rgba(255,255,255,.06);">
+
+    <canvas ref="{{ setCanvas }}" onClick="{{ onCanvasClick }}" style="position:absolute; inset:0; width:100%; height:100%; display:block;"></canvas>
+
+    <div style="position:absolute; inset:0; pointer-events:none; background:radial-gradient(120% 95% at 50% 32%, transparent 38%, rgba(3,4,8,.5) 78%, rgba(3,4,8,.82) 100%); z-index:2;"></div>
+    <div style="position:absolute; inset:0; pointer-events:none; z-index:3; opacity:.05; mix-blend-mode:overlay; background-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22140%22 height=%22140%22%3E%3Cfilter id=%22n%22%3E%3CfeTurbulence type=%22fractalNoise%22 baseFrequency=%220.85%22 numOctaves=%222%22/%3E%3C/filter%3E%3Crect width=%22140%22 height=%22140%22 filter=%22url(%23n)%22/%3E%3C/svg%3E');"></div>
+
+    <!-- titlebar -->
+    <div style="position:absolute; top:0; left:0; right:0; height:46px; display:flex; align-items:center; justify-content:space-between; padding:0 18px; z-index:8; pointer-events:none;">
+      <div style="display:flex; align-items:center; gap:9px;">
+        <span class="co-trans co-breath" style="width:8px; height:8px; border-radius:50%; background:#7fd4ff; box-shadow:0 0 10px #7fd4ff; animation:coBreath 3.4s ease-in-out infinite;"></span>
+        <span style="font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.18em; color:#8b93a6;">LOCAL&nbsp;GPU&nbsp;&middot;&nbsp;24&nbsp;GB</span>
+      </div>
+      <div style="display:flex; gap:7px;">
+        <span style="width:11px; height:11px; border-radius:50%; background:rgba(255,255,255,.14);"></span>
+        <span style="width:11px; height:11px; border-radius:50%; background:rgba(255,255,255,.14);"></span>
+        <span style="width:11px; height:11px; border-radius:50%; background:rgba(255,255,255,.14);"></span>
+      </div>
+    </div>
+
+    <!-- OVERVIEW HUD -->
+    <div class="co-trans" style="position:absolute; inset:0; z-index:6; transition:opacity .55s cubic-bezier(.4,0,.2,1), transform .55s cubic-bezier(.4,0,.2,1); {{ hudStyle }}">
+
+      <div style="position:absolute; top:62px; left:26px; pointer-events:none;">
+        <div style="display:flex; align-items:baseline; gap:6px;">
+          <span style="font-family:'JetBrains Mono',monospace; font-size:74px; font-weight:600; line-height:.8; color:#eef4ff; letter-spacing:-3px; text-shadow:0 0 32px rgba(120,190,255,.45);">{{ util }}</span>
+          <span style="font-family:'JetBrains Mono',monospace; font-size:26px; color:#7fd4ff; font-weight:500;">%</span>
+        </div>
+        <div style="font-size:11px; font-weight:600; letter-spacing:.22em; color:#7e879b; margin-top:8px;">GPU&nbsp;UTILISED</div>
+        <div style="margin-top:12px; opacity:.9;">{{ waveNode }}</div>
+        <div style="margin-top:22px; display:flex; align-items:baseline; gap:6px;">
+          <span style="font-family:'JetBrains Mono',monospace; font-size:74px; font-weight:600; line-height:.8; color:#eef4ff; letter-spacing:-3px; text-shadow:0 0 32px rgba(120,190,255,.45);">{{ tokRate }}</span>
+          <span style="font-family:'JetBrains Mono',monospace; font-size:26px; color:#7fd4ff; font-weight:500;">tok/s</span>
+        </div>
+        <div style="font-size:11px; font-weight:600; letter-spacing:.22em; color:#7e879b; margin-top:8px;">TOTAL&nbsp;THROUGHPUT</div>
+      </div>
+
+      <div style="position:absolute; top:66px; right:26px; display:flex; align-items:flex-start; gap:14px; pointer-events:none;">
+        <div style="text-align:right;">
+          <div style="font-family:'JetBrains Mono',monospace; font-size:22px; font-weight:600; color:#eef4ff; letter-spacing:-.5px;">{{ vramUsed }}</div>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:11px; color:#7e879b;">/ 24 GB</div>
+          <div style="font-size:10px; font-weight:600; letter-spacing:.2em; color:#7e879b; margin-top:6px;">VRAM</div>
+        </div>
+        <div style="position:relative; width:9px; height:96px; border-radius:6px; background:rgba(255,255,255,.07); overflow:hidden;">
+          <div class="co-trans" style="position:absolute; left:0; right:0; bottom:0; height:{{ vramPct }}; border-radius:6px; background:linear-gradient(#ff6fd8,#b07cff,#06b6d4); box-shadow:0 0 14px rgba(150,120,255,.6); transition:height .7s cubic-bezier(.4,0,.2,1);"></div>
+        </div>
+      </div>
+
+      <div style="position:absolute; bottom:64px; left:0; right:0; text-align:center; pointer-events:none;">
+        <span style="font-size:11px; letter-spacing:.16em; color:#5d6679;">{{ runningCount }} LIVE &middot; {{ queueCount }} QUEUED &nbsp;—&nbsp; CLICK A WORKLOAD TO DIVE IN</span>
+      </div>
+
+      <button onClick="{{ onToggleQueue }}" style="all:unset; cursor:pointer; position:absolute; bottom:18px; left:18px; z-index:8; display:flex; align-items:center; gap:9px; padding:9px 14px; border-radius:13px; background:rgba(18,20,30,.6); border:1px solid rgba(255,255,255,.1); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);" style-hover="background:rgba(30,33,46,.85);">
+        <span style="color:#9aa3b5; display:grid; place-items:center;">{{ listNode }}</span>
+        <span style="font-size:12px; font-weight:600; color:#dde3ef;">Run queue</span>
+        <span style="font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; color:#0a0c12; background:#ffd07a; border-radius:999px; padding:1px 7px;">{{ queueCount }}</span>
+      </button>
+
+      <div style="position:absolute; bottom:16px; left:0; right:0; display:flex; justify-content:center; flex-wrap:wrap; gap:9px; padding:0 150px; z-index:7;">
+        <sc-for list="{{ dock }}" as="c" hint-placeholder-count="4">
+          <button onClick="{{ c.onFocus }}" class="co-trans" style="all:unset; cursor:pointer; display:flex; align-items:center; gap:8px; padding:8px 12px 8px 9px; border-radius:14px; background:rgba(18,20,30,.55); border:1px solid {{ c.borderCol }}; backdrop-filter:blur(16px) saturate(1.3); -webkit-backdrop-filter:blur(16px) saturate(1.3); transition:transform .28s cubic-bezier(.34,1.4,.5,1), box-shadow .28s, border-color .28s;" style-hover="transform:translateY(-4px); box-shadow:0 12px 26px -10px rgba(0,0,0,.7);">
+            <span style="width:24px; height:24px; border-radius:8px; flex:0 0 auto; display:grid; place-items:center; color:#fff; background:{{ c.col }}; box-shadow:0 0 14px {{ c.glow }};">{{ c.glyph }}</span>
+            <span style="display:flex; flex-direction:column; line-height:1.15; text-align:left;">
+              <span style="font-size:11px; font-weight:600; color:#dde3ef; white-space:nowrap;">{{ c.name }}</span>
+              <span style="font-family:'JetBrains Mono',monospace; font-size:10px; color:{{ c.col }};">{{ c.gpuLabel }}</span>
+            </span>
+          </button>
+        </sc-for>
+      </div>
+
+      <!-- RUN QUEUE PANEL -->
+      <div class="co-trans" style="position:absolute; top:0; right:0; bottom:0; width:346px; z-index:9; background:rgba(11,13,19,.74); backdrop-filter:blur(32px) saturate(1.4); -webkit-backdrop-filter:blur(32px) saturate(1.4); border-left:1px solid rgba(255,255,255,.1); padding:20px 18px; display:flex; flex-direction:column; gap:14px; box-shadow:-40px 0 80px -30px rgba(0,0,0,.75); transition:transform .5s cubic-bezier(.4,0,.2,1), opacity .4s; {{ queuePanelStyle }}">
+        <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+          <div>
+            <div style="font-size:16px; font-weight:700; color:#f2f5fb; letter-spacing:-.2px;">Run queue</div>
+            <div style="font-size:11.5px; color:#8b93a6; margin-top:3px;">Drag to reprioritise &middot; top runs next</div>
+          </div>
+          <button onClick="{{ onToggleQueue }}" style="all:unset; cursor:pointer; width:30px; height:30px; border-radius:9px; display:grid; place-items:center; color:#9aa3b5; background:rgba(255,255,255,.05);" style-hover="background:rgba(255,255,255,.12); color:#fff;">{{ closeNode }}</button>
+        </div>
+
+        <div style="display:flex; gap:8px; padding:11px 13px; border-radius:13px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);">
+          <div style="flex:1;">
+            <div style="font-family:'JetBrains Mono',monospace; font-size:15px; font-weight:600; color:#eaf0fa;">{{ util }}% &middot; {{ runningCount }} running</div>
+            <div style="font-size:10.5px; color:#7e879b; margin-top:2px;">GPU near capacity &mdash; next job starts when it frees up</div>
+          </div>
+        </div>
+
+        <div style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:8px;" data-drag-list="queue">
+          <sc-for list="{{ queue }}" as="q" hint-placeholder-count="3">
+            <div data-drag-id="{{ q.id }}" class="co-trans" style="display:flex; align-items:center; gap:10px; padding:10px; border-radius:13px; background:rgba(255,255,255,.045); border:1px solid {{ q.border }}; touch-action:none; user-select:none; transition:box-shadow .2s, opacity .2s; {{ q.dragStyle }}">
+              <span onPointerDown="{{ q.onGrab }}" style="cursor:grab; touch-action:none; color:#5d6679; display:grid; place-items:center; flex:0 0 auto;">{{ q.gripNode }}</span>
+              <span style="font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:700; color:#6b7488; width:14px; text-align:center; flex:0 0 auto;">{{ q.priority }}</span>
+              <span onClick="{{ q.onView }}" style="cursor:pointer; display:flex; align-items:center; gap:9px; flex:1; min-width:0;">
+                <span style="width:26px; height:26px; border-radius:8px; flex:0 0 auto; display:grid; place-items:center; color:#fff; background:{{ q.col }}; box-shadow:0 0 12px {{ q.glow }};">{{ q.glyph }}</span>
+                <span style="display:flex; flex-direction:column; line-height:1.2; min-width:0;">
+                  <span style="font-size:12.5px; font-weight:600; color:#e6eaf2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ q.name }}</span>
+                  <sc-if value="{{ q.isNext }}" hint-placeholder-val="{{ true }}"><span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; font-weight:700; letter-spacing:.08em; color:#ffd07a;">NEXT UP &middot; needs {{ q.needs }}</span></sc-if>
+                  <sc-if value="{{ q.notNext }}" hint-placeholder-val="{{ false }}"><span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#7e879b;">starts {{ q.eta }} &middot; {{ q.needs }}</span></sc-if>
+                </span>
+              </span>
+              <button onClick="{{ q.onRun }}" title="Run now" style="all:unset; cursor:pointer; width:28px; height:28px; border-radius:8px; display:grid; place-items:center; color:#6ef0a0; background:rgba(110,240,160,.12); flex:0 0 auto;" style-hover="background:rgba(110,240,160,.24);">{{ q.runNode }}</button>
+              <button onClick="{{ q.onRemove }}" title="Remove" style="all:unset; cursor:pointer; width:28px; height:28px; border-radius:8px; display:grid; place-items:center; color:#8b93a6; background:rgba(255,255,255,.05); flex:0 0 auto;" style-hover="background:rgba(255,80,100,.2); color:#ff8a9a;">{{ q.removeNode }}</button>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="font-size:10.5px; color:#6b7488; line-height:1.5; display:flex; gap:7px;">{{ shieldNode }}<span>Queued jobs are reserved on-device. Only category &amp; a soft summary are shown &mdash; never the prompt or output.</span></div>
+      </div>
+    </div>
+
+    <!-- FOCUS LAYER -->
+    <div class="co-trans" style="position:absolute; inset:0; z-index:10; transition:opacity .5s cubic-bezier(.4,0,.2,1); {{ focusStyle }}">
+      <button onClick="{{ onBack }}" style="all:unset; cursor:pointer; position:absolute; top:58px; left:22px; display:flex; align-items:center; gap:6px; padding:8px 14px 8px 10px; border-radius:12px; background:rgba(18,20,30,.6); border:1px solid rgba(255,255,255,.1); backdrop-filter:blur(14px); font-size:12px; font-weight:600; color:#cfd6e4; z-index:2;" style-hover="background:rgba(30,33,46,.8);">{{ backNode }}<span>Overview</span></button>
+
+      <div class="co-trans" style="position:absolute; left:0; right:0; bottom:0; height:60%; background:linear-gradient(180deg, rgba(12,14,20,.4) 0%, rgba(10,12,18,.74) 22%, rgba(9,11,16,.86) 100%); backdrop-filter:blur(30px) saturate(1.5); -webkit-backdrop-filter:blur(30px) saturate(1.5); border-top:1px solid rgba(255,255,255,.09); border-radius:26px 26px 0 0; padding:22px 26px 24px; display:flex; flex-direction:column; gap:16px; box-shadow:0 -40px 80px -30px rgba(0,0,0,.7); transition:transform .55s cubic-bezier(.4,0,.2,1); {{ sheetSlide }}">
+
+        <sc-if value="{{ hasSel }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:18px;">
+            <div style="display:flex; align-items:center; gap:13px; min-width:0;">
+              <span style="width:42px; height:42px; border-radius:13px; flex:0 0 auto; display:grid; place-items:center; color:#fff; background:{{ sel.col }}; box-shadow:0 0 22px {{ sel.glow }};">{{ sel.glyph }}</span>
+              <div style="min-width:0;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                  <span style="font-size:19px; font-weight:700; color:#f2f5fb; letter-spacing:-.3px;">{{ sel.name }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.08em; padding:3px 9px; border-radius:999px; color:{{ sel.statusFg }}; background:{{ sel.statusBg }};">{{ sel.statusLabel }}</span>
+                </div>
+                <div style="font-size:13px; color:#9aa3b5; margin-top:3px;">{{ sel.summary }}</div>
+              </div>
+            </div>
+            <div style="display:flex; gap:8px; flex:0 0 auto;">
+              <button onClick="{{ sel.onPause }}" style="all:unset; cursor:pointer; display:flex; align-items:center; gap:6px; padding:9px 15px; border-radius:11px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); font-size:12px; font-weight:600; color:#e6eaf2;" style-hover="background:rgba(255,255,255,.12);">{{ sel.pauseNode }}<span>{{ sel.pauseLabel }}</span></button>
+              <button onClick="{{ sel.onKill }}" style="all:unset; cursor:pointer; display:flex; align-items:center; gap:6px; padding:9px 15px; border-radius:11px; background:rgba(255,80,100,.12); border:1px solid rgba(255,80,100,.3); font-size:12px; font-weight:600; color:#ff8a9a;" style-hover="background:rgba(255,80,100,.2);">{{ stopNode }}<span>Stop</span></button>
+            </div>
+          </div>
+
+          <!-- AGENT: KANBAN CENTERPIECE -->
+          <sc-if value="{{ sel.isAgent }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex; gap:14px; flex:1; min-height:0;">
+              <div style="display:flex; gap:13px; flex:1; min-width:0;">
+                <sc-for list="{{ sel.board }}" as="col" hint-placeholder-count="3">
+                  <div style="flex:1; display:flex; flex-direction:column; gap:9px; min-width:0;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; padding:0 3px;">
+                      <span style="display:flex; align-items:center; gap:7px; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:#aab2c4;"><span style="width:7px; height:7px; border-radius:50%; background:{{ col.tone }}; box-shadow:0 0 8px {{ col.tone }};"></span>{{ col.key }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace; font-size:11px; color:#6b7488;">{{ col.count }}</span>
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:8px; min-height:30px;" data-drag-list="{{ col.listKey }}">
+                      <sc-for list="{{ col.items }}" as="task" hint-placeholder-count="2">
+                        <div data-drag-id="{{ task.id }}" class="co-trans" style="background:rgba(255,255,255,.045); border:1px solid {{ task.border }}; border-radius:12px; padding:10px 11px; display:flex; align-items:center; gap:8px; box-shadow:0 4px 14px -8px rgba(0,0,0,.6); touch-action:none; user-select:none; transition:transform .2s, box-shadow .2s, opacity .2s; {{ task.glowStyle }} {{ task.dragStyle }}">
+                          <span onPointerDown="{{ task.onGrab }}" style="cursor:grab; touch-action:none; color:#5d6679; flex:0 0 auto; display:grid; place-items:center;">{{ task.gripNode }}</span>
+                          <sc-if value="{{ task.active }}" hint-placeholder-val="{{ false }}"><span class="co-trans co-breath" style="width:7px; height:7px; border-radius:50%; flex:0 0 auto; background:{{ sel.col }}; box-shadow:0 0 10px {{ sel.col }}; animation:coBreath 2.8s ease-in-out infinite;"></span></sc-if>
+                          <span style="font-size:12.5px; line-height:1.3; color:#d3dae8;">{{ task.t }}</span>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="width:158px; flex:0 0 auto; display:flex; flex-direction:column; gap:10px; padding-left:16px; border-left:1px solid rgba(255,255,255,.08);">
+                <sc-for list="{{ sel.stats }}" as="s" hint-placeholder-count="3">
+                  <div>
+                    <div style="font-size:10px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:#6b7488;">{{ s.k }}</div>
+                    <div style="font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:600; color:#eaf0fa; margin-top:2px;">{{ s.v }}</div>
+                  </div>
+                </sc-for>
+                <div style="margin-top:auto; display:flex; align-items:center; gap:7px; font-size:10.5px; color:#6b7488; line-height:1.35;">{{ shieldNode2 }}<span>Reasoning &amp; tools stay on this device.</span></div>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- OTHER WORKLOADS -->
+          <sc-if value="{{ sel.isOther }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex; gap:26px; flex:1; min-height:0;">
+              <div style="flex:1; display:flex; flex-direction:column; justify-content:center; gap:16px; min-width:0;">
+                <div style="display:flex; align-items:baseline; justify-content:space-between;">
+                  <span style="font-size:14px; font-weight:600; color:#e9eef7;">{{ sel.detail.label }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace; font-size:14px; color:{{ sel.col }};">{{ sel.detail.pctStr }}</span>
+                </div>
+                <div style="height:8px; border-radius:999px; background:rgba(255,255,255,.08); overflow:hidden;"><div class="co-trans" style="height:100%; width:{{ sel.detail.pctStr }}; border-radius:999px; background:{{ sel.col }}; box-shadow:0 0 16px {{ sel.glow }}; transition:width .7s cubic-bezier(.4,0,.2,1);"></div></div>
+                <div style="display:flex; gap:30px; margin-top:4px;">
+                  <sc-for list="{{ sel.detail.micro }}" as="m" hint-placeholder-count="2">
+                    <div>
+                      <div style="font-size:10px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:#6b7488;">{{ m.k }}</div>
+                      <div style="font-family:'JetBrains Mono',monospace; font-size:17px; font-weight:600; color:#eaf0fa; margin-top:3px;">{{ m.v }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="width:236px; flex:0 0 auto; display:flex; flex-direction:column; gap:12px; padding-left:24px; border-left:1px solid rgba(255,255,255,.08); justify-content:center;">
+                <div style="display:flex; align-items:center; gap:9px; padding:12px; border-radius:13px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);">
+                  <span style="color:{{ sel.col }}; flex:0 0 auto;">{{ shieldNode2 }}</span>
+                  <span style="font-size:11.5px; color:#aab2c4; line-height:1.4;">{{ sel.detail.note }}</span>
+                </div>
+                <div style="font-size:10.5px; color:#6b7488; line-height:1.5;">Only the category &amp; a soft summary appear here — never your prompt or output.</div>
+              </div>
+            </div>
+          </sc-if>
+        </sc-if>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1012,&quot;height&quot;:714},&quot;linkStyle&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;strands&quot;,&quot;particles&quot;],&quot;default&quot;:&quot;strands&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;flowSpeed&quot;:{&quot;editor&quot;:&quot;float&quot;,&quot;default&quot;:1,&quot;min&quot;:0.4,&quot;max&quot;:2,&quot;step&quot;:0.1,&quot;tsType&quot;:&quot;number&quot;},&quot;linkIntensity&quot;:{&quot;editor&quot;:&quot;float&quot;,&quot;default&quot;:1,&quot;min&quot;:0.5,&quot;max&quot;:2.5,&quot;step&quot;:0.1,&quot;tsType&quot;:&quot;number&quot;}}">
+const ICONS = {
+  bot:'<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
+  image:'<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  film:'<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/>',
+  type:'<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/>',
+  box:'<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  pad:'<line x1="6" x2="10" y1="11" y2="11"/><line x1="8" x2="8" y1="9" y2="13"/><line x1="15" x2="15.01" y1="12" y2="12"/><line x1="18" x2="18.01" y1="10" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.98 3.59c-.01.05-.01.1-.02.15C2.6 9.42 2 14.46 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.41-1.41A2 2 0 0 1 9.83 16h4.34a2 2 0 0 1 1.41.59L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.54-.6-6.58-.69-7.26-.01-.05-.01-.1-.02-.15A4 4 0 0 0 17.32 5z"/>',
+  cpu:'<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>',
+  shield:'<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  back:'<path d="m15 18-6-6 6-6"/>',
+  pause:'<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+  play:'<polygon points="6 3 20 12 6 21 6 3"/>',
+  stop:'<rect width="13" height="13" x="5.5" y="5.5" rx="2.5"/>',
+  x:'<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  list:'<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
+  grip:'<g fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></g>'
+};
+function svg(name, size) {
+  return React.createElement('svg', { width: size||16, height: size||16, viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round', dangerouslySetInnerHTML:{ __html: ICONS[name]||'' } });
+}
+const GLYPH = { agent:'bot', image:'image', video:'film', text:'type', render3d:'box', game:'pad', crypto:'cpu' };
+function hexa(hex, a) {
+  const h = hex.replace('#',''); const n = parseInt(h.length===3 ? h.split('').map(c=>c+c).join('') : h, 16);
+  return 'rgba(' + ((n>>16)&255) + ',' + ((n>>8)&255) + ',' + (n&255) + ',' + a + ')';
+}
+const CUBE_V = [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]];
+const CUBE_E = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.workloads = [
+      { id:'agent',    kind:'agent',    name:'Autonomy agent',  summary:'Working through a task board',    gpu:24, base:24, vram:3.2, status:'running', col:'#7c8cff' },
+      { id:'image',    kind:'image',    name:'Diffusion model', summary:'Painting a landscape scene',        gpu:20, base:20, vram:4.1, status:'running', col:'#ff6fd8' },
+      { id:'video',    kind:'video',    name:'Video synthesis', summary:'Animating a six-second clip',       gpu:22, base:22, vram:5.2, status:'running', col:'#b07cff' },
+      { id:'text',     kind:'text',     name:'Language model',  summary:'Drafting a long document',          gpu:9,  base:9,  vram:1.6, status:'running', col:'#4fe0d0' },
+      { id:'render3d', kind:'render3d', name:'Path tracer',     summary:'Final-frame render, queued',        gpu:0,  base:32, vram:2.4, status:'queued',  col:'#ffb05c' },
+      { id:'game',     kind:'game',     name:'Realtime engine', summary:'Live session, ready to launch',     gpu:0,  base:30, vram:1.8, status:'queued',  col:'#6ef0a0' },
+      { id:'crypto',   kind:'crypto',   name:'Compute kernel',  summary:'Parallel batch, awaiting GPU',      gpu:0,  base:40, vram:0.7, status:'queued',  col:'#ff7a8a' }
+    ];
+    this.workloads.forEach(w => { w.tokBase = ({ agent:540, text:680 })[w.kind] || 0; w.tok = w.tokBase; });
+    this.queue = ['render3d','game','crypto'];
+    this.agentBoard = {
+      todo: [{ id:'t1', t:'Compile source set' }, { id:'t2', t:'Draft the outline' }, { id:'t3', t:'Cross-check citations' }],
+      doing:[{ id:'t4', t:'Summarise findings', active:true }],
+      done: [{ id:'t5', t:'Fetch the dataset' }, { id:'t6', t:'Validate schema' }, { id:'t7', t:'Tag entities' }]
+    };
+    this.W = 940; this.H = 642; this.S = 1; this.oxv = 0; this.oyv = 0; this.t = 0;
+    this.uHist = Array.from({ length:46 }, () => 75);
+    this.nodes = this.workloads.map(w => {
+      const parts = [];
+      for (let k = 0; k < 22; k++) parts.push({ a:Math.random()*6.283, ph:Math.random()*6.283, sp:.5+Math.random(), bx:(Math.random()*2-1), by:(Math.random()*2-1), off:Math.random(), life:Math.random(), row:Math.floor(Math.random()*3) });
+      return { w, parts, ox:0, oy:0, ang:0, seed:Math.random()*1000 };
+    });
+    this.dust = Array.from({ length:42 }, () => ({ x:Math.random(), y:Math.random(), z:.3+Math.random()*.7, ph:Math.random()*6.283, sp:.2+Math.random()*.6 }));
+    this.state = { mode:'overview', selected:null, queueOpen:false, dragId:null, tick:0 };
+    this.setCanvas = (el) => { if (el && !this.canvas) { this.canvas = el; this.initCanvas(); } };
+    this.onCanvasClick = (e) => this.handleClick(e);
+    this.onBack = () => { this.selected = null; this.setState({ mode:'overview', selected:null }); };
+    this.onToggleQueue = () => this.setState(s => ({ queueOpen: !s.queueOpen }));
+  }
+  util() { return Math.min(99, Math.round(this.workloads.filter(w => w.status==='running').reduce((a,w)=>a+w.gpu,0))); }
+  vram() { return this.workloads.reduce((a,w)=>a+w.vram,0); }
+  layout() {
+    this.cx = this.W*0.545; this.cy = this.H*0.49;
+    const R = Math.min(this.W, this.H) * 0.30;
+    const run = this.nodes.filter(n=>n.w.status==='running');
+    const q = this.nodes.filter(n=>n.w.status!=='running');
+    const place = (list) => list.forEach((nd,i) => { const ang=(i/Math.max(1,list.length))*6.283 - 1.5708; nd.ang=ang; nd.ox=this.cx+Math.cos(ang)*R; nd.oy=this.cy+Math.sin(ang)*R; });
+    place(run); place(q);
+  }
+  size(nd) { if (nd.w.status==='running') return 24 + Math.min(28, (nd.w.gpu/30)*24); return this.state.selected===nd.w.id ? 30 : 15; }
+  initCanvas() {
+    const el = this.canvas; const dpr = Math.min(2, window.devicePixelRatio || 1); this.dpr = dpr;
+    const r = el.getBoundingClientRect(); this.W = r.width || 940; this.H = r.height || 642;
+    el.width = this.W*dpr; el.height = this.H*dpr; this.ctx = el.getContext('2d');
+    this.layout();
+    this.reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    this.slow = setInterval(() => this.jitter(), 2600);
+    this.raf = requestAnimationFrame((ts) => this.loop(ts));
+  }
+  componentWillUnmount() { cancelAnimationFrame(this.raf); clearInterval(this.slow); }
+  jitter() {
+    this.workloads.forEach(w => { if (w.status==='running') { w.gpu = Math.max(4, Math.min(46, Math.round(w.gpu+(Math.random()*2.6-1.3)))); w.vram = Math.max(.3, Math.round((w.vram+(Math.random()*.12-.06))*10)/10); if (w.tokBase) w.tok = Math.round(w.tokBase*(0.95+Math.random()*0.1)); } });
+    this.uHist = [...this.uHist.slice(1), this.util()];
+    this.setState(s => ({ tick: s.tick+1 }));
+  }
+  focus(id) { this.selected = id; this.setState({ mode:'focus', selected:id, queueOpen:false }); }
+  pauseW(id) {
+    const w = this.workloads.find(x=>x.id===id); if (!w) return;
+    if (w.status==='running') { w.status='queued'; w.gpu=0; if (!this.queue.includes(id)) this.queue.push(id); }
+    else { this.runNow(id); return; }
+    this.layout();
+    this.setState(s=>({ tick:s.tick+1 }));
+  }
+  runNow(id) {
+    const w = this.workloads.find(x=>x.id===id); if (!w) return;
+    w.status='running'; w.gpu=w.base; this.queue = this.queue.filter(x=>x!==id);
+    this.layout();
+    this.setState(s=>({ tick:s.tick+1 }));
+  }
+  killW(id) {
+    this.workloads = this.workloads.filter(x=>x.id!==id); this.nodes = this.nodes.filter(nd=>nd.w.id!==id); this.queue = this.queue.filter(x=>x!==id); this.layout();
+    if (this.selected===id) { this.selected=null; this.setState({ mode:'overview', selected:null }); } else this.setState(s=>({ tick:s.tick+1 }));
+  }
+  // ---- drag reorder ----
+  listArr(k) { return k==='queue' ? this.queue : this.agentBoard[k]; }
+  startDrag(k, id, e) {
+    e.preventDefault();
+    this.dragging = { k, id };
+    this.setState({ dragId:id });
+    const move = (ev) => this.onDragMove(ev);
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); this.dragging=null; this.setState({ dragId:null }); };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  }
+  onDragMove(ev) {
+    if (!this.dragging) return;
+    const { k, id } = this.dragging;
+    const cont = document.querySelector('[data-drag-list="'+k+'"]'); if (!cont) return;
+    const rows = [...cont.querySelectorAll('[data-drag-id]')];
+    let target = rows.length;
+    for (let i=0;i<rows.length;i++) { const r = rows[i].getBoundingClientRect(); if (ev.clientY < r.top + r.height/2) { target = i; break; } }
+    const arr = this.listArr(k);
+    const from = arr.findIndex(it => (k==='queue'?it:it.id)===id); if (from<0) return;
+    let t = target; if (target>from) t = target-1; t = Math.max(0, Math.min(arr.length-1, t));
+    if (t===from) return;
+    const copy = arr.slice(); const it = copy.splice(from,1)[0]; copy.splice(t,0,it);
+    if (k==='queue') this.queue = copy; else this.agentBoard[k] = copy;
+    this.setState(s=>({ tick:s.tick+1 }));
+  }
+  handleClick(e) {
+    if (this.state.mode!=='overview' || this.state.queueOpen || !this.canvas) return;
+    const r = this.canvas.getBoundingClientRect();
+    const x = (e.clientX-r.left)*(this.W/r.width), y = (e.clientY-r.top)*(this.H/r.height);
+    let best=null, bd=1e9;
+    this.nodes.forEach(nd => { const d=Math.hypot(x-nd.ox, y-nd.oy); if (d<bd) { bd=d; best=nd; } });
+    if (best && bd < this.size(best)+26) this.focus(best.w.id);
+  }
+  loop(ts) {
+    this.raf = requestAnimationFrame((t) => this.loop(t));
+    if (!this.ctx) return;
+    this.t += this.reduce ? 0 : 8*(this.props.flowSpeed ?? 1); const t = this.t; const ctx = this.ctx, dpr = this.dpr;
+    let St=1, oxT=0, oyT=0;
+    if (this.state.mode==='focus' && this.selected) { const nd=this.nodes.find(x=>x.w.id===this.selected); if (nd) { St=2.1; oxT=this.W*0.5 - nd.ox*St; oyT=this.H*0.27 - nd.oy*St; } }
+    this.S += (St-this.S)*0.08; this.oxv += (oxT-this.oxv)*0.08; this.oyv += (oyT-this.oyv)*0.08;
+    ctx.setTransform(dpr,0,0,dpr,0,0); ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle = 'rgba(7,8,16,0.26)'; ctx.fillRect(0,0,this.W,this.H);
+    ctx.setTransform(dpr*this.S,0,0,dpr*this.S, dpr*this.oxv, dpr*this.oyv);
+    ctx.globalCompositeOperation='lighter';
+    for (const d of this.dust) { const x=d.x*this.W, y=((d.y + t*0.00001*d.sp)%1)*this.H; ctx.fillStyle=hexa('#9fb4ff', 0.04+d.z*0.05); ctx.beginPath(); ctx.arc(x,y, d.z*1.4, 0, 6.283); ctx.fill(); }
+    this.drawCore(t);
+    const focusing = this.state.mode==='focus' && this.selected;
+    for (const nd of this.nodes) {
+      const isRun = nd.w.status==='running';
+      const isSel = focusing && nd.w.id===this.selected;
+      if (!isRun && !isSel) continue;
+      let alpha = 1;
+      if (focusing) alpha = nd.w.id===this.selected ? 1 : Math.max(0, 0.05 - (this.S-1)*0.05);
+      if (alpha<=0.001) continue;
+      if (isRun && (!focusing || nd.w.id===this.selected)) this.drawTether(nd, t, alpha);
+      this.drawCreature(nd, t, alpha, isSel);
+    }
+    ctx.globalCompositeOperation='source-over';
+  }
+  glow(x,y,r,col,a) { const ctx=this.ctx; const g=ctx.createRadialGradient(x,y,0,x,y,r); g.addColorStop(0,hexa(col,a)); g.addColorStop(1,hexa(col,0)); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,r,0,6.283); ctx.fill(); }
+  drawCore(t) {
+    const ctx=this.ctx, u=this.util()/100; const x=this.cx, y=this.cy;
+    const pulse = Math.sin(t*0.0016);
+    const br = 33 + pulse*2.5 + u*13;
+    // tight halo (avoids the muddy blue blob)
+    this.glow(x,y, br*2.5, '#4a7bff', 0.05+u*0.05);
+    this.glow(x,y, br*1.45, '#6fd0ff', 0.15);
+    // luminous plasma body
+    const body = ctx.createRadialGradient(x,y,0, x,y, br);
+    body.addColorStop(0, 'rgba(255,255,255,0.95)');
+    body.addColorStop(0.30, hexa('#cdf3ff', 0.82));
+    body.addColorStop(0.62, hexa('#5cc8ff', 0.34));
+    body.addColorStop(1, hexa('#3aa0ff', 0));
+    ctx.fillStyle = body; ctx.beginPath(); ctx.arc(x,y,br,0,6.283); ctx.fill();
+    // white-hot heart
+    this.glow(x,y, br*0.46, '#ffffff', 0.92);
+    // crisp corona rim
+    ctx.save(); ctx.lineCap='round'; ctx.shadowColor='#7fd4ff'; ctx.shadowBlur=10;
+    ctx.strokeStyle = hexa('#dbf7ff', 0.45+0.2*pulse); ctx.lineWidth=1.3;
+    ctx.beginPath(); ctx.arc(x,y, br*1.02, 0, 6.283); ctx.stroke(); ctx.restore();
+    // fine rotating orbital arcs
+    ctx.save(); ctx.lineCap='round';
+    for (let s=0;s<3;s++) { const rr=br*(1.32+s*0.17); const a0=t*0.0006*(s%2?-1:1)+s*2.1; const len=0.65+0.3*Math.sin(t*0.001+s); ctx.strokeStyle=hexa('#bfeaff', 0.20-0.04*s); ctx.lineWidth=1.1; ctx.beginPath(); ctx.arc(x,y, rr, a0, a0+len); ctx.stroke(); }
+    ctx.restore();
+    // utilisation ring: faint track + gradient progress + glowing head
+    const ar=br*2.05, st=-1.5708, en=st+u*6.283;
+    ctx.save(); ctx.lineCap='round';
+    ctx.strokeStyle=hexa('#9fb4d8',0.10); ctx.lineWidth=2.6; ctx.beginPath(); ctx.arc(x,y,ar,0,6.283); ctx.stroke();
+    const grd=ctx.createLinearGradient(x-ar,y-ar,x+ar,y+ar); grd.addColorStop(0,'#06b6d4'); grd.addColorStop(.5,'#7c8cff'); grd.addColorStop(1,'#ff6fd8');
+    ctx.strokeStyle=grd; ctx.lineWidth=3.4; ctx.shadowColor='#7c8cff'; ctx.shadowBlur=12; ctx.beginPath(); ctx.arc(x,y,ar,st,en); ctx.stroke();
+    const hx=x+Math.cos(en)*ar, hy=y+Math.sin(en)*ar; ctx.shadowBlur=15; ctx.fillStyle='#ffffff'; ctx.beginPath(); ctx.arc(hx,hy, 2.6, 0, 6.283); ctx.fill();
+    ctx.restore();
+  }
+  drawTether(nd, t, alpha) {
+    const ctx=this.ctx, col=nd.w.col;
+    const sx=nd.ox, sy=nd.oy, ex=this.cx, ey=this.cy;
+    const bz=(p0,p1,p2,u)=>{ const m=1-u; return m*m*p0+2*m*u*p1+u*u*p2; };
+    const style = this.props.linkStyle || 'strands';
+    const intensity = this.props.linkIntensity ?? 1;
+    const load = Math.max(0, Math.min(1, nd.w.gpu/46));   // GPU usage → 0..1
+    ctx.save();
+    if (style === 'particles') {
+      const mx=(sx+ex)/2 + Math.cos(nd.ang+1.5708)*24*Math.sin(t*0.0009+nd.seed);
+      const my=(sy+ey)/2 + Math.sin(nd.ang+1.5708)*24*Math.cos(t*0.0009+nd.seed);
+      const grad=ctx.createLinearGradient(sx,sy,ex,ey);
+      grad.addColorStop(0, hexa(col, 0.18*alpha)); grad.addColorStop(1, hexa('#a8ecff', 0.05*alpha));
+      ctx.strokeStyle=grad; ctx.lineWidth=1.1; ctx.beginPath(); ctx.moveTo(sx,sy);
+      for (let u=0.05; u<=1.0001; u+=0.07) ctx.lineTo(bz(sx,mx,ex,u), bz(sy,my,ey,u));
+      ctx.stroke();
+      const cnt=12, spd=0.00008*(40+nd.w.gpu);
+      ctx.shadowColor=col; ctx.shadowBlur=7;
+      for (let k=0;k<cnt;k++) { const u=((k/cnt)+(t*spd))%1; const ue=u*u*(3-2*u); const x=bz(sx,mx,ex,ue), y=bz(sy,my,ey,ue); const env=Math.sin(u*Math.PI); const sz=(1-u)*1.7 + 0.55; ctx.fillStyle=hexa(u>0.72 ? '#c8f3ff' : col, (0.3+0.55*env)*alpha); ctx.beginPath(); ctx.arc(x,y, sz, 0, 6.283); ctx.fill(); }
+    } else {
+      // strands of light — thickness & glow encode how hard the workload is driving the GPU
+      const strands = 3;
+      const baseW = (0.5 + load*4.6) * intensity;
+      const sway = 14 + load*16;
+      const nx = Math.cos(nd.ang+1.5708), ny = Math.sin(nd.ang+1.5708);
+      ctx.lineCap='round'; ctx.shadowColor=col;
+      for (let s=0; s<strands; s++) {
+        const o = s-(strands-1)/2;
+        const phase = t*0.0007 + nd.seed + s*1.3;
+        const amp = sway*(1 - Math.abs(o)*0.25);
+        const mx = (sx+ex)/2 + nx*(amp*Math.sin(phase) + o*5);
+        const my = (sy+ey)/2 + ny*(amp*Math.sin(phase) + o*5);
+        const grad = ctx.createLinearGradient(sx,sy,ex,ey);
+        grad.addColorStop(0, hexa(col, (0.34+load*0.4)*alpha));
+        grad.addColorStop(1, hexa('#a8ecff', (0.10+load*0.12)*alpha));
+        ctx.strokeStyle=grad; ctx.lineWidth = baseW*(1 - Math.abs(o)*0.34); ctx.shadowBlur = 8*intensity;
+        ctx.beginPath(); ctx.moveTo(sx,sy);
+        for (let u=0.04; u<=1.0001; u+=0.06) ctx.lineTo(bz(sx,mx,ex,u), bz(sy,my,ey,u));
+        ctx.stroke();
+      }
+    }
+    ctx.restore(); ctx.shadowBlur=0;
+  }
+  drawCreature(nd, t, alpha, force) {
+    const ctx=this.ctx, col=nd.w.col, S=this.size(nd), run=nd.w.status==='running' || force;
+    const ba=(run?1:0.42)*alpha, ox=nd.ox, oy=nd.oy, P=nd.parts;
+    ctx.shadowColor=col; ctx.shadowBlur=run?12:5;
+    const dot=(x,y,r,a)=>{ ctx.fillStyle=hexa(col,a); ctx.beginPath(); ctx.arc(x,y,r,0,6.283); ctx.fill(); };
+    const sp = run?1:0.25;
+    switch (nd.w.kind) {
+      case 'agent': {
+        const pts=[];
+        for (const p of P) { const jx=p.bx+Math.sin(t*0.001*p.sp+p.ph)*0.09, jy=p.by+Math.cos(t*0.0011*p.sp+p.ph)*0.09; const x=ox+jx*S, y=oy+jy*S; pts.push([x,y]); dot(x,y,1.7,0.9*ba); }
+        ctx.strokeStyle=hexa(col,0.16*ba); ctx.lineWidth=1; ctx.shadowBlur=0;
+        for (let i=0;i<pts.length;i++) for (let j=i+1;j<pts.length;j++) { const dx=pts[i][0]-pts[j][0], dy=pts[i][1]-pts[j][1]; if (dx*dx+dy*dy < (S*0.62)*(S*0.62)) { ctx.beginPath(); ctx.moveTo(pts[i][0],pts[i][1]); ctx.lineTo(pts[j][0],pts[j][1]); ctx.stroke(); } }
+        break;
+      }
+      case 'image': {
+        for (const p of P) { p.life += 0.005*sp; if (p.life>1) p.life-=1; const r=p.life, rad=r*S*1.5; const x=ox+Math.cos(p.a)*rad, y=oy+Math.sin(p.a)*rad; dot(x,y, 2+r*3.2, (1-r)*0.85*ba); }
+        this.glow(ox,oy, S*0.7, col, 0.18*ba);
+        break;
+      }
+      case 'video': {
+        for (const p of P) { const u=((p.off + t*0.00022*sp)%1); const x=ox+(u*2-1)*S*1.4, y=oy+Math.sin(u*Math.PI*3 + t*0.002)*S*0.55; dot(x,y, 1.9, Math.sin(u*Math.PI)*ba); }
+        break;
+      }
+      case 'text': {
+        for (const p of P) { const u=((p.off + t*0.0004*sp)%1); const x=ox+(u*2-1)*S*1.3, y=oy+(p.row-1)*S*0.42; const a=(0.3+0.7*Math.sin(u*Math.PI))*ba; ctx.fillStyle=hexa(col,a); ctx.fillRect(x-1.6,y-1,3.2,2); }
+        break;
+      }
+      case 'render3d': {
+        const ax=t*0.0009*sp, ay=t*0.0012*sp;
+        const rot=(p)=>{ let [x,y,z]=p; const cy=Math.cos(ay),sy=Math.sin(ay); let x1=x*cy+z*sy, z1=-x*sy+z*cy; const cx=Math.cos(ax),sx=Math.sin(ax); let y1=y*cx-z1*sx, z2=y*sx+z1*cx; return [ox+x1*S*0.85, oy+y1*S*0.85]; };
+        const V=CUBE_V.map(rot);
+        ctx.strokeStyle=hexa(col,0.55*ba); ctx.lineWidth=1.3;
+        for (const e of CUBE_E) { ctx.beginPath(); ctx.moveTo(V[e[0]][0],V[e[0]][1]); ctx.lineTo(V[e[1]][0],V[e[1]][1]); ctx.stroke(); }
+        for (const v of V) dot(v[0],v[1], 2.2, 0.9*ba);
+        break;
+      }
+      case 'game': {
+        const beat=Math.pow((Math.sin(t*0.004*sp)+1)/2, 2);
+        for (const p of P) { const a=p.a + t*0.0005*sp; const rad=S*(0.5+beat*0.7); dot(ox+Math.cos(a)*rad, oy+Math.sin(a)*rad, 2, (0.4+beat*0.6)*ba); }
+        this.glow(ox,oy, S*(0.55+beat*0.6), col, 0.22*beat*ba+0.04*ba);
+        break;
+      }
+      case 'crypto': {
+        const g=4;
+        for (let i=0;i<16;i++) { const gi=i%g, gj=(i/g)|0; const x=ox+(gi-1.5)*S*0.52, y=oy+(gj-1.5)*S*0.52; const a=(0.2+0.8*((Math.sin(t*0.003*sp+(gi+gj)*0.7)+1)/2))*ba; dot(x,y, 2.3, a); }
+        break;
+      }
+    }
+    ctx.shadowBlur=0;
+  }
+  buildBoard(col) {
+    const dragId = this.state.dragId;
+    const mk = (arr, key) => arr.map(it => ({
+      id:it.id, t:it.t, active:!!it.active, gripNode: svg('grip',16),
+      border: it.active ? hexa(col,0.5) : 'rgba(255,255,255,.08)',
+      glowStyle: it.active ? ('box-shadow:0 0 0 1px '+hexa(col,0.4)+', 0 0 22px -6px '+col+';') : '',
+      dragStyle: dragId===it.id ? 'opacity:.4; box-shadow:0 16px 34px -10px rgba(0,0,0,.75); cursor:grabbing;' : 'cursor:grab;',
+      onGrab:(e)=>this.startDrag(key, it.id, e)
+    }));
+    return [
+      { key:'To do', listKey:'todo', tone:'#7e879b', count:this.agentBoard.todo.length, items:mk(this.agentBoard.todo,'todo') },
+      { key:'In progress', listKey:'doing', tone:col, count:this.agentBoard.doing.length, items:mk(this.agentBoard.doing,'doing') },
+      { key:'Done', listKey:'done', tone:'#6ef0a0', count:this.agentBoard.done.length, items:mk(this.agentBoard.done,'done') }
+    ];
+  }
+  detail(w) {
+    const map = {
+      image:    { label:'Diffusion · step 14 of 30', pct:47, micro:[['Output','4 images'],['Resolution','1024²']], note:'Prompt and images stay on this device.' },
+      video:    { label:'Frame 88 of 180', pct:49, micro:[['Clip','6s · 24fps'],['Pass','2 of 2']], note:'Frames never leave this device.' },
+      text:     { label:'2,100 / 4,096 tokens', pct:51, micro:[['Throughput',(w.tok||680)+' tok/s'],['Context','local']], note:'The conversation stays on device.' },
+      render3d: { label:'Frame 64 of 240 · queued', pct:27, micro:[['Engine','path trace'],['Samples','512']], note:'Scene data is local.' },
+      game:     { label:'Idle · ready to launch', pct:6, micro:[['Target','144fps · 1440p'],['Latency','9 ms']], note:'Session runs locally.' },
+      crypto:   { label:'Awaiting GPU', pct:4, micro:[['Kernels','parallel'],['Queue','held']], note:'Job runs on this machine only.' }
+    };
+    const d = map[w.kind];
+    return { label:d.label, pctStr:d.pct+'%', micro:d.micro.map(m=>({ k:m[0], v:m[1] })), note:d.note };
+  }
+  renderVals() {
+    const mode = this.state.mode;
+    const util = this.util(), used = this.vram();
+    const running = this.workloads.filter(w=>w.status==='running').length;
+    const totalTok = this.workloads.filter(w=>w.status==='running').reduce((a,w)=>a+(w.tok||0),0);
+    const w = this.selected ? this.workloads.find(x=>x.id===this.selected) : null;
+    let sel = null;
+    if (w) {
+      const isRun = w.status==='running';
+      sel = {
+        name:w.name, summary:w.summary, col:w.col, glow:hexa(w.col,0.6),
+        glyph: svg(GLYPH[w.kind], 21),
+        isAgent: w.kind==='agent', isOther: w.kind!=='agent',
+        statusLabel: isRun?'Running':'Queued',
+        statusFg: isRun ? '#6ef0a0' : '#ffd07a', statusBg: isRun ? 'rgba(110,240,160,.14)' : 'rgba(255,200,120,.14)',
+        pauseNode: svg(isRun?'pause':'play', 14), pauseLabel: isRun?'Pause':'Run now',
+        onPause: () => this.pauseW(w.id), onKill: () => this.killW(w.id),
+        board: w.kind==='agent' ? this.buildBoard(w.col) : null,
+        stats: w.kind==='agent' ? [{ k:'GPU share', v:(isRun?w.gpu:0)+'%' }, { k:'Throughput', v:(w.tok||0)+' tok/s' }, { k:'VRAM', v:w.vram.toFixed(1)+' GB' }, { k:'Open tasks', v:String(this.agentBoard.todo.length + this.agentBoard.doing.length) }] : null,
+        detail: w.kind!=='agent' ? this.detail(w) : null
+      };
+    }
+    const dock = this.workloads.filter(wl=>wl.status==='running').map(wl => ({
+      id:wl.id, name:wl.name, col:wl.col, glow:hexa(wl.col,0.55), glyph: svg(GLYPH[wl.kind], 14),
+      gpuLabel: wl.gpu+'%', borderCol: hexa(wl.col,0.4),
+      onFocus: () => this.focus(wl.id)
+    }));
+    const etas = ['~2 min','~6 min','~11 min','~16 min','~22 min'];
+    const dragId = this.state.dragId;
+    const queue = this.queue.map((id,i) => {
+      const wl = this.workloads.find(x=>x.id===id); if (!wl) return null;
+      return {
+        id, name:wl.name, col:wl.col, glow:hexa(wl.col,0.5), glyph: svg(GLYPH[wl.kind], 14), gripNode: svg('grip',16),
+        priority:i+1, isNext:i===0, notNext:i!==0, eta:etas[Math.min(i, etas.length-1)], needs: wl.vram.toFixed(1)+' GB',
+        border: i===0 ? 'rgba(255,200,120,.35)' : 'rgba(255,255,255,.08)',
+        dragStyle: dragId===id ? 'opacity:.4; box-shadow:0 18px 38px -12px rgba(0,0,0,.8); cursor:grabbing;' : 'cursor:grab;',
+        runNode: svg('play',13), removeNode: svg('x',14),
+        onGrab:(e)=>this.startDrag('queue', id, e), onRun:()=>this.runNow(id), onRemove:()=>this.killW(id), onView:()=>this.focus(id)
+      };
+    }).filter(Boolean);
+    const wave = (() => {
+      const h=this.uHist, n=h.length, W=150, H=30;
+      const pts = h.map((v,i)=>[ (i/(n-1))*W, H-2-(v/100)*(H-4) ]);
+      const line = 'M '+pts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L ');
+      return React.createElement('svg', { width:W, height:H, viewBox:'0 0 '+W+' '+H, style:{ display:'block', overflow:'visible' } },
+        React.createElement('path', { d:line, fill:'none', stroke:'#7fd4ff', strokeWidth:1.5, strokeLinejoin:'round', strokeLinecap:'round', style:{ filter:'drop-shadow(0 0 4px rgba(127,212,255,.6))' } }));
+    })();
+    const isFocus = mode==='focus';
+    const qOpen = this.state.queueOpen && !isFocus;
+    return {
+      setCanvas: this.setCanvas, onCanvasClick: this.onCanvasClick, onBack: this.onBack, onToggleQueue: this.onToggleQueue,
+      util, vramUsed: used.toFixed(1), vramPct: Math.min(100,Math.round(used/24*100))+'%',
+      runningCount: running, queueCount: this.queue.length, tokRate: totalTok.toLocaleString('en-US'),
+      waveNode: wave, backNode: svg('back',16), shieldNode: svg('shield',13), shieldNode2: svg('shield',13), stopNode: svg('stop',13), listNode: svg('list',15), closeNode: svg('x',15),
+      dock, queue, sel, hasSel: !!sel,
+      hudStyle: isFocus ? 'opacity:0; transform:translateY(-10px); pointer-events:none;' : 'opacity:1;',
+      queuePanelStyle: qOpen ? 'transform:translateX(0); opacity:1; pointer-events:auto;' : 'transform:translateX(100%); opacity:0; pointer-events:none;',
+      focusStyle: isFocus ? 'opacity:1; pointer-events:auto;' : 'opacity:0; pointer-events:none;',
+      sheetSlide: isFocus ? 'transform:translateY(0);' : 'transform:translateY(60px);'
+    };
+  }
+}
+</script>
+</body>
+</html>

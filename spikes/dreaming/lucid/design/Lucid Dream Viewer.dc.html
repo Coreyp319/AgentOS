@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&display=swap" rel="stylesheet">
+<style>
+@font-face { font-family:'JetBrains Mono'; src:url('fonts/jetbrains-mono-variable.woff2') format('woff2-variations'); font-weight:100 800; font-display:swap; }
+:root{
+  --inst-base:#12141c; --inst-deep:#161a28; --inst-horizon:#1a2238;
+  --glass:rgba(38,42,54,.46); --hair:rgba(255,255,255,.07); --hair-2:rgba(255,255,255,.13);
+  --inst-text:#e6e9f0; --inst-muted:#8a90a0; --inst-label:#878c9b;
+  --inst-blue:#7aa2ff; --brand-warm:#e0884f;
+  --up:#74d39a; --amber:#f2c879; --red:#ec7676; --idle:#757c8e;
+  --serif:'Fraunces',Georgia,serif; --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+}
+*{ box-sizing:border-box; }
+html,body{ margin:0; background:#070810; }
+::selection{ background:rgba(122,162,255,.28); }
+::-webkit-scrollbar{ width:9px; height:9px; }
+::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.1); border-radius:999px; border:2px solid transparent; background-clip:content-box; }
+button{ font-family:inherit; }
+@keyframes lc-bloom{ from{ opacity:0; transform:scale(1.05); filter:saturate(.5) brightness(.7); } to{ opacity:1; transform:none; filter:none; } }
+@keyframes lc-breath{ 0%,100%{ opacity:.5; transform:scale(1); } 50%{ opacity:1; transform:scale(1.3); } }
+@keyframes lc-forming{ 0%,100%{ opacity:.4; box-shadow:0 0 0 1px rgba(138,107,220,.4); } 50%{ opacity:.85; box-shadow:0 0 16px 1px rgba(138,107,220,.5); } }
+@keyframes lc-spark{ to{ transform:rotate(360deg); } }
+@keyframes lc-rise{ from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:none; } }
+@keyframes lc-drift{ 0%{ transform:scale(1.06) translate(0,0); } 50%{ transform:scale(1.11) translate(-2.2%,-1.6%); } 100%{ transform:scale(1.06) translate(0,0); } }
+@keyframes lc-flow{ to{ stroke-dashoffset:-28; } }
+@keyframes lc-glow{ 0%,100%{ opacity:.35; transform:scale(1); } 50%{ opacity:.7; transform:scale(1.12); } }
+@media (prefers-reduced-motion: reduce){ [data-motion]{ animation:none !important; transition:none !important; } }
+</style>
+</helmet>
+
+<div style="position:relative; min-height:100vh; width:100%; padding:30px 20px 120px; background:radial-gradient(130% 95% at 50% -12%, #14182e 0%, #0d1019 44%, #060710 100%); font-family:var(--sans); color:var(--inst-text); display:flex; flex-direction:column; align-items:center;">
+  <div aria-hidden="true" style="position:fixed; inset:0; pointer-events:none; z-index:0; background:radial-gradient(90% 60% at 50% -8%, {{ heroTint }}, transparent 72%); transition:background 1s ease;"></div>
+
+  <!-- ===== PROTOTYPE SCENE RAIL ===== -->
+  <div style="position:fixed; top:16px; right:16px; z-index:80; width:184px; display:flex; flex-direction:column; gap:9px; padding:12px; border-radius:15px; background:rgba(13,16,26,.84); border:1px solid var(--hair-2); backdrop-filter:{{ railBlur }}; -webkit-backdrop-filter:{{ railBlur }}; box-shadow:0 24px 60px -24px rgba(0,0,0,.7);">
+    <div style="font-family:var(--mono); font-size:9px; letter-spacing:.22em; color:var(--inst-label);">PROTOTYPE · STATES</div>
+    <div style="display:flex; flex-wrap:wrap; gap:5px;">
+      <sc-for list="{{ scenes }}" as="s" hint-placeholder-count="6">
+        <button onClick="{{ s.go }}" style="all:unset; cursor:pointer; font-size:10.5px; font-weight:600; padding:5px 8px; border-radius:8px; color:{{ s.fg }}; background:{{ s.bg }}; border:1px solid {{ s.bd }};" style-hover="border-color:var(--inst-blue);">{{ s.name }}</button>
+      </sc-for>
+    </div>
+    <div style="height:1px; background:var(--hair); margin:1px 0;"></div>
+    <sc-for list="{{ toggles }}" as="t" hint-placeholder-count="3">
+      <button onClick="{{ t.go }}" style="all:unset; cursor:pointer; display:flex; align-items:center; gap:8px; font-size:10.5px; color:var(--inst-text);">
+        <span data-motion style="width:29px; height:16px; border-radius:999px; flex:0 0 auto; position:relative; background:{{ t.track }}; transition:background .2s;"><span data-motion style="position:absolute; top:2px; left:{{ t.knobX }}; width:12px; height:12px; border-radius:50%; background:#fff; transition:left .2s;"></span></span>
+        <span>{{ t.name }}</span>
+      </button>
+    </sc-for>
+  </div>
+
+  <!-- ===== COLUMN ===== -->
+  <div style="position:relative; z-index:1; width:min(760px,100%); display:flex; flex-direction:column;">
+
+    <header style="display:flex; align-items:center; gap:24px; padding:0 2px 16px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:baseline; gap:11px;">
+        <span style="font-family:var(--serif); font-weight:600; font-size:21px; letter-spacing:-.3px;">Lucid</span>
+        <span style="font-family:var(--serif); font-style:italic; font-size:13px; color:var(--inst-muted);">a dream, one beat at a time</span>
+      </div>
+      <div style="display:flex; gap:13px; padding:5px 11px; border-radius:999px; background:rgba(255,255,255,.03); border:1px solid var(--hair);">
+        <sc-for list="{{ readiness }}" as="r" hint-placeholder-count="3">
+          <div title="{{ r.title }}" aria-label="{{ r.title }}" style="display:flex; align-items:center; gap:6px;">
+            <span data-motion style="width:6px; height:6px; border-radius:50%; flex:0 0 auto; background:{{ r.dot }}; box-shadow:0 0 8px {{ r.glow }}; animation:{{ r.anim }};"></span>
+            <span style="font-size:10px; color:var(--inst-label); white-space:nowrap;">{{ r.label }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </header>
+
+    <sc-if value="{{ cantDream }}" hint-placeholder-val="{{ false }}">
+      <div role="status" style="display:flex; gap:12px; align-items:flex-start; padding:14px 16px; border-radius:14px; margin-bottom:14px; background:rgba(38,42,54,.5); border:1px solid var(--hair); border-left:2px solid var(--amber);">
+        <span style="color:var(--amber); flex:0 0 auto; margin-top:1px;">{{ pauseIcon }}</span>
+        <div><div style="font-family:var(--serif); font-style:italic; font-size:15.5px;">Can’t dream right now</div><div style="font-size:12px; color:var(--inst-muted); line-height:1.5; margin-top:3px;">The generator is catching its breath — it switches back on by itself. Your dream is saved; your desktop untouched.</div></div>
+      </div>
+    </sc-if>
+
+    <!-- ============ START / SEED PICKER ============ -->
+    <sc-if value="{{ isStart }}" hint-placeholder-val="{{ false }}">
+      <div data-motion style="border-radius:18px; overflow:hidden; background:{{ glassBg }}; border:1px solid var(--hair); backdrop-filter:{{ glassBlur }}; -webkit-backdrop-filter:{{ glassBlur }}; animation:{{ riseAnim }};">
+        <div style="position:relative; padding:26px 22px 18px; background:linear-gradient(180deg, rgba(122,162,255,.06), transparent);">
+          <div style="font-family:var(--serif); font-style:italic; font-size:25px; letter-spacing:-.3px;">Begin a dream.</div>
+          <div style="font-size:13px; color:var(--inst-muted); margin-top:5px;">Ground it on stills, describe it, or start from nothing.</div>
+          <div style="display:flex; gap:6px; margin-top:16px; padding:4px; border-radius:12px; background:rgba(255,255,255,.04); border:1px solid var(--hair); width:max-content;">
+            <sc-for list="{{ modes }}" as="m" hint-placeholder-count="3">
+              <button onClick="{{ m.go }}" style="all:unset; cursor:pointer; display:flex; align-items:center; gap:7px; font-size:12px; font-weight:600; padding:8px 14px; border-radius:9px; color:{{ m.fg }}; background:{{ m.bg }};">{{ m.icon }}<span>{{ m.name }}</span></button>
+            </sc-for>
+          </div>
+        </div>
+        <sc-if value="{{ modeStills }}" hint-placeholder-val="{{ true }}">
+          <div style="padding:4px 22px 20px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+              <span style="font-family:var(--mono); font-size:9.5px; letter-spacing:.16em; color:var(--inst-label);">DREAM SEEDS · TAP TO SELECT</span>
+              <span style="font-size:11px; color:{{ selCountColor }};">{{ selCountLabel }}</span>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:11px;">
+              <sc-for list="{{ seedSheet }}" as="sd" hint-placeholder-count="8">
+                <button onClick="{{ sd.toggle }}" aria-pressed="{{ sd.on }}" style="all:unset; cursor:pointer; position:relative; display:flex; flex-direction:column; gap:6px;" style-hover="transform:translateY(-2px);">
+                  <div data-motion style="position:relative; aspect-ratio:9/16; border-radius:10px; overflow:hidden; background:{{ sd.bg }}; box-shadow:{{ sd.ring }}; transition:box-shadow .18s, transform .18s;">
+                    <div style="position:absolute; inset:0; background:linear-gradient(180deg, transparent 50%, rgba(7,8,14,.72) 100%);"></div>
+                    <sc-if value="{{ sd.real }}" hint-placeholder-val="{{ false }}"><span title="Looks like a real person" style="position:absolute; top:7px; left:7px; font-family:var(--mono); font-size:7.5px; font-weight:600; letter-spacing:.06em; color:var(--brand-warm); background:rgba(224,136,79,.16); border:1px solid rgba(224,136,79,.34); padding:1px 5px; border-radius:999px;">LIKENESS</span></sc-if>
+                    <sc-if value="{{ sd.on }}" hint-placeholder-val="{{ false }}"><span style="position:absolute; top:6px; right:6px; width:19px; height:19px; border-radius:50%; display:grid; place-items:center; color:#0c0e15; background:var(--inst-blue); font-family:var(--mono); font-size:10px; font-weight:700;">{{ sd.order }}</span></sc-if>
+                    <div style="position:absolute; left:8px; right:8px; bottom:7px; font-family:var(--mono); font-size:8px; letter-spacing:.08em; color:rgba(230,233,240,.74);">{{ sd.cap }}</div>
+                  </div>
+                </button>
+              </sc-for>
+            </div>
+            <sc-if value="{{ showConsent }}" hint-placeholder-val="{{ false }}">
+              <div data-motion style="display:flex; gap:12px; align-items:flex-start; padding:14px 15px; border-radius:13px; margin-top:14px; background:rgba(224,136,79,.08); border:1px solid rgba(224,136,79,.32); animation:{{ consentRise }};">
+                <span style="color:var(--brand-warm); flex:0 0 auto; margin-top:1px;">{{ consentIcon }}</span>
+                <div style="flex:1;">
+                  <div style="font-size:13px; font-weight:600;">One still looks like a real person</div>
+                  <div style="font-size:11.5px; color:var(--inst-muted); line-height:1.5; margin-top:3px;">Its metadata was stripped. Confirm you have consent to dream with this likeness — used only for this dream, never reused.</div>
+                  <div style="display:flex; gap:8px; margin-top:10px;">
+                    <button onClick="{{ onConsent }}" style="all:unset; cursor:pointer; font-size:12px; font-weight:600; color:#1a1208; background:var(--brand-warm); padding:7px 13px; border-radius:9px;">I have consent</button>
+                    <button onClick="{{ onConsentNo }}" style="all:unset; cursor:pointer; font-size:12px; font-weight:600; color:var(--inst-muted); padding:7px 13px; border-radius:9px; border:1px solid var(--hair);">Deselect it</button>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+        <sc-if value="{{ modeWords }}" hint-placeholder-val="{{ false }}">
+          <div style="padding:4px 22px 20px;">
+            <textarea ref="{{ setWordsEl }}" placeholder="Describe the opening frame…" style="width:100%; min-height:92px; resize:vertical; font-family:var(--serif); font-style:italic; font-size:16px; line-height:1.5; color:var(--inst-text); background:rgba(7,8,14,.5); border:1px solid var(--hair); border-radius:13px; padding:14px 16px; outline:none;" style-focus="border-color:var(--inst-blue);"></textarea>
+            <div style="font-family:var(--mono); font-size:9px; letter-spacing:.16em; color:var(--inst-label); margin:14px 0 9px;">OR START FROM A SEED PROMPT</div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+              <sc-for list="{{ promptChips }}" as="c" hint-placeholder-count="5">
+                <button onClick="{{ c.use }}" style="all:unset; cursor:pointer; font-family:var(--serif); font-style:italic; font-size:13px; color:var(--inst-text); padding:7px 13px; border-radius:999px; background:rgba(255,255,255,.04); border:1px solid var(--hair);" style-hover="border-color:var(--inst-blue); background:rgba(122,162,255,.08);">{{ c.text }}</button>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ modeNothing }}" hint-placeholder-val="{{ false }}">
+          <div style="padding:8px 22px 22px;">
+            <div style="position:relative; height:150px; border-radius:13px; overflow:hidden; background:{{ synthBg }}; display:grid; place-items:center; border:1px solid var(--hair);">
+              <div style="text-align:center;"><div style="font-family:var(--serif); font-style:italic; font-size:16px; color:rgba(230,233,240,.9);">A synthetic abstract frame.</div><div style="font-size:11.5px; color:var(--inst-muted); margin-top:5px;">Lucid invents an opening with no reference at all.</div></div>
+            </div>
+          </div>
+        </sc-if>
+        <div style="display:flex; align-items:center; gap:14px; padding:15px 22px; border-top:1px solid var(--hair); background:rgba(7,8,14,.3);">
+          <label style="display:flex; align-items:center; gap:9px; cursor:pointer;">
+            <input type="checkbox" checked="{{ priv }}" onChange="{{ onTogglePriv }}" style="width:15px; height:15px; accent-color:var(--brand-warm); cursor:pointer;">
+            <span style="color:var(--brand-warm);">{{ lockIcon }}</span>
+            <span style="font-size:12px; font-weight:600;">Private session</span>
+            <span style="font-size:10.5px; color:var(--inst-muted);">· sealed · burned on close</span>
+          </label>
+          <button onClick="{{ onBegin }}" disabled="{{ beginDisabled }}" style="all:unset; cursor:{{ beginCursor }}; margin-left:auto; display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:{{ beginFg }}; background:{{ beginBg }}; padding:11px 20px; border-radius:11px; opacity:{{ beginOpacity }};" style-focus="box-shadow:0 0 0 2px #fff;">{{ sparkIconSm }}<span>{{ beginLabel }}</span></button>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ FILM INSTRUMENT ============ -->
+    <sc-if value="{{ hasDream }}" hint-placeholder-val="{{ true }}">
+      <div style="position:relative;">
+
+        <div ref="{{ setPlayerEl }}" tabindex="0" role="group" aria-label="Dream player. Space play or pause, arrows step beats, Home and End jump, P play all, R repeat." onKeyDown="{{ onPlayerKey }}" style="position:relative; height:clamp(390px,56vh,560px); border-radius:18px 18px 0 0; overflow:hidden; background:#070810; display:grid; place-items:center; outline:none;" style-focus="box-shadow:inset 0 0 0 2px var(--inst-blue);">
+          <canvas ref="{{ setAuroraEl }}" style="position:absolute; inset:0; width:100%; height:100%; opacity:{{ auroraOpacity }}; transition:{{ auroraTransition }};"></canvas>
+          <div style="position:absolute; inset:0; pointer-events:none; background:radial-gradient(120% 78% at 50% 46%, transparent 42%, rgba(7,8,12,.6) 100%);"></div>
+          <sc-if value="{{ showClip }}" hint-placeholder-val="{{ true }}">
+            <div style="position:absolute; inset:0; display:grid; place-items:center; transform:translateY(-4.5%);">
+              <div data-motion style="position:absolute; width:74%; height:94%; border-radius:50%; background:{{ clipBg }}; filter:blur(82px) saturate(1.4); opacity:{{ spillOpacity }}; transform:scale(1.18); transition:background .6s ease, opacity .6s ease;"></div>
+              <div key="{{ clipKey }}" data-motion style="position:relative; height:95%; aspect-ratio:9/16; max-width:88%; border-radius:11px; overflow:hidden; box-shadow:0 44px 100px -34px rgba(0,0,0,.92), inset 0 0 0 1px rgba(255,255,255,.09); animation:{{ clipBloomAnim }};">
+                <div data-motion style="position:absolute; inset:-7%; background:{{ clipBg }}; animation:{{ clipDriftAnim }};"></div>
+                <div style="position:absolute; inset:0; background:radial-gradient(128% 94% at 50% 42%, transparent 50%, rgba(0,0,0,.6) 100%);"></div>
+                <div style="position:absolute; inset:0; opacity:.08; mix-blend-mode:overlay; background-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22120%22 height=%22120%22%3E%3Cfilter id=%22n%22%3E%3CfeTurbulence type=%22fractalNoise%22 baseFrequency=%220.9%22 numOctaves=%222%22/%3E%3C/filter%3E%3Crect width=%22120%22 height=%22120%22 filter=%22url(%23n)%22/%3E%3C/svg%3E');"></div>
+                <div style="position:absolute; left:10px; bottom:9px; font-family:var(--mono); font-size:8px; letter-spacing:.12em; color:rgba(230,233,240,.58); text-shadow:0 1px 4px rgba(0,0,0,.6);">{{ clipScene }}</div>
+              </div>
+            </div>
+          </sc-if>
+          <div style="position:absolute; top:0; left:0; right:0; padding:14px 16px; display:flex; align-items:flex-start; justify-content:space-between; pointer-events:none; background:linear-gradient(180deg, rgba(7,8,12,.55), transparent);">
+            <span style="font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:11px; letter-spacing:.1em; color:rgba(230,233,240,.78);">{{ heroIndex }}</span>
+            <div style="display:flex; gap:8px;">
+              <sc-if value="{{ onAltTake }}" hint-placeholder-val="{{ false }}">
+                <span title="You’re viewing an alternate take" style="display:inline-flex; align-items:center; gap:5px; font-family:var(--mono); font-size:8.5px; font-weight:600; letter-spacing:.1em; color:var(--inst-blue); background:rgba(122,162,255,.14); border:1px solid rgba(122,162,255,.3); padding:3px 8px; border-radius:999px;">{{ branchIconSm }} {{ takeName }}</span>
+              </sc-if>
+              <sc-if value="{{ mature }}" hint-placeholder-val="{{ false }}">
+                <span title="Auto-rated mature" aria-label="Auto-rated mature" style="display:inline-flex; align-items:center; gap:5px; font-family:var(--mono); font-size:8.5px; font-weight:600; letter-spacing:.1em; color:var(--brand-warm); background:rgba(224,136,79,.16); border:1px solid rgba(224,136,79,.34); padding:3px 8px; border-radius:999px;">{{ matureDot }} MATURE</span>
+              </sc-if>
+              <sc-if value="{{ isDreaming }}" hint-placeholder-val="{{ false }}">
+                <span style="display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:8.5px; font-weight:600; letter-spacing:.1em; color:var(--inst-blue); background:rgba(122,162,255,.14); border:1px solid rgba(122,162,255,.3); padding:3px 9px; border-radius:999px;"><span data-motion style="width:5px; height:5px; border-radius:50%; background:var(--inst-blue); animation:{{ developingDotAnim }};"></span> DEVELOPING</span>
+              </sc-if>
+            </div>
+          </div>
+          <sc-if value="{{ isDreaming }}" hint-placeholder-val="{{ false }}">
+            <div style="position:relative; text-align:center; padding:0 24px;">
+              <div style="display:flex; align-items:center; justify-content:center; gap:9px;"><span data-motion style="color:var(--inst-blue); display:grid; place-items:center; animation:{{ sparkSpinAnim }};">{{ sparkIcon }}</span><span style="font-family:var(--serif); font-style:italic; font-size:18px; color:rgba(230,233,240,.95);">Dreaming this beat</span></div>
+              <div style="font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:52px; font-weight:500; letter-spacing:1px; color:#fff; margin-top:14px; text-shadow:0 4px 34px rgba(122,162,255,.5);">{{ elapsed }}</div>
+              <div style="font-size:11.5px; color:rgba(230,233,240,.6); margin-top:11px; max-width:310px; line-height:1.5; margin-left:auto; margin-right:auto;">Runs through the graphics lease, so it never crowds out your other apps.</div>
+              <sc-if value="{{ carryShow }}" hint-placeholder-val="{{ false }}"><div style="display:inline-flex; align-items:center; gap:7px; margin-top:13px; font-size:11.5px; color:var(--inst-blue); background:rgba(122,162,255,.12); border:1px solid rgba(122,162,255,.28); padding:6px 13px; border-radius:999px;">{{ tagIcon }}<span>{{ carryNote }}</span></div></sc-if>
+            </div>
+          </sc-if>
+          <div style="position:absolute; left:0; right:0; bottom:0; padding:26px 16px 12px; background:linear-gradient(0deg, rgba(7,8,12,.9) 8%, rgba(7,8,12,.5) 60%, transparent); display:flex; flex-direction:column; gap:11px;">
+            <sc-if value="{{ showClip }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div onClick="{{ onScrub }}" role="slider" aria-label="Clip position — drop tags here" style="position:relative; flex:1; height:14px; display:flex; align-items:center; cursor:pointer;">
+                  <div style="position:absolute; left:0; right:0; height:3px; border-radius:2px; background:rgba(255,255,255,.16);"></div>
+                  <div style="position:absolute; left:0; width:{{ clipPct }}; height:3px; border-radius:2px; background:var(--inst-blue);"></div>
+                  <sc-for list="{{ noteMarkers }}" as="m" hint-placeholder-count="0">
+                    <span title="{{ m.title }}" style="position:absolute; left:{{ m.left }}; width:9px; height:9px; margin-left:-4px; border-radius:50%; background:var(--inst-blue); box-shadow:0 0 0 2px rgba(7,8,12,.85), 0 0 8px rgba(122,162,255,.6);"></span>
+                  </sc-for>
+                  <span style="position:absolute; left:{{ clipPct }}; width:2px; height:13px; margin-left:-1px; background:#fff; border-radius:2px;"></span>
+                </div>
+                <span style="font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:10px; color:rgba(230,233,240,.6);">{{ clipTimeLabel }}</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ showCaption }}" hint-placeholder-val="{{ true }}">
+              <div>
+                <div style="font-family:var(--mono); font-size:9px; letter-spacing:.14em; color:rgba(230,233,240,.55);">{{ beatEyebrow }}</div>
+                <div style="font-family:var(--serif); font-style:italic; font-size:23px; line-height:1.3; letter-spacing:-.2px; color:#fff; margin-top:6px; text-wrap:pretty; max-width:600px; text-shadow:0 2px 22px rgba(7,8,12,.9);">{{ caption }}</div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ showTransport }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex; align-items:center; gap:9px; flex-wrap:wrap;">
+                <button onClick="{{ onPrev }}" aria-label="Previous beat" title="Previous (←)" style="all:unset; cursor:pointer; width:36px; height:36px; border-radius:10px; display:grid; place-items:center; color:#fff; background:rgba(255,255,255,.09); backdrop-filter:blur(8px);" style-hover="background:rgba(255,255,255,.18);" style-focus="box-shadow:0 0 0 2px var(--inst-blue);">{{ prevIcon }}</button>
+                <button onClick="{{ onPlay }}" aria-label="{{ playAria }}" title="Play / pause (Space)" style="all:unset; cursor:pointer; width:44px; height:44px; border-radius:12px; display:grid; place-items:center; color:#0c0e15; background:#fff;" style-hover="filter:brightness(.94);" style-focus="box-shadow:0 0 0 2px var(--inst-blue), 0 0 0 4px #fff;">{{ playIcon }}</button>
+                <button onClick="{{ onNext }}" aria-label="Next beat" title="Next (→)" style="all:unset; cursor:pointer; width:36px; height:36px; border-radius:10px; display:grid; place-items:center; color:#fff; background:rgba(255,255,255,.09); backdrop-filter:blur(8px);" style-hover="background:rgba(255,255,255,.18);" style-focus="box-shadow:0 0 0 2px var(--inst-blue);">{{ nextIcon }}</button>
+                <button onClick="{{ onPlayAll }}" aria-pressed="{{ playAll }}" title="Play all (P)" style="all:unset; cursor:pointer; display:flex; align-items:center; gap:7px; height:36px; padding:0 12px; border-radius:10px; font-size:11.5px; font-weight:600; color:#fff; background:{{ playAllBg }}; border:1px solid {{ playAllBd }};" style-focus="box-shadow:0 0 0 2px var(--inst-blue);">{{ playAllIcon }}<span>Play all</span></button>
+                <button onClick="{{ onRepeat }}" aria-pressed="{{ repeat }}" title="Repeat (R)" style="all:unset; cursor:pointer; display:flex; align-items:center; gap:7px; height:36px; padding:0 12px; border-radius:10px; font-size:11.5px; font-weight:600; color:#fff; background:{{ repeatBg }}; border:1px solid {{ repeatBd }};" style-focus="box-shadow:0 0 0 2px var(--inst-blue);">{{ repeatIcon }}<span>Repeat</span></button>
+                <button onClick="{{ onTagMoment }}" title="Tag this moment" style="all:unset; cursor:pointer; display:flex; align-items:center; gap:7px; height:36px; padding:0 12px; border-radius:10px; font-size:11.5px; font-weight:600; color:#fff; background:rgba(255,255,255,.09);" style-hover="background:rgba(255,255,255,.18);" style-focus="box-shadow:0 0 0 2px var(--inst-blue);">{{ tagIcon }}<span>Tag a moment</span></button>
+                <div style="margin-left:auto; display:flex; align-items:center; gap:12px;">
+                  <span aria-live="polite" role="status" style="font-size:11px; color:rgba(230,233,240,.66); text-align:right; max-width:200px;">{{ announce }}</span>
+                  <span style="font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:11px; color:rgba(230,233,240,.6); white-space:nowrap;">{{ playingN }} / {{ totalM }}</span>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+          <sc-if value="{{ draftOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="position:absolute; left:16px; right:16px; bottom:14px; z-index:6; padding:13px 14px; border-radius:13px; background:rgba(12,15,23,.96); border:1px solid var(--hair-2); box-shadow:0 24px 60px -22px rgba(0,0,0,.85);">
+              <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;"><span style="color:var(--inst-blue); display:inline-flex;">{{ tagIcon }}</span><span style="font-size:12px; font-weight:600;">Tag the moment at {{ draftTime }}</span><span style="font-size:10.5px; color:var(--inst-muted);">· feeds into the next beat</span></div>
+              <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
+                <sc-for list="{{ draftTags }}" as="g" hint-placeholder-count="4">
+                  <button onClick="{{ g.pick }}" style="all:unset; cursor:pointer; font-size:11px; font-weight:600; padding:5px 11px; border-radius:999px; color:{{ g.fg }}; background:{{ g.bg }}; border:1px solid {{ g.bd }};">{{ g.label }}</button>
+                </sc-for>
+              </div>
+              <div style="display:flex; gap:7px;">
+                <input ref="{{ setNoteEl }}" placeholder="add a note (optional)…" style="flex:1; min-width:0; font-family:var(--sans); font-size:12px; color:var(--inst-text); background:rgba(255,255,255,.05); border:1px solid var(--hair); border-radius:9px; padding:8px 11px; outline:none;" style-focus="border-color:var(--inst-blue);">
+                <button onClick="{{ onSaveNote }}" style="all:unset; cursor:pointer; display:flex; align-items:center; gap:6px; font-size:12px; font-weight:600; color:#0c0e15; background:var(--inst-blue); padding:8px 14px; border-radius:9px;">{{ checkIcon }}<span>Save</span></button>
+                <button onClick="{{ onCancelNote }}" style="all:unset; cursor:pointer; font-size:12px; font-weight:600; color:var(--inst-muted); padding:8px 11px; border-radius:9px; border:1px solid var(--hair);">Cancel</button>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+
+        <!-- ===== THE DREAM TREE (story spine as git graph) ===== -->
+        <sc-if value="{{ showSpine }}" hint-placeholder-val="{{ true }}">
+          <div data-motion style="border:1px solid var(--hair); border-top:none; border-radius:0 0 18px 18px; background:linear-gradient(180deg, rgba(32,36,49,.44), rgba(19,23,35,.5)); padding:15px 18px 18px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:4px;">
+              <div style="font-family:var(--serif); font-style:italic; font-size:22px; letter-spacing:-.3px; white-space:nowrap;">{{ sectionTitle }}</div>
+              <sc-if value="{{ showChoice }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="font-family:var(--mono); font-size:9px; letter-spacing:.14em; color:var(--inst-label);">LENGTH</span>
+                  <div style="display:flex; gap:4px; padding:3px; border-radius:10px; background:rgba(255,255,255,.04); border:1px solid var(--hair);">
+                    <sc-for list="{{ lengths }}" as="L" hint-placeholder-count="4">
+                      <button onClick="{{ L.go }}" aria-pressed="{{ L.on }}" style="all:unset; cursor:pointer; font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:11px; font-weight:600; padding:5px 10px; border-radius:7px; color:{{ L.fg }}; background:{{ L.bg }};" style-focus="box-shadow:0 0 0 2px var(--inst-blue);">{{ L.label }}</button>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+            <div style="font-size:10.5px; color:var(--inst-muted); margin-bottom:12px; display:flex; align-items:center; gap:7px; flex-wrap:wrap;"><span style="font-family:var(--mono); font-size:9px; letter-spacing:.14em; color:var(--inst-label);">{{ treeBeats }} BEATS · {{ takesLabel }}</span><span style="color:var(--inst-blue); display:inline-flex;">{{ branchIconSm }}</span><span>{{ mapNote }}</span></div>
+            <sc-if value="{{ hasNotes }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:14px; padding:10px 12px; border-radius:12px; background:rgba(122,162,255,.06); border:1px solid rgba(122,162,255,.2);">
+                <span style="display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:8.5px; letter-spacing:.12em; color:var(--inst-blue); padding-top:4px; flex:0 0 auto;">{{ tagIcon }} NOTES → NEXT BEAT</span>
+                <div style="display:flex; flex-wrap:wrap; gap:6px; flex:1; min-width:0;">
+                  <sc-for list="{{ beatNotes }}" as="bn" hint-placeholder-count="1">
+                    <span style="display:inline-flex; align-items:center; gap:7px; font-size:11px; color:var(--inst-text); background:rgba(255,255,255,.05); border:1px solid var(--hair); border-radius:999px; padding:4px 5px 4px 10px;"><span style="font-family:var(--mono); color:var(--inst-blue);">{{ bn.tlabel }}</span><span style="font-weight:600;">{{ bn.tag }}</span><sc-if value="{{ bn.text }}" hint-placeholder-val="{{ false }}"><span style="color:var(--inst-muted); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ bn.text }}</span></sc-if><button onClick="{{ bn.remove }}" aria-label="Remove note" style="all:unset; cursor:pointer; display:grid; place-items:center; width:17px; height:17px; border-radius:50%; color:var(--inst-muted);" style-hover="background:rgba(255,255,255,.12); color:#fff;">{{ xIcon }}</button></span>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ banner.show }}" hint-placeholder-val="{{ false }}">
+              <div role="status" style="display:flex; gap:11px; align-items:flex-start; padding:13px 15px; border-radius:13px; margin-bottom:14px; background:{{ banner.bg }}; border:1px solid {{ banner.bd }};">
+                <span style="color:{{ banner.tone }}; flex:0 0 auto; margin-top:1px;">{{ banner.icon }}</span>
+                <div><div style="font-size:13px; font-weight:600;">{{ banner.title }}</div><div style="font-size:11.5px; color:var(--inst-muted); line-height:1.5; margin-top:3px;">{{ banner.body }}</div></div>
+              </div>
+            </sc-if>
+            <div ref="{{ setSpineEl }}" role="listbox" aria-label="Dream tree and choices — click a beat to switch take, a branch to grow it" style="position:relative; overflow-x:auto; overflow-y:hidden; padding-bottom:4px;">
+              <div style="position:relative; width:{{ mapWpx }}; height:{{ mapHpx }};">
+                <svg width="{{ mapW }}" height="{{ mapH }}" viewBox="{{ mapVB }}" style="position:absolute; inset:0; overflow:visible; pointer-events:none;">
+                  <sc-for list="{{ mapEdges }}" as="e" hint-placeholder-count="3">
+                    <path data-motion d="{{ e.d }}" fill="none" stroke="{{ e.stroke }}" stroke-width="{{ e.sw }}" stroke-dasharray="{{ e.dash }}" stroke-linecap="round" style="{{ e.style }}"></path>
+                  </sc-for>
+                  <sc-if value="{{ headPulse.show }}" hint-placeholder-val="{{ false }}">
+                    <circle cx="{{ headPulse.cx }}" cy="{{ headPulse.cy }}" r="4" fill="var(--inst-blue)"></circle>
+                    <circle data-motion cx="{{ headPulse.cx }}" cy="{{ headPulse.cy }}" r="10" fill="none" stroke="var(--inst-blue)" stroke-opacity=".4" style="transform-box:fill-box; transform-origin:center; animation:{{ headPulse.anim }};"></circle>
+                  </sc-if>
+                </svg>
+                <sc-for list="{{ mapNodes }}" as="t" hint-placeholder-count="3">
+                  <button onClick="{{ t.click }}" role="option" aria-selected="{{ t.current }}" title="{{ t.title }}" style="position:absolute; left:{{ t.left }}; top:{{ t.top }}; width:40px; padding:0; background:none; border:none; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:4px;" style-focus="outline:2px solid var(--inst-blue); outline-offset:2px; border-radius:8px;">
+                    <div data-motion style="position:relative; width:40px; aspect-ratio:9/16; border-radius:7px; overflow:hidden; background:{{ t.bg }}; box-shadow:{{ t.ring }}; opacity:{{ t.opacity }}; filter:{{ t.filter }}; animation:{{ t.anim }};">
+                      <sc-if value="{{ t.current }}" hint-placeholder-val="{{ false }}"><div style="position:absolute; inset:0; display:grid; place-items:center;"><span style="width:0;height:0;border-left:7px solid #fff;border-top:4px solid transparent;border-bottom:4px solid transparent;filter:drop-shadow(0 1px 2px rgba(0,0,0,.7));"></span></div></sc-if>
+                      <sc-if value="{{ t.mature }}" hint-placeholder-val="{{ false }}"><span style="position:absolute; top:3px; right:3px; width:5px; height:5px; border-radius:50%; background:var(--brand-warm);"></span></sc-if>
+                    </div>
+                    <span style="font-family:var(--mono); font-size:8px; color:{{ t.labelFg }};">{{ t.label }}</span>
+                  </button>
+                </sc-for>
+                <sc-for list="{{ futureNodes }}" as="f" hint-placeholder-count="3">
+                  <button onClick="{{ f.pick }}" role="radio" aria-checked="false" disabled="{{ locked }}" title="{{ f.prompt }}" style="position:absolute; left:{{ f.left }}; top:{{ f.top }}; width:{{ f.w }}; display:flex; align-items:center; gap:13px; background:none; border:none; cursor:{{ f.cursor }}; text-align:left; padding:0; opacity:{{ f.opacity }}; transition:{{ futureTransition }};" style-hover="{{ f.hover }}">
+                    <div style="position:relative; width:{{ f.fw }}; flex:0 0 auto; aspect-ratio:9/16; border-radius:8px; overflow:hidden; background:{{ f.bg }}; box-shadow:{{ f.cellRing }}; border:{{ f.border }};">
+                      <div style="position:absolute; inset:0; background:linear-gradient(180deg, transparent 45%, rgba(7,8,14,.7));"></div>
+                      <div style="position:absolute; left:5px; bottom:4px; font-family:var(--mono); font-size:6px; letter-spacing:.1em; color:rgba(230,233,240,.5);">POSSIBLE</div>
+                    </div>
+                    <div style="flex:1; min-width:0;">
+                      <div style="font-size:13.5px; font-weight:600; color:var(--inst-text);">{{ f.label }}</div>
+                      <div style="font-family:var(--serif); font-style:italic; font-size:12.5px; color:var(--inst-muted); line-height:1.4; margin-top:3px; text-wrap:pretty;">{{ f.prompt }}</div>
+                    </div>
+                  </button>
+                </sc-for>
+                <sc-if value="{{ composeNode.show }}" hint-placeholder-val="{{ false }}">
+                  <div style="position:absolute; left:{{ composeNode.left }}; top:{{ composeNode.top }}; width:{{ composeNode.w }}; display:flex; align-items:center; gap:13px;">
+                    <div style="position:relative; width:{{ composeNode.fw }}; flex:0 0 auto; aspect-ratio:9/16; border-radius:8px; overflow:hidden; background:rgba(255,255,255,.025); border:1px dashed var(--hair-2); display:grid; place-items:center;"><span style="color:var(--inst-label);">{{ plusIcon }}</span></div>
+                    <div style="flex:1; min-width:0;">
+                      <div style="font-size:13.5px; font-weight:600;">Compose your own path</div>
+                      <form onSubmit="{{ onCustomSubmit }}" style="margin-top:6px; display:flex; gap:6px;">
+                        <input ref="{{ setCustomEl }}" placeholder="describe the next moment…" disabled="{{ locked }}" style="flex:1; min-width:0; font-family:var(--sans); font-size:12px; color:var(--inst-text); background:rgba(7,8,14,.5); border:1px solid var(--hair); border-radius:9px; padding:8px 11px; outline:none;" style-focus="border-color:var(--inst-blue);">
+                        <button type="submit" disabled="{{ locked }}" aria-label="Dream this" style="all:unset; cursor:pointer; width:34px; flex:0 0 auto; border-radius:9px; display:grid; place-items:center; color:#0c0e15; background:var(--inst-blue);" style-focus="box-shadow:0 0 0 2px #fff;">{{ arrowIcon }}</button>
+                      </form>
+                    </div>
+                  </div>
+                </sc-if>
+              </div>
+            </div>
+            <sc-if value="{{ lookBack }}" hint-placeholder-val="{{ false }}">
+              <div style="margin-top:14px; padding-top:13px; border-top:1px solid var(--hair); display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                <span style="color:var(--inst-blue);">{{ infoIcon }}</span>
+                <span style="font-size:12px; color:var(--inst-muted);">You’re looking back at beat {{ playingN }}.</span>
+                <div style="margin-left:auto; display:flex; gap:8px;">
+                  <button onClick="{{ onBranchHere }}" style="all:unset; cursor:pointer; display:flex; align-items:center; gap:6px; font-size:12px; font-weight:600; color:#0c0e15; background:var(--inst-blue); padding:7px 12px; border-radius:9px;" style-focus="box-shadow:0 0 0 2px #fff;">{{ branchIcon }}<span>Branch a new take from here</span></button>
+                  <button onClick="{{ onEnd }}" style="all:unset; cursor:pointer; font-size:12px; font-weight:600; color:var(--inst-blue); padding:7px 10px;" style-hover="text-decoration:underline;">Latest →</button>
+                </div>
+              </div>
+            </sc-if>
+
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showNotes }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute; inset:0; z-index:50; pointer-events:none;">
+            <sc-for list="{{ notes }}" as="n" hint-placeholder-count="4">
+              <div style="position:absolute; {{ n.pos }} max-width:218px; pointer-events:auto;">
+                <div style="font-family:var(--mono); font-size:9px; letter-spacing:.1em; color:var(--inst-blue); margin-bottom:3px;">{{ n.tag }}</div>
+                <div style="font-size:11px; line-height:1.45; color:var(--inst-text); background:rgba(10,12,19,.94); border:1px solid rgba(122,162,255,.4); border-radius:9px; padding:8px 10px; box-shadow:0 14px 34px -16px rgba(0,0,0,.85);">{{ n.text }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+
+    <!-- ===== SLIM SHELL DOCK ===== -->
+    <div style="display:flex; align-items:center; gap:11px; margin-top:14px; padding:11px 15px; border-radius:14px; background:rgba(38,42,54,.4); border:1px solid var(--hair); flex-wrap:wrap;">
+      <span style="color:{{ privColor }}; flex:0 0 auto;">{{ privIcon }}</span>
+      <div style="min-width:0;"><div style="font-size:12px; font-weight:600;">{{ privTitle }}</div><div style="font-size:10.5px; color:var(--inst-muted); margin-top:1px;">{{ privBody }}</div></div>
+      <sc-if value="{{ queueShow }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-left:auto; display:flex; align-items:center; gap:9px; padding:6px 11px; border-radius:10px; background:rgba(255,255,255,.04); border:1px solid var(--hair);">
+          <span style="color:var(--inst-muted);">{{ queueIcon }}</span>
+          <span style="font-size:11px; color:var(--inst-muted);">{{ queueCount }} request waiting</span>
+          <button onClick="{{ onQueueApprove }}" style="all:unset; cursor:pointer; font-size:11px; font-weight:600; color:var(--up);" style-hover="text-decoration:underline;">Approve</button>
+          <button onClick="{{ onQueueDismiss }}" style="all:unset; cursor:pointer; font-size:11px; font-weight:600; color:var(--inst-label);" style-hover="color:var(--inst-text);">Dismiss</button>
+        </div>
+      </sc-if>
+      <div style="{{ destroyWrap }}">
+        <sc-if value="{{ confirmOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex; align-items:center; gap:8px;"><span style="font-size:11px; color:{{ privColor }};">{{ confirmAsk }}</span><button onClick="{{ onConfirm }}" style="all:unset; cursor:pointer; font-size:11px; font-weight:600; color:#1a0c0c; background:{{ privColor }}; padding:6px 12px; border-radius:9px;">{{ confirmYes }}</button><button onClick="{{ onCancelConfirm }}" style="all:unset; cursor:pointer; font-size:11px; font-weight:600; color:var(--inst-muted); padding:6px 10px; border-radius:9px; border:1px solid var(--hair);">Keep</button></div>
+        </sc-if>
+        <sc-if value="{{ confirmClosed }}" hint-placeholder-val="{{ true }}">
+          <button onClick="{{ onDestroy }}" style="all:unset; cursor:pointer; font-size:11px; font-weight:600; color:{{ privColor }}; padding:7px 13px; border-radius:9px; border:1px solid {{ privBorder }};" style-hover="background:{{ privHover }};">{{ destroyLabel }}</button>
+        </sc-if>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:800,&quot;height&quot;:960},&quot;scene&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;start&quot;,&quot;dreaming&quot;,&quot;watching&quot;,&quot;choosing&quot;,&quot;cantDream&quot;,&quot;skipped&quot;],&quot;default&quot;:&quot;choosing&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;reducedMotion&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;reducedTransparency&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">
+const I = {
+  prev:'<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>',
+  next:'<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/>',
+  play:'<polygon points="6 4 20 12 6 20 6 4"/>', pause:'<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>',
+  playall:'<polygon points="3 4 11 12 3 20 3 4"/><polygon points="12 4 20 12 12 20 12 4"/>',
+  repeat:'<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
+  branch:'<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+  lock:'<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  image:'<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  type:'<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/>',
+  dice:'<rect width="18" height="18" x="3" y="3" rx="3"/><circle cx="8.5" cy="8.5" r="1.1" fill="currentColor"/><circle cx="15.5" cy="15.5" r="1.1" fill="currentColor"/><circle cx="12" cy="12" r="1.1" fill="currentColor"/>',
+  spark:'<path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="m5.6 5.6 2.8 2.8"/><path d="m15.6 15.6 2.8 2.8"/><path d="m18.4 5.6-2.8 2.8"/><path d="m8.4 15.6-2.8 2.8"/>',
+  shield:'<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  pauseR:'<circle cx="12" cy="12" r="9"/><line x1="10" y1="9" x2="10" y2="15"/><line x1="14" y1="9" x2="14" y2="15"/>',
+  info:'<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  alert:'<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  gate:'<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+  plus:'<path d="M5 12h14"/><path d="M12 5v14"/>', arrow:'<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  queue:'<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h4"/>',
+  dot:'<circle cx="12" cy="12" r="6" fill="currentColor" stroke="none"/>',
+  tag:'<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".6" fill="currentColor"/>',
+  check:'<path d="M20 6 9 17l-5-5"/>',
+  xmark:'<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'
+};
+function svg(n,s){ return React.createElement('svg',{ width:s||18, height:s||18, viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round', dangerouslySetInnerHTML:{ __html:I[n]||'' } }); }
+function hexa(h,a){ h=h.replace('#',''); const n=parseInt(h.length===3?h.split('').map(c=>c+c).join(''):h,16); return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')'; }
+
+const SCENES = {
+  lighthouse:'radial-gradient(30% 24% at 50% 30%, rgba(214,230,255,.9), rgba(132,165,238,.42) 46%, transparent 70%), radial-gradient(150% 40% at 50% 50%, rgba(120,158,224,.34), transparent 62%), linear-gradient(180deg,#26345f 0%,#1a2547 44%,#141d38 51%,#0e162a 100%)',
+  neon:'radial-gradient(30% 26% at 32% 42%, rgba(176,146,255,.92), transparent 62%), radial-gradient(28% 24% at 70% 33%, rgba(132,216,255,.82), transparent 62%), radial-gradient(140% 42% at 50% 104%, rgba(140,176,255,.46), transparent 72%), linear-gradient(180deg,#1a1d44,#13152e)',
+  forest:'radial-gradient(54% 34% at 50% 10%, rgba(182,248,226,.74), transparent 60%), radial-gradient(34% 34% at 28% 32%, rgba(132,216,194,.46), transparent 64%), linear-gradient(180deg,#163230,#0f201d 58%,#0b1716)',
+  portrait:'radial-gradient(34% 46% at 42% 40%, rgba(236,240,255,.94), rgba(150,168,224,.4) 48%, transparent 66%), radial-gradient(74% 74% at 76% 90%, rgba(76,88,140,.55), transparent 62%), linear-gradient(150deg,#23243a,#13141f)',
+  ocean:'radial-gradient(140% 30% at 50% 30%, rgba(180,206,246,.66), transparent 60%), radial-gradient(86% 34% at 50% 30%, rgba(206,224,250,.4), transparent 58%), linear-gradient(180deg,#21385c 0%,#182a48 33%,#122036 37%,#0c1526 100%)',
+  station:'repeating-linear-gradient(90deg, rgba(168,196,255,.13) 0 3px, transparent 3px 34px), radial-gradient(84% 20% at 50% 39%, rgba(198,216,255,.52), transparent 72%), linear-gradient(180deg,#1a2347,#11152e)',
+  city:'radial-gradient(102% 46% at 50% 103%, rgba(186,208,255,.72), transparent 62%), repeating-linear-gradient(0deg, rgba(168,196,255,.08) 0 4px, transparent 4px 19px), repeating-linear-gradient(90deg, rgba(168,196,255,.06) 0 4px, transparent 4px 24px), linear-gradient(180deg,#161e44,#131838)',
+  snow:'radial-gradient(26% 20% at 64% 22%, rgba(248,251,255,.95), transparent 58%), radial-gradient(140% 52% at 50% 104%, rgba(202,220,250,.46), transparent 72%), linear-gradient(180deg,#28304c,#181f38)',
+  synth:'radial-gradient(50% 44% at 40% 38%, rgba(176,192,255,.66), transparent 64%), radial-gradient(46% 40% at 70% 70%, rgba(180,150,248,.5), transparent 66%), linear-gradient(180deg,#181d40,#13152e)'
+};
+const ACCENTS = { lighthouse:'#b7caff', neon:'#9a8cff', forest:'#7fe0c8', portrait:'#cdd6ff', ocean:'#9fb8e6', station:'#9ab0ff', city:'#9ab4ff', snow:'#dbe6ff', synth:'#9aa0f0' };
+const SEEDS = [
+  { id:'s1', scene:'lighthouse', cap:'LIGHTHOUSE · DUSK', prompt:'A lighthouse at dusk — fog rolling off a cold, slate sea.' },
+  { id:'s2', scene:'neon', cap:'NEON ALLEY · RAIN', prompt:'A neon alley slick with rain, steam curling from a grate.' },
+  { id:'s3', scene:'forest', cap:'FOREST · MIST', prompt:'A mist-drowned forest at first light, ferns dripping.' },
+  { id:'s4', scene:'portrait', cap:'PORTRAIT · LAMP', prompt:'A woman’s face half in shadow, lit by one cool lamp.', real:true },
+  { id:'s5', scene:'ocean', cap:'OCEAN · STORM', prompt:'A storm-dark ocean, swells heaving under low cloud.' },
+  { id:'s6', scene:'station', cap:'STATION · NIGHT', prompt:'An empty station at night, fluorescents humming.' },
+  { id:'s7', scene:'city', cap:'CITY · AERIAL', prompt:'A sleeping city from above, cool lights in a grid.' },
+  { id:'s8', scene:'snow', cap:'SNOWFIELD · MOON', prompt:'A snowfield under a pale moon, wind-carved drifts.' }
+];
+const CHIPS = ['a lighthouse at dusk, fog off the sea','a neon alley after the rain','a sleeping city seen from above','a face lit by a single cool lamp','a snowfield under a pale moon'];
+const POOL = [
+  { id:'fa', label:'The door gives way', prompt:'rusted hinge tears; warm light spills from the keeper’s room', scene:'station' },
+  { id:'fb', label:'She turns to the sea', prompt:'slow push-in on her face; the beam crosses her eyes', scene:'portrait' },
+  { id:'fc', label:'The storm breaks', prompt:'rain hits hard; the lamp flickers, then holds', scene:'ocean' },
+  { id:'fd', label:'A ship appears', prompt:'distant lights pierce the fog; a horn sounds, low and long', scene:'city' },
+  { id:'fe', label:'The light goes out', prompt:'the lamp dies; only her silhouette and the moon remain', scene:'snow' },
+  { id:'ff', label:'Into the alley', prompt:'cut to wet neon; her reflection ripples in a black puddle', scene:'neon' }
+];
+const BANNERS = {
+  skipped:{ tone:'var(--amber)', icon:'next', title:'Last beat was skipped', body:'The graphics lease was needed elsewhere — nothing lost. Try again whenever you’re ready.' },
+  error:{ tone:'var(--red)', icon:'alert', title:'That beat didn’t come through', body:'The clip didn’t develop. Your dream is intact — try this moment again.' },
+  refused:{ tone:'var(--brand-warm)', icon:'gate', title:'Held back by the content gate', body:'This direction wasn’t generated. Try a different next moment.' }
+};
+const fmt=(s)=>{ const m=Math.floor(s/60),x=s%60; return m+':'+String(x).padStart(2,'0'); };
+const TAKE='ABCDEFGH';
+
+class Component extends DCLogic {
+  constructor(props){
+    super(props);
+    this.seedTree();
+    const path=this.computePath('n3');
+    this.state = {
+      phase:'choosing', mode:'stills', selected:[], consentGiven:false,
+      path, current:path.length-1,
+      playing:true, repeat:false, playAll:false, length:2,
+      priv:true, showConsent:false, lastTurn:null, videoDown:false,
+      elapsed:0, announce:'Beat 03 ready', locked:false, pickedId:null,
+      reduceMotion:!!props.reducedMotion, reduceTrans:!!props.reducedTransparency,
+      showNotes:false, queueN:1, confirm:false, destroyed:false, blooming:false,
+      clipT:0, noteDraft:null, carryCount:0
+    };
+    this._noteSeq=10;
+    this.openMode='GROUNDED';
+    this.setAuroraEl=(el)=>{ if(el&&el!==this.aEl){ this.aEl=el; this.initAurora(); } };
+    this.setPlayerEl=(el)=>{ this.playerEl=el; };
+    this.setSpineEl=(el)=>{ this.spineEl=el; };
+    this.setCustomEl=(el)=>{ this.customEl=el; };
+    this.setWordsEl=(el)=>{ this.wordsEl=el; };
+    this.setNoteEl=(el)=>{ this.noteEl=el; };
+    ['onPlay','onPrev','onNext','onRepeat','onPlayAll','onEnd','onPlayerKey','onCustomSubmit','onBegin','onBranchHere','onTagMoment','onSaveNote','onCancelNote'].forEach(k=>this[k]=this[k].bind(this));
+    if(props.scene) this._initScene=props.scene;
+  }
+  componentDidMount(){
+    this.sysReduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if(this._initScene) this.goScene(this._initScene);
+    this.tick=setInterval(()=>{ if(this.state.phase==='dreaming') this.setState(s=>({ elapsed:s.elapsed+1 })); },1000);
+    this.clipTick=setInterval(()=>{ const s=this.state; if(s.playing && s.phase!=='start' && s.phase!=='dreaming' && s.path && s.path.length){ const c=this.nodes[s.path[s.current]]; const d=c?(parseFloat(c.dur)||2):2; this.setState(st=>({ clipT:(st.clipT+0.15>=d)?0:st.clipT+0.15 })); } },150);
+    this.startAuroraLoop();
+  }
+  componentWillUnmount(){ clearInterval(this.tick); clearInterval(this.clipTick); cancelAnimationFrame(this.raf); clearTimeout(this._rt); }
+  durOf(){ const c=this.nodes[this.state.path[this.state.current]]; return c?(parseFloat(c.dur)||2):2; }
+  onTagMoment(){ this.setState(s=>({ playing:false, noteDraft:{ t:s.clipT, tag:'More like this' } })); }
+  setDraftTag(tag){ this.setState(s=>({ noteDraft:{ ...s.noteDraft, tag } })); }
+  onSaveNote(){ const d=this.state.noteDraft; if(!d) return; const text=this.noteEl?this.noteEl.value.trim():''; const n=this.nodes[this.state.path[this.state.current]]; if(!n.notes) n.notes=[]; n.notes.push({ id:'nt'+(++this._noteSeq), t:d.t, tag:d.tag, text }); this.setState({ noteDraft:null, announce:'Note added at '+d.t.toFixed(1)+'s' }); }
+  onCancelNote(){ this.setState({ noteDraft:null }); }
+  removeNote(nid){ const n=this.nodes[this.state.path[this.state.current]]; if(n&&n.notes) n.notes=n.notes.filter(x=>x.id!==nid); this.setState({ announce:'Note removed' }); }
+  scrubTo(frac){ this.setState({ clipT:Math.max(0,Math.min(1,frac))*this.durOf() }); }
+
+  // ---------- tree ----------
+  seedTree(){
+    const N={}; const add=(id,parentId,p)=>{ N[id]={ id, parentId, kids:[], activeKid:null, ...p }; if(parentId) N[parentId].kids.push(id); };
+    add('n1',null,{ kind:'opening', scene:'lighthouse', dur:'2.0s', ground:'GROUNDED', caption:'A lighthouse at dusk — fog rolling off a cold, slate sea.' });
+    add('n2','n1',{ kind:'beat', scene:'ocean', dur:'2.0s', prompt:'the beam sweeps the water; gulls scatter into the mist' });
+    add('n3','n2',{ kind:'beat', scene:'portrait', dur:'3.0s', mature:true, prompt:'a figure steps onto the gallery, coat snapping in the wind', notes:[{ id:'nt1', t:1.4, tag:'Hold here', text:'love this framing — keep the slow push' }] });
+    add('n3b','n2',{ kind:'beat', scene:'city', dur:'2.0s', prompt:'a ship appears; distant lights pierce the fog, a horn sounds low' });
+    add('n4b','n3b',{ kind:'beat', scene:'neon', dur:'3.0s', prompt:'cut to wet neon; her reflection ripples in a black puddle' });
+    N.n1.activeKid='n2'; N.n2.activeKid='n3'; N.n3b.activeKid='n4b';
+    this.nodes=N; this.rootId='n1'; this._seq=20;
+  }
+  depthOf(id){ let d=0,n=this.nodes[id].parentId; while(n){ d++; n=this.nodes[n].parentId; } return d; }
+  ancestors(id){ const a=[]; let n=this.nodes[id].parentId; while(n){ a.unshift(n); n=this.nodes[n].parentId; } return a; }
+  downstream(id){ const a=[]; let n=this.nodes[id].activeKid; while(n&&this.nodes[n]){ a.push(n); n=this.nodes[n].activeKid; } return a; }
+  computePath(id){ return [...this.ancestors(id), id, ...this.downstream(id)]; }
+  checkoutState(id, extra){ let n=id; while(this.nodes[n].parentId){ const p=this.nodes[n].parentId; this.nodes[p].activeKid=n; n=p; } const path=this.computePath(id); const current=path.indexOf(id); const leaf=current>=path.length-1; return { path, current, phase:leaf?'choosing':'watching', ...(extra||{}) }; }
+  nodeClick(id){ this.setState(this.checkoutState(id,{ lastTurn:null, announce:'Beat '+(this.depthOf(id)+1) })); this.scrollSpine(); setTimeout(()=>this.startAuroraLoop(),20); }
+
+  // ---------- aurora ----------
+  initAurora(){ const el=this.aEl,dpr=Math.min(2,window.devicePixelRatio||1); this.adpr=dpr; const r=el.getBoundingClientRect(); this.aw=r.width||600; this.ah=r.height||440; el.width=this.aw*dpr; el.height=this.ah*dpr; this.actx=el.getContext('2d'); this.drawAurora(0); }
+  startAuroraLoop(){ cancelAnimationFrame(this.raf); const loop=(ts)=>{ this.raf=requestAnimationFrame(loop); if(!this.actx) return; if(!(this.state.phase==='dreaming'||this.state.blooming)) return; if(this.state.reduceMotion||this.sysReduce){ this.drawAurora(0); return; } this.drawAurora(ts||0); }; this.raf=requestAnimationFrame(loop); }
+  drawAurora(t){ const ctx=this.actx,w=this.aw,h=this.ah,dpr=this.adpr; if(!ctx) return; ctx.setTransform(dpr,0,0,dpr,0,0); ctx.globalCompositeOperation='source-over'; ctx.fillStyle='#090b11'; ctx.fillRect(0,0,w,h); ctx.globalCompositeOperation='screen';
+    const B=[['#27306E',.32,.30,.56],['#8A6BDC',.62,.46,.44],['#4A5AD2',.44,.66,.5],['#27306E',.74,.28,.4]];
+    for(let i=0;i<B.length;i++){ const b=B[i],ph=i*1.7; const x=(b[1]+Math.sin(t*0.00018+ph)*.12)*w, y=(b[2]+Math.cos(t*0.00021+ph)*.12)*h, rad=Math.min(w,h)*(.5+.1*Math.sin(t*0.0003+ph)); const g=ctx.createRadialGradient(x,y,0,x,y,rad); g.addColorStop(0,hexa(b[0],b[3])); g.addColorStop(1,hexa(b[0],0)); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,rad,0,6.283); ctx.fill(); }
+    for(let k=0;k<3;k++){ const bx=(.3+k*.22+.05*Math.sin(t*0.0004+k))*w; const gr=ctx.createLinearGradient(bx-60,0,bx+60,0); gr.addColorStop(0,hexa('#4A5AD2',0)); gr.addColorStop(.5,hexa(k%2?'#8A6BDC':'#4A5AD2',.1)); gr.addColorStop(1,hexa('#4A5AD2',0)); ctx.fillStyle=gr; ctx.fillRect(bx-60,0,120,h); }
+    ctx.globalCompositeOperation='source-over'; }
+
+  // ---------- scenes ----------
+  goScene(s){ this.seedTree(); const base={ lastTurn:null, videoDown:false, locked:false, pickedId:null, blooming:false, playing:true, elapsed:0 };
+    if(s==='start'){ this.nodes={}; this.rootId=null; this.setState({ ...base, phase:'start', mode:'stills', selected:[], consentGiven:false, showConsent:false, path:[], current:0, announce:'' }); }
+    else if(s==='dreaming'){ this._forkParentId='n3'; this._pending={ scene:'snow', prompt:POOL[4].prompt }; const path=this.computePath('n3'); this.setState({ ...base, phase:'dreaming', path, current:path.length-1, announce:'Dreaming started' }); this.scheduleResolve(); }
+    else if(s==='watching'){ const path=this.computePath('n3'); this.setState({ ...base, phase:'watching', path, current:1, announce:'Playing beat 02' }); }
+    else if(s==='choosing'){ const path=this.computePath('n3'); this.setState({ ...base, phase:'choosing', path, current:path.length-1, announce:'Beat 03 ready' }); }
+    else if(s==='cantDream'){ const path=this.computePath('n3'); this.setState({ ...base, phase:'choosing', path, current:path.length-1, videoDown:true, announce:'' }); }
+    else if(s==='skipped'){ const path=this.computePath('n3'); this.setState({ ...base, phase:'choosing', path, current:path.length-1, lastTurn:'skipped', announce:'Beat skipped — GPU needed elsewhere' }); }
+    setTimeout(()=>this.startAuroraLoop(),30); }
+  scheduleResolve(){ clearTimeout(this._rt); this._rt=setTimeout(()=>this.resolveBeat(),5000); }
+  resolveBeat(){ const p=this._pending||{ scene:'ocean', prompt:POOL[0].prompt }; const opening=p.opening;
+    const id='n'+(this._seq=(this._seq||0)+1);
+    this.nodes[id]={ id, parentId:opening?null:this._forkParentId, kids:[], activeKid:null, kind:opening?'opening':'beat', scene:p.scene, dur:(this.state.length).toFixed(1)+'s', mature:!!p.mature, prompt:opening?null:p.prompt, caption:opening?p.prompt:null, ground:opening?this.openMode:null };
+    if(opening){ this.rootId=id; } else { const par=this.nodes[this._forkParentId]; par.kids.push(id); par.activeKid=id; }
+    this.setState(this.checkoutState(id,{ blooming:true, playing:true, announce:'Beat '+(this.depthOf(id)+1)+' ready' }));
+    setTimeout(()=>this.setState({ blooming:false, phase:'choosing' }),900); setTimeout(()=>this.startAuroraLoop(),20); }
+  pickFuture(f){ if(this.state.locked) return; const fp=this.state.path[this.state.current]; this._forkParentId=fp; const cn=this.nodes[fp]; const carry=(cn&&cn.notes)?cn.notes.length:0; this._pending={ scene:f.scene||'synth', prompt:f.prompt }; this.setState({ locked:true, pickedId:f.id||'custom', announce:carry?('Dreaming with your '+carry+' note'+(carry>1?'s':'')):'Dreaming started' }); setTimeout(()=>{ this.setState(s=>({ phase:'dreaming', elapsed:0, locked:false, pickedId:null, lastTurn:null, videoDown:false, carryCount:carry })); this.scheduleResolve(); this.startAuroraLoop(); },320); }
+  onCustomSubmit(e){ e.preventDefault(); const v=this.customEl&&this.customEl.value.trim(); if(!v) return; this.pickFuture({ id:'custom', prompt:v, scene:'synth' }); if(this.customEl) this.customEl.value=''; }
+  onBranchHere(){ this.setState(s=>({ phase:'choosing', announce:'Branch from beat '+(s.current+1) })); }
+
+  // ---------- start ----------
+  toggleSeed(id){ this.setState(s=>{ const has=s.selected.includes(id); const selected=has?s.selected.filter(x=>x!==id):[...s.selected,id]; const stillReal=selected.some(x=>(SEEDS.find(z=>z.id===x)||{}).real); return { selected, showConsent:stillReal&&!s.consentGiven }; }); }
+  setMode(m){ this.setState({ mode:m }); }
+  onBegin(){ const st=this.state;
+    if(st.mode==='stills'){ if(!st.selected.length) return; const needs=st.selected.some(x=>(SEEDS.find(z=>z.id===x)||{}).real); if(needs&&!st.consentGiven){ this.setState({ showConsent:true }); return; } const first=SEEDS.find(z=>z.id===st.selected[0]); this.openMode=st.selected.length+' STILL'+(st.selected.length>1?'S':''); this._pending={ scene:first.scene, prompt:first.prompt, opening:true }; }
+    else if(st.mode==='words'){ const v=this.wordsEl&&this.wordsEl.value.trim(); if(!v) return; this.openMode='FROM WORDS'; this._pending={ scene:'synth', prompt:v, opening:true }; }
+    else { this.openMode='SYNTHETIC'; this._pending={ scene:'synth', prompt:'A synthetic abstract frame — formless, cool, and quiet.', opening:true }; }
+    this.nodes={}; this.rootId=null; this._forkParentId=null; this._seq=0;
+    this.setState({ phase:'dreaming', path:[], current:0, elapsed:0, showConsent:false, announce:'Dreaming the opening' }); this.scheduleResolve(); setTimeout(()=>this.startAuroraLoop(),30); }
+
+  // ---------- transport ----------
+  onPlay(){ this.setState(s=>({ playing:!s.playing, announce:!s.playing?'Playing':'Paused' })); }
+  onPrev(){ this.setState(s=>{ const c=Math.max(0,s.current-1); return { current:c, phase:c<s.path.length-1?'watching':s.phase, announce:'Beat '+(c+1) }; }); this.scrollSpine(); }
+  onNext(){ this.setState(s=>{ const c=Math.min(s.path.length-1,s.current+1); return { current:c, phase:c>=s.path.length-1?'choosing':'watching', announce:'Beat '+(c+1) }; }); this.scrollSpine(); }
+  onEnd(){ this.setState(s=>({ current:s.path.length-1, phase:'choosing', announce:'Latest beat' })); this.scrollSpine(); }
+  onHome(){ this.setState(s=>({ current:0, phase:s.path.length>1?'watching':'choosing', announce:'Beat 01' })); this.scrollSpine(); }
+  onRepeat(){ this.setState(s=>({ repeat:!s.repeat, announce:!s.repeat?'Repeat on':'Repeat off' })); }
+  onPlayAll(){ this.setState(s=>({ playAll:!s.playAll, current:0, phase:s.path.length>1?'watching':'choosing', playing:true, announce:!s.playAll?'Playing all beats':'' })); this.scrollSpine(); }
+  scrollSpine(){ requestAnimationFrame(()=>{ if(!this.spineEl) return; const cur=this.spineEl.querySelector('[aria-selected="true"]'); if(cur){ const sb=this.spineEl.getBoundingClientRect(),cb=cur.getBoundingClientRect(); this.spineEl.scrollLeft+=(cb.left+cb.width/2)-(sb.left+sb.width/2); } }); }
+  onPlayerKey(e){ const k=e.key; if(k===' '){ e.preventDefault(); this.onPlay(); } else if(k==='ArrowLeft'){ e.preventDefault(); this.onPrev(); } else if(k==='ArrowRight'){ e.preventDefault(); this.onNext(); } else if(k==='Home'){ e.preventDefault(); this.onHome(); } else if(k==='End'){ e.preventDefault(); this.onEnd(); } else if(k==='p'||k==='P'){ this.onPlayAll(); } else if(k==='r'||k==='R'){ this.onRepeat(); } }
+
+  setLength(n){ this.setState({ length:n }); }
+  toggle(key){ this.setState(s=>({ [key]:!s[key] })); if(key==='reduceMotion') setTimeout(()=>this.startAuroraLoop(),30); }
+  destroy(){ this.setState({ confirm:true }); }
+  doDestroy(){ this.setState(s=>({ confirm:false, destroyed:true, announce:s.priv?'Dream burned':'Dream deleted' })); }
+
+  renderVals(){
+    const st=this.state, rt=st.reduceTrans, rm=st.reduceMotion, phase=st.phase;
+    const isStart=phase==='start', isDreaming=phase==='dreaming';
+    const b=(st.path||[]).map(id=>this.nodes[id]).filter(Boolean);
+    const cur=b[st.current]||{ kind:'opening', scene:'synth', dur:'' };
+    const curId=st.path[st.current];
+    const curNode=this.nodes[curId];
+    const atHead=st.current>=b.length-1;
+    const showChoice=(phase==='choosing')&&!st.videoDown&&!isDreaming&&!isStart;
+    const lookBack=(phase==='watching')&&!atHead&&!isDreaming&&b.length>1;
+    const hasDream=!isStart && b.length>0;
+    const glassBg=rt?'#171b29':'rgba(38,42,54,.46)', glassBlur=rt?'none':'blur(14px)';
+    const noMo=rm||this.sysReduce;
+    const auroraTransition=noMo?'none':'opacity .8s ease';
+    const futureTransition=noMo?'none':'opacity .25s ease, transform .25s ease';
+    // every CSS animation is gated here so the in-prototype reducedMotion toggle is as honest as the system pref
+    const clipBloomAnim=noMo?'none':'lc-bloom 1s cubic-bezier(.2,.7,.2,1) both';
+    const clipDriftAnim=noMo?'none':'lc-drift 22s ease-in-out infinite';
+    const developingDotAnim=noMo?'none':'lc-breath 1.6s ease-in-out infinite';
+    const sparkSpinAnim=noMo?'none':'lc-spark 9s linear infinite';
+    const riseAnim=noMo?'none':'lc-rise .5s ease both';
+    const consentRise=noMo?'none':'lc-rise .4s ease both';
+
+    const SC=[['start','Start'],['dreaming','Dreaming'],['watching','Watching'],['choosing','Choosing'],['cantDream','Can’t dream'],['skipped','Skipped']];
+    const sceneActive=(id)=>(id==='start'&&isStart)||(id==='dreaming'&&isDreaming)||(id==='watching'&&lookBack)||(id==='choosing'&&showChoice&&!st.lastTurn)||(id==='cantDream'&&st.videoDown)||(id==='skipped'&&st.lastTurn==='skipped');
+    const scenes=SC.map(([id,name])=>({ name, go:()=>this.goScene(id), fg:sceneActive(id)?'#0c0e15':'var(--inst-text)', bg:sceneActive(id)?'var(--inst-blue)':'rgba(255,255,255,.05)', bd:sceneActive(id)?'var(--inst-blue)':'var(--hair)' }));
+    const tg=(key,name)=>({ name, go:()=>this.toggle(key), track:st[key]?'var(--inst-blue)':'rgba(255,255,255,.14)', knobX:st[key]?'15px':'2px' });
+    const toggles=[ tg('showNotes','Annotations'), tg('reduceMotion','Reduced motion'), tg('reduceTrans','Reduced transparency') ];
+    const rd=(label,up)=>({ label, title:label+': '+(up?'working normally':'turns back on by itself'), dot:up?'var(--up)':'var(--amber)', glow:up?hexa('#74d39a',.7):hexa('#f2c879',.7), anim:(rm||this.sysReduce||!up)?'none':'lc-breath 3.6s ease-in-out infinite' });
+    const readiness=[ rd('Graphics',true), rd('Generator',!st.videoDown), rd('Suggestions',true) ];
+
+    const isOpening=cur.kind==='opening';
+    const beatEyebrow=isOpening?('BEAT '+String(st.current+1).padStart(2,'0')+' · OPENING · '+(cur.ground||'GROUNDED')):('BEAT '+String(st.current+1).padStart(2,'0')+' · '+cur.dur+' · THE MOTION BEHIND THIS CLIP');
+    const caption=isOpening?cur.caption:cur.prompt;
+    const clipBg=SCENES[cur.scene]||SCENES.synth;
+    const clipScene='GENERATED · '+(cur.scene||'synth').toUpperCase()+' · 9:16';
+    const heroAccent=ACCENTS[cur.scene]||'#7aa2ff';
+    const heroTint=isStart?hexa('#7aa2ff',.05):hexa(heroAccent, isDreaming?0.16:0.13);
+    // timestamped notes on the current beat (feed-forward context)
+    const durSec=parseFloat(cur.dur)||2;
+    const clipPct=Math.min(100,(st.clipT/durSec)*100)+'%';
+    const clipTimeLabel=st.clipT.toFixed(1)+'s';
+    const curNotes=cur.notes||[];
+    const noteMarkers=curNotes.map(n=>({ left:Math.min(98,(n.t/durSec*100))+'%', title:n.t.toFixed(1)+'s · '+n.tag+(n.text?' — '+n.text:'') }));
+    const beatNotes=curNotes.map(n=>({ tlabel:n.t.toFixed(1)+'s', tag:n.tag, text:n.text, remove:()=>this.removeNote(n.id) }));
+    const draft=st.noteDraft;
+    const draftTags=['More like this','Less of this','Hold here','Change this'].map(t=>({ label:t, pick:()=>this.setDraftTag(t), fg:draft&&draft.tag===t?'#0c0e15':'var(--inst-text)', bg:draft&&draft.tag===t?'var(--inst-blue)':'rgba(255,255,255,.05)', bd:draft&&draft.tag===t?'var(--inst-blue)':'var(--hair)' }));
+    const carryShow=isDreaming&&st.carryCount>0;
+    const carryNote=carryShow?('Guided by your '+st.carryCount+' note'+(st.carryCount>1?'s':'')+' on the last beat.'):'';
+    // alt-take indicator: is the current node a non-active sibling line (i.e. its parent has >1 kid and we're not on the parent's "first" take)
+    let onAltTake=false, takeName='';
+    if(curNode && curNode.parentId){ const sib=this.nodes[curNode.parentId].kids; if(sib.length>1){ const idx=sib.indexOf(curId); onAltTake=idx>0; takeName='TAKE '+(TAKE[idx]||'?'); } }
+
+    const bd=st.lastTurn?BANNERS[st.lastTurn]:null;
+    const banner=bd?{ show:true, tone:bd.tone, icon:svg(bd.icon,16), title:bd.title, body:bd.body, bg:bd.tone==='var(--red)'?'rgba(236,118,118,.08)':bd.tone==='var(--brand-warm)'?'rgba(224,136,79,.08)':'rgba(242,200,121,.08)', bd:bd.tone==='var(--red)'?'rgba(236,118,118,.3)':bd.tone==='var(--brand-warm)'?'rgba(224,136,79,.3)':'rgba(242,200,121,.3)' }:{ show:false };
+
+    const branching=!!(curNode&&curNode.kids&&curNode.kids.length>0);
+    const choiceTitle=branching?'Branch a new take':'What happens next?';
+    const forkOriginLabel=branching?('BRANCH FROM BEAT '+(st.current+1)):'THE DREAM SO FAR';
+
+    const off=b.length%POOL.length;
+    const picks=[POOL[off%POOL.length],POOL[(off+1)%POOL.length],POOL[(off+2)%POOL.length]];
+    const lengths=[1,2,3,4].map(n=>({ label:n+'s', on:st.length===n, go:()=>this.setLength(n), fg:st.length===n?'#0c0e15':'var(--inst-muted)', bg:st.length===n?'var(--inst-blue)':'transparent' }));
+
+    // ---- unified branch map: past tree + futures growing from the head node ----
+    const nodes=this.nodes; const ids=Object.keys(nodes);
+    let maxLane=0, maxD=0; let lane=0;
+    if(this.rootId && nodes[this.rootId]){ ids.forEach(id=>{ nodes[id]._d=this.depthOf(id); }); const visit=(id,ln)=>{ nodes[id]._lane=ln; maxLane=Math.max(maxLane,ln); maxD=Math.max(maxD,nodes[id]._d); const kids=nodes[id].kids.slice().sort((a,b)=>(a===nodes[id].activeKid?-1:b===nodes[id].activeKid?1:0)); kids.forEach((k,i)=>visit(k, i===0?ln:(++lane))); }; visit(this.rootId,0); }
+    const dx=58,dy=52,x0=26,y0=14,nw=38,nh=60;
+    const pathSet=new Set(st.path);
+    const px0=(id)=>x0+nodes[id]._d*dx, py0=(id)=>y0+nodes[id]._lane*dy;
+    const headX=(curId&&nodes[curId])?px0(curId):x0, headY=(curId&&nodes[curId])?py0(curId):y0;
+    let formingPos=null;
+    if(isDreaming && this._forkParentId && nodes[this._forkParentId]){ const par=nodes[this._forkParentId]; formingPos={ x:x0+(par._d+1)*dx, y:y0+par._lane*dy }; maxD=Math.max(maxD,par._d+1); }
+    const fnw=46, fnh=82, FGAPX=82, FROWH=92, TEXTW=230;
+    const fbx=headX+nw+FGAPX;
+    const edgeFrom=(tx,ty)=>'M'+(headX+nw)+' '+(headY+nh/2)+' C'+(headX+nw+FGAPX*.55)+' '+(headY+nh/2)+','+(tx-FGAPX*.5)+' '+ty+','+tx+' '+ty;
+    const futureNodes=[], futureEdges=[]; let composeNode={ show:false };
+    if(showChoice){ const baseY=headY + nh/2 - fnh/2;
+      picks.forEach((f,i)=>{ const fy=baseY + i*FROWH; const dim=st.locked&&st.pickedId!==f.id, on=st.locked&&st.pickedId===f.id;
+        futureNodes.push({ label:f.label, prompt:f.prompt, pick:()=>this.pickFuture(f), bg:SCENES[f.scene], left:fbx+'px', top:fy+'px', w:(fnw+13+TEXTW)+'px', fw:fnw+'px', opacity:dim?'.12':'1', cellRing:on?'0 0 0 2px var(--inst-blue), 0 8px 26px -8px '+hexa('#7aa2ff',.55):'0 6px 18px -10px rgba(0,0,0,.6)', border:on?'1px solid transparent':'1px dashed '+hexa('#7aa2ff',.45), hover:st.locked?'':'transform:translateX(4px);', cursor:st.locked?'default':'pointer' });
+        futureEdges.push({ d:edgeFrom(fbx, fy+fnh/2), stroke:on?'var(--inst-blue)':hexa('#7aa2ff',.42), sw:on?2.6:1.5, dash:'3 11', style:noMo?'':'animation:lc-flow '+(on?'.5s':'3.2s')+' linear infinite;' }); });
+      const cyc=baseY + picks.length*FROWH;
+      composeNode={ show:true, left:fbx+'px', top:cyc+'px', w:(fnw+13+TEXTW)+'px', fw:fnw+'px' };
+      futureEdges.push({ d:edgeFrom(fbx, cyc+fnh/2), stroke:'rgba(138,144,160,.55)', sw:1.4, dash:'2 7', style:noMo?'':'animation:lc-flow 3.6s linear infinite;' }); }
+    let maxX=x0+maxD*dx+nw, maxY=y0+maxLane*dy+nh;
+    if(showChoice){ maxX=Math.max(maxX, fbx+fnw+13+TEXTW); maxY=Math.max(maxY, headY+nh/2-fnh/2 + picks.length*FROWH + fnh); }
+    const mapW=Math.max(286, Math.round(maxX+16)), mapH=Math.max(nh+24, Math.round(maxY+10));
+    const mapNodes=ids.map(id=>{ const n=nodes[id]; const on=pathSet.has(id); const isCur=id===curId; return { click:()=>this.nodeClick(id), current:isCur, title:(n.prompt||n.caption||'')+' · '+n.dur, left:px0(id)+'px', top:py0(id)+'px', bg:SCENES[n.scene]||SCENES.synth, mature:!!n.mature, ring:isCur?'0 0 0 2px var(--inst-blue), 0 4px 16px -4px '+hexa('#7aa2ff',.55):(on?'inset 0 0 0 1.5px '+hexa('#7aa2ff',.6):'inset 0 0 0 1px var(--hair)'), opacity:on?'1':'.32', filter:on?'none':'saturate(.55) brightness(.86)', labelFg:on?'var(--inst-blue)':'var(--inst-label)', anim:'none', label:String((n._d||0)+1).padStart(2,'0') }; });
+    if(formingPos){ mapNodes.push({ click:()=>{}, current:false, title:'forming', left:formingPos.x+'px', top:formingPos.y+'px', bg:'radial-gradient(60% 50% at 50% 40%, rgba(138,107,220,.45), transparent), #11142a', mature:false, ring:'inset 0 0 0 1px '+hexa('#8A6BDC',.45), opacity:'.85', filter:'none', labelFg:'var(--inst-blue)', anim:noMo?'none':'lc-forming 1.8s ease-in-out infinite', label:'··' }); }
+    const mapEdges=[];
+    ids.forEach(id=>{ const n=nodes[id]; n.kids.forEach(k=>{ const ax=px0(id)+nw, ay=py0(id)+nh/2, bx2=px0(k), by2=py0(k)+nh/2; const active=pathSet.has(id)&&pathSet.has(k); mapEdges.push({ d:'M'+ax+' '+ay+' C'+(ax+dx*.5)+' '+ay+','+(bx2-dx*.5)+' '+by2+','+bx2+' '+by2, stroke:active?'var(--inst-blue)':'rgba(138,144,160,.32)', sw:active?2.2:1.3, dash:active?'none':'3 7', style:'' }); }); });
+    if(formingPos){ const par=nodes[this._forkParentId]; const ax=px0(this._forkParentId)+nw, ay=py0(this._forkParentId)+nh/2, bx2=formingPos.x, by2=formingPos.y+nh/2; mapEdges.push({ d:'M'+ax+' '+ay+' C'+(ax+dx*.5)+' '+ay+','+(bx2-dx*.5)+' '+by2+','+bx2+' '+by2, stroke:hexa('#8A6BDC',.55), sw:1.7, dash:'3 7', style:(rm||this.sysReduce)?'':'animation:lc-flow 2s linear infinite;' }); }
+    futureEdges.forEach(e=>mapEdges.push(e));
+    const headPulse= showChoice ? { show:true, cx:headX+nw, cy:headY+nh/2, anim:noMo?'none':'lc-glow 2.8s ease-in-out infinite' } : { show:false };
+    const leaves=ids.filter(id=>nodes[id].kids.length===0).length;
+    const takesLabel=(leaves||1)+(leaves===1?' TAKE':' TAKES');
+    const sectionTitle= showChoice ? (branching?'Branch a new take':'What happens next?') : (isDreaming?'The dream grows…':'Your dream so far');
+    const mapNote= showChoice ? 'choose a glowing branch, or click any past beat to switch take' : 'click any node to switch take · every take is kept';
+
+    // start
+    const seedSheet=SEEDS.map(s=>{ const idx=st.selected.indexOf(s.id); const on=idx>=0; return { toggle:()=>this.toggleSeed(s.id), on, real:!!s.real, order:idx+1, cap:s.cap, bg:SCENES[s.scene], ring:on?'0 0 0 2px var(--inst-blue), 0 8px 22px -8px '+hexa('#7aa2ff',.5):'inset 0 0 0 1px var(--hair)' }; });
+    const modes=[['stills','Stills','image'],['words','Words','type'],['nothing','Nothing','dice']].map(([m,name,ic])=>({ name, icon:svg(ic,15), go:()=>this.setMode(m), fg:st.mode===m?'#0c0e15':'var(--inst-text)', bg:st.mode===m?'var(--inst-blue)':'transparent' }));
+    const promptChips=CHIPS.map(t=>({ text:t, use:()=>{ if(this.wordsEl){ this.wordsEl.value=t; this.wordsEl.focus(); } } }));
+    const needsConsent=st.mode==='stills'&&st.selected.some(x=>(SEEDS.find(z=>z.id===x)||{}).real)&&!st.consentGiven;
+    const beginDisabled=(st.mode==='stills'&&(st.selected.length===0||needsConsent));
+    const selCount=st.selected.length;
+    const selCountLabel=selCount?selCount+' selected · grounds the opening':'tap to select one or more';
+
+    const priv=st.priv, privColor=priv?'var(--brand-warm)':'var(--red)';
+    const privTitle=st.destroyed?(priv?'Burned. Nothing of this dream remains.':'Deleted from your library.'):(priv?'Private session · sealed':'Saved to your library');
+    const privBody=st.destroyed?'':(priv?'Incognito — visibly sealed, never reused as a seed, burned on close.':'Saved and reusable. Deleting is permanent.');
+
+    const notes=[
+      { tag:'DREAM TREE', text:'The story is a tree, not a line — beat = commit, fork = branch, the lit path = checked-out timeline. Click any node to check it out into the player.', pos:'top:14px; left:14px;' },
+      { tag:'DEVELOP HERO', text:'A cool aurora forms while the GPU works; the finished frame blooms in over it and the clip plays in place. Never a spinner.', pos:'top:14px; right:14px;' },
+      { tag:'BRANCH = TAKE', text:'“What happens next” branches from any beat. From a beat that already continues, it makes a new take — your other take is kept, nothing overwritten.', pos:'bottom:150px; left:14px;' },
+      { tag:'HONEST + A11Y', text:'Status dots carry text equivalents; an aria-live region announces dreaming/ready/skipped. Copper is reserved for likeness consent + mature only.', pos:'bottom:14px; right:14px;' }
+    ];
+
+    return {
+      railBlur:rt?'none':'blur(20px)', scenes, toggles, readiness,
+      glassBg, glassBlur, auroraTransition, futureTransition,
+      isStart, hasDream, isDreaming, cantDream:st.videoDown&&!isStart,
+      showClip:(phase==='watching'||showChoice||lookBack)&&!isDreaming, showCaption:!isDreaming&&hasDream, showTransport:hasDream&&!isStart, showSpine:hasDream,
+      showChoice, lookBack, branching, sectionTitle, mapNote, headPulse,
+      onAltTake, takeName, branchIcon:svg('branch',14), branchIconSm:svg('branch',11),
+      auroraOpacity:(isDreaming||st.blooming)?'1':'0',
+      clipKey:'c-'+curId+'-'+st.current, clipBg, clipScene, heroTint, spillOpacity:(rt?'.46':'.72'),
+      clipBloomAnim, clipDriftAnim, developingDotAnim, sparkSpinAnim, riseAnim, consentRise,
+      heroIndex:(st.current+1)+' / '+b.length, elapsed:fmt(st.elapsed),
+      beatEyebrow, caption, mature:cur.mature, matureDot:svg('dot',7),
+      playing:st.playing, playIcon:svg(st.playing?'pause':'play',19), playAria:st.playing?'Pause':'Play', prevIcon:svg('prev',16), nextIcon:svg('next',16),
+      playAll:st.playAll, playAllIcon:svg('playall',14), playAllBg:st.playAll?hexa('#7aa2ff',.85):'rgba(255,255,255,.09)', playAllBd:st.playAll?'var(--inst-blue)':'transparent',
+      repeat:st.repeat, repeatIcon:svg('repeat',14), repeatBg:st.repeat?hexa('#7aa2ff',.85):'rgba(255,255,255,.09)', repeatBd:st.repeat?'var(--inst-blue)':'transparent',
+      announce:st.announce, playingN:st.current+1, totalM:b.length,
+      onPlay:this.onPlay, onPrev:this.onPrev, onNext:this.onNext, onPlayAll:this.onPlayAll, onRepeat:this.onRepeat, onEnd:this.onEnd, onBranchHere:this.onBranchHere, onPlayerKey:this.onPlayerKey,
+      setAuroraEl:this.setAuroraEl, setPlayerEl:this.setPlayerEl, setSpineEl:this.setSpineEl, setCustomEl:this.setCustomEl, setWordsEl:this.setWordsEl,
+      banner, futureNodes, composeNode, lengths, locked:st.locked, onCustomSubmit:this.onCustomSubmit,
+      clipPct, clipTimeLabel, noteMarkers, beatNotes, hasNotes:curNotes.length>0,
+      onScrub:(e)=>{ const r=e.currentTarget.getBoundingClientRect(); this.scrubTo((e.clientX-r.left)/r.width); }, onTagMoment:this.onTagMoment,
+      draftOpen:!!draft, draftTime:draft?draft.t.toFixed(1)+'s':'', draftTags, onSaveNote:this.onSaveNote, onCancelNote:this.onCancelNote, setNoteEl:this.setNoteEl,
+      carryShow, carryNote, tagIcon:svg('tag',14), checkIcon:svg('check',14), xIcon:svg('xmark',12),
+      mapNodes, mapEdges, mapW, mapH, mapWpx:mapW+'px', mapHpx:mapH+'px', mapVB:'0 0 '+mapW+' '+mapH, treeBeats:ids.length, takesLabel,
+      sparkIcon:svg('spark',16), sparkIconSm:svg('spark',14), infoIcon:svg('info',16), pauseIcon:svg('pauseR',18), plusIcon:svg('plus',18), arrowIcon:svg('arrow',16),
+      showNotes:st.showNotes, notes,
+      modes, modeStills:st.mode==='stills', modeWords:st.mode==='words', modeNothing:st.mode==='nothing',
+      seedSheet, promptChips, synthBg:SCENES.synth,
+      selCountLabel, selCountColor:selCount?'var(--inst-blue)':'var(--inst-label)',
+      showConsent:st.showConsent, consentIcon:svg('shield',18), onConsent:()=>this.setState({ consentGiven:true, showConsent:false }), onConsentNo:()=>this.setState(s=>({ selected:s.selected.filter(x=>!(SEEDS.find(z=>z.id===x)||{}).real), showConsent:false })),
+      lockIcon:svg('lock',14), priv:st.priv, onTogglePriv:()=>this.toggle('priv'),
+      onBegin:this.onBegin, beginDisabled, beginCursor:beginDisabled?'default':'pointer', beginOpacity:beginDisabled?'.5':'1', beginFg:'#0c0e15', beginBg:'var(--inst-blue)', beginLabel:st.mode==='stills'?(selCount>1?'Dream from '+selCount+' stills':'Begin dream'):'Begin dream',
+      queueShow:st.queueN>0&&!st.destroyed, queueCount:st.queueN, queueIcon:svg('queue',16), onQueueApprove:()=>this.setState(s=>({ queueN:Math.max(0,s.queueN-1) })), onQueueDismiss:()=>this.setState({ queueN:0 }),
+      privColor, privIcon:svg(priv?'lock':'shield',17), privTitle, privBody,
+      destroyWrap:st.destroyed?'display:none;':'margin-left:auto;',
+      confirmOpen:st.confirm&&!st.destroyed, confirmClosed:!st.confirm&&!st.destroyed,
+      confirmAsk:priv?'Burn this dream?':'Delete this dream?', confirmYes:priv?'Burn':'Delete', destroyLabel:priv?'Burn dream':'Delete dream',
+      privBorder:priv?'rgba(224,136,79,.3)':'rgba(236,118,118,.3)', privHover:priv?'rgba(224,136,79,.12)':'rgba(236,118,118,.12)',
+      onDestroy:()=>this.destroy(), onConfirm:()=>this.doDestroy(), onCancelConfirm:()=>this.setState({ confirm:false })
+    };
+  }
+}
+</script>
+</body>
+</html>

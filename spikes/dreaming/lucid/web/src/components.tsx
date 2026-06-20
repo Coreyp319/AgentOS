@@ -1,6 +1,63 @@
 import { useState } from 'react'
-import { useBurn, useDelete } from './api'
-import type { Readiness } from './api'
+import { useBurn, useDelete, useSetEngine } from './api'
+import type { Readiness, Engine } from './api'
+
+// ADR-0023: pick the i2v backend that animates each beat. 'wan' = Wan 2.2 GGUF (the default),
+// '10eros' = LTX-2.3 / 10Eros. Switching drops the warm GPU lease so the next beat re-admits at the
+// new engine's VRAM estimate (10Eros Q6 ~22 GB vs Wan ~17 GB).
+const ENGINE_LABELS: Record<string, string> = { wan: 'Wan 2.2', '10eros': '10Eros · LTX-2.3' }
+// plain-language gloss so the picker isn't two raw model IDs — the trade-off (look vs VRAM) in a phrase.
+const ENGINE_GLOSS: Record<string, string> = { wan: 'Balanced · ~17 GB VRAM', '10eros': 'Sharper, heavier · ~22 GB VRAM' }
+
+// An expert choice, not a hero control: a collapsed disclosure that shows the active engine at a glance
+// and only expands to the picker when the user wants it. Recedes under the primary surface in both modes.
+export function EngineToggle({ engine }: { engine?: Engine }) {
+  const setEngine = useSetEngine()
+  if (!engine || !engine.options?.length) return null
+  const activeLabel = ENGINE_LABELS[engine.active] ?? engine.active
+  const activeGloss = ENGINE_GLOSS[engine.active]
+  return (
+    <details className="card disc">
+      <summary className="disc-sum">
+        <span className="disc-k">Dream engine</span>
+        <span className="disc-v">{activeLabel}{activeGloss ? ` · ${activeGloss}` : ''}</span>
+        <span className="disc-caret" aria-hidden="true">▾</span>
+      </summary>
+      <div className="disc-body">
+        <div className="row" role="group" aria-label="Dream engine">
+          {engine.options.map((opt) => (
+            <button
+              key={opt}
+              className={'beat' + (opt === engine.active ? '' : ' ghost')}
+              disabled={setEngine.isPending}
+              aria-pressed={opt === engine.active}
+              onClick={() => { if (opt !== engine.active) setEngine.mutate(opt) }}
+            >
+              <b>{ENGINE_LABELS[opt] ?? opt}</b>
+              {ENGINE_GLOSS[opt] && <small>{ENGINE_GLOSS[opt]}</small>}
+            </button>
+          ))}
+        </div>
+        <div className="note" style={{ marginTop: 8, opacity: 0.7 }}>
+          Applies on the next beat — switching drops the warm GPU lease so it re-sizes safely.
+        </div>
+      </div>
+    </details>
+  )
+}
+
+// Ambient readiness: one quiet word by the wordmark when all is well, so the noisy three-dot breakdown
+// (ReadinessCard) only appears when a piece is actually down. Healthy = calm; paused = the card explains.
+export function ReadyChip({ r }: { r: Readiness }) {
+  const ok = r.can_dream
+  return (
+    <span className="ready-chip">
+      <span className={'dot ' + (ok ? 'ok' : 'paused')} aria-hidden="true" />
+      <span>{ok ? 'ready' : 'paused'}</span>
+      <span className="sr">{ok ? 'Lucid is ready to dream' : 'Lucid is paused — a piece is missing; see below'}</span>
+    </span>
+  )
+}
 
 export function ReadinessCard({ r }: { r: Readiness }) {
   const Dot = ({ on, name }: { on: boolean; name: string }) => (

@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useLucidState } from './api'
 import type { LucidState, TurnPhase } from './api'
-import { ReadinessCard, PrivateCard, LibraryCard } from './components'
+import { ReadinessCard, ReadyChip, PrivateCard, LibraryCard, EngineToggle } from './components'
 import QueuePanel from './QueuePanel'
 import Start from './Start'
 import Chain from './Chain'
 import Dreaming from './Dreaming'
-import Choice from './Choice'
 
 // One honest line for assistive tech — the autonomous transitions (dreaming started/finished/skipped)
 // are the whole point of the surface, so they must be announced, not just drawn.
@@ -58,6 +57,8 @@ export default function App() {
       <div className="brand">
         <span className="mark">Lucid</span>
         <span className="tag">— a dream, one beat at a time</span>
+        {/* ambient readiness: a quiet word by the wordmark; the full breakdown only when paused */}
+        {s && <ReadyChip r={s.readiness} />}
       </div>
 
       <div className="sr" role="status" aria-live="polite">{s ? announce(s) : ''}</div>
@@ -70,23 +71,28 @@ export default function App() {
         <div className="card" aria-busy="true">loading…</div>
       ) : (
         <>
-          <ReadinessCard r={s.readiness} />
+          {/* the named three-dot breakdown is noise when healthy — surface it only when a piece is down */}
+          {!s.readiness.can_dream && <ReadinessCard r={s.readiness} />}
           {/* deferred Create-from-image requests — global (independent of the current dream); self-hides when empty */}
           <QueuePanel />
-          {s.private && <PrivateCard />}
           {!s.chain ? (
-            <Start />
+            // Empty state leads with the act: Start is the hero; the engine recedes below it as a disclosure.
+            <>
+              <Start />
+              <EngineToggle engine={s.engine} />
+            </>
           ) : (
             <>
-              <Chain
-                nodes={s.chain.nodes} onLatestReady={clearReveal}
-                dreaming={phase === 'dreaming'} revealing={revealing}
-                caption={s.turn.label && s.turn.label !== 'custom' ? s.turn.label : null}
-              />
-              {!s.private && <LibraryCard />}
-              {/* the develop/resolve hero now lives in <Chain>; this slot is just the timer card while it
-                  generates, then the next choices once the new clip has resolved into the player */}
-              {phase === 'dreaming' ? <Dreaming turn={s.turn} /> : revealing ? null : <Choice state={s} />}
+              {/* one unified instrument: the cinematic player + the dream-tree branch-map, with the
+                  "what happens next" choices folded in as glowing future branches (was a separate card) */}
+              <Chain state={s} revealing={revealing} onLatestReady={clearReveal} />
+              {/* the develop/resolve hero + the choices now live in <Chain>; this is just the timer card
+                  while the next beat generates */}
+              {phase === 'dreaming' && <Dreaming turn={s.turn} />}
+              {/* controls strip — settings + the burn/delete control, where it finally has a referent
+                  (a real dream to wipe). A private session burns; a persistent one deletes. */}
+              <EngineToggle engine={s.engine} />
+              {s.private ? <PrivateCard /> : <LibraryCard />}
             </>
           )}
         </>

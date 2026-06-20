@@ -45,7 +45,17 @@ PROFILE = os.environ.get("LUCID_PROFILE", "comfyui")
 # Params appended to the daemon-owned profile argv (dream.sh DREAM_PARAMS parity). The real
 # `comfyui` profile takes none; the `sleep` stand-in profile takes a duration (smoke-testing).
 PARAMS = [p for p in os.environ.get("LUCID_PARAMS", "").split() if p]
-EST_MIB = int(os.environ.get("LUCID_EST_MIB", "17000"))
+EST_MIB = int(os.environ.get("LUCID_EST_MIB", "17000"))   # back-compat default (Wan)
+
+
+def _est_mib():
+    """Admission estimate (MiB): explicit LUCID_EST_MIB wins; else the *active* engine's measured
+    peak (E.est_mib() — Wan ~17 GB, 10Eros Q6 ~22 GB) so the LTX lane doesn't under-admit and OOM.
+    Resolved at spawn time so a live engine toggle is reflected on the next lease."""
+    env = os.environ.get("LUCID_EST_MIB")
+    return int(env) if env else E.est_mib()
+
+
 COMFY_HOST = os.environ.get("COMFY_HOST", "127.0.0.1:8188")
 READY_TIMEOUT = int(os.environ.get("LUCID_READY_TIMEOUT", "180"))
 
@@ -68,7 +78,7 @@ def lease_spawn(tier="batch"):
     is unchanged. The ADR-0019 drainer passes tier="best-effort" so arbitrate() (coord.rs:129-135)
     structurally Queues this run behind ANY holder and lets Tier::Interactive preempt it
     (lease.rs:583-592) — fail-open BY CONSTRUCTION, never by measurement (design doc G3)."""
-    r = _coord("Spawn", "susas", tier, str(EST_MIB), PROFILE, str(len(PARAMS)), *PARAMS)
+    r = _coord("Spawn", "susas", tier, str(_est_mib()), PROFILE, str(len(PARAMS)), *PARAMS)
     if r.returncode != 0:
         log(f"coordinator unreachable ({r.stderr.strip() or r.stdout.strip()}) — fail open (ADR-0003)")
         return None
@@ -155,15 +165,193 @@ def burn(session):
     return ST.burn(session)
 
 
-# ---------------- beat-gen (validated) ----------------
-def propose(context, n=4):
-    """Ollama beat-gen, then schema-validate + red-line-filter (lucid_safety). [] -> type-your-own."""
+# ---------------- beat-gen (grounded + validated) ----------------
+def propose(context, n=4, rating="sfw", frame_b64=None):
+    """Ollama beat-gen with the rating-selected steering (sfw|mature) and the current frame attached
+    for grounding, then schema-validate + red-line-filter (lucid_safety). [] -> type-your-own. The
+    red-line is rating-INDEPENDENT and always fail-closed; `rating` only swaps the creative clause."""
     try:
-        raw = E._ollama_json(E.SYS_SFW.format(n=n), context)
+        raw = E._ollama_json(E.build_sys(rating, n), context,
+                             images=[frame_b64] if frame_b64 else None)
     except Exception as e:
         log(f"beat-gen failed ({e}) — type your own")
         return []
     return S.validate_beats(raw, n)
+
+
+def _max_rating(*ratings):
+    """The dream's content rating is a MONOTONE floor (sfw < mature): once any frame grounds mature it
+    never silently drops back on a later frame. That keeps the render LoRA stable across a dream (no
+    per-frame flicker) AND means a typed-own beat fired before a frame's menu has rolled inherits the
+    dream's established rating instead of a blind sfw. Unknown/None -> sfw (safe default)."""
+    return "mature" if any(r == "mature" for r in ratings) else "sfw"
+
+
+# ---------------- tree helpers (the chain is a tree via `parent`; linear is the 1-lane case) ----------
+def _by_id(chain):
+    return {n["id"]: n for n in chain["nodes"]}
+
+
+def _node_or_tip(chain, node_id):
+    """The node to act on: an explicit id (branch from there), else the latest append (the linear tip).
+    A bad/unknown id degrades to the tip rather than erroring — model proposes, code disposes."""
+    if node_id is None:
+        return chain["nodes"][-1]
+    return _by_id(chain).get(node_id, chain["nodes"][-1])
+
+
+def _ancestry(chain, node):
+    """root -> node (inclusive) following parent pointers — the branch's own spine. For a linear chain
+    the tip's ancestry is every node, so callers that pass the tip get the legacy whole-chain behaviour."""
+    by = _by_id(chain)
+    line, cur, seen = [], node, set()
+    while cur is not None and cur["id"] not in seen:
+        line.append(cur); seen.add(cur["id"]); cur = by.get(cur.get("parent"))
+    return list(reversed(line))
+
+
+def _next_id(chain):
+    """A fresh node id that can't collide with an existing sibling (parent+1 collides when a node already
+    has a child — i.e. the moment a take branches). Monotonic over the whole tree."""
+    return max(n["id"] for n in chain["nodes"]) + 1
+
+
+# ---------------- moment annotations (notes) — spatial + semantic feed-forward ----------------
+NOTE_TAGS = ("more", "less", "hold", "change")
+
+
+def _note_seq(chain):
+    """A monotonic per-chain note ordinal so a removed note's id is never re-minted (stable refs for
+    the frontend). Derived from the max existing "nt<seq>" ordinal across EVERY node + 1, so it keeps
+    climbing even after a delete — code disposes, deterministically."""
+    hi = -1
+    for n in chain["nodes"]:
+        for note in (n.get("notes") or []):
+            nid = str(note.get("id", ""))
+            if nid.startswith("nt") and nid[2:].isdigit():
+                hi = max(hi, int(nid[2:]))
+    return hi + 1
+
+
+def add_note(session, node_id, t, tag, text=""):
+    """Attach a moment annotation to a node (ADR-0023 spatial + semantic feed-forward). `tag` is one of
+    NOTE_TAGS (else ValueError); `t` is clamped to >= 0; `text` is UNTRUSTED — if present it must pass
+    the red-line gate (else ValueError) so a steered prompt can never carry it past the gate later. The
+    note is appended to the node's `notes` list with a monotonic per-chain id and persisted. Returns the
+    note dict. Raises ValueError on a bad tag, red-line-failing text, or an unknown node id."""
+    if tag not in NOTE_TAGS:
+        raise ValueError(f"bad note tag {tag!r} (expected one of {NOTE_TAGS})")
+    t = max(0.0, float(t))
+    text = text or ""
+    if text and not S.red_line_ok(text):   # untrusted free-text — fail-closed, exactly like a prompt
+        raise ValueError("note text refused by red-line gate")
+    chain = load_chain(session)
+    node = _by_id(chain).get(node_id)
+    if node is None:
+        raise ValueError(f"no such node {node_id!r}")
+    note = {"id": "nt" + str(_note_seq(chain)), "t": t, "tag": tag, "text": text}
+    node.setdefault("notes", []).append(note)
+    save_chain(session, chain)
+    return note
+
+
+def remove_note(session, node_id, note_id):
+    """Drop a note by id from a node. Returns True iff a note was removed (False if the node or note is
+    unknown — idempotent delete). Persists only when something actually changed."""
+    chain = load_chain(session)
+    node = _by_id(chain).get(node_id)
+    if node is None:
+        return False
+    notes = node.get("notes") or []
+    kept = [n for n in notes if n.get("id") != note_id]
+    if len(kept) == len(notes):
+        return False
+    node["notes"] = kept
+    save_chain(session, chain)
+    return True
+
+
+def _steering_suffix(notes):
+    """A SHORT deterministic prompt suffix that feeds a parent's notes forward to the next beat (code
+    disposes — sorted by `t`, fixed phrasing per tag). Empty string when there are no notes. The caller
+    appends this to the base prompt and gates the COMBINED string, so steering text is red-line-gated too."""
+    parts = []
+    for n in sorted(notes, key=lambda x: x.get("t", 0.0)):
+        tag, text = n.get("tag"), (n.get("text") or "").strip()
+        if tag == "more":
+            parts.append("; emphasize " + (text or "this"))
+        elif tag == "less":
+            parts.append("; less " + (text or "of this"))
+        elif tag == "hold":
+            parts.append("; hold the framing and composition")
+        elif tag == "change":
+            parts.append("; change " + (text or "this"))
+    return "".join(parts)
+
+
+def _anchor_for(session, parent, notes, anchor_name):
+    """Choose the spatial anchor frame for the next beat. If the parent has a `hold` note AND a clip,
+    extract the frame at the LAST hold note's `t` (E.extract_frame_at, store-owned path); on success use
+    it, else fall back to the parent's stored `out_frame`. No hold note / no clip / extraction failure
+    all degrade to the last frame — fail-open, the dream still advances."""
+    holds = [n for n in notes if n.get("tag") == "hold"]
+    clip = parent.get("clip")
+    if not holds or not clip:
+        return parent["out_frame"]
+    t = max(0.0, float(holds[-1].get("t", 0.0)))   # the LAST hold note in list order
+    ref_name, abs_path = ST.frame_ref(session, ST.is_private(session), anchor_name)
+    anchor = E.extract_frame_at(clip, t, ref_name, out_path=abs_path)
+    return anchor if anchor else parent["out_frame"]
+
+
+def _frame_abs(session, node):
+    """Absolute path of a node's anchor frame (privacy-aware), or None if unresolvable — grounding then
+    degrades to the text-only, SFW-default path rather than failing the menu."""
+    try:
+        return ST.frame_abs(session, ST.is_private(session), node.get("out_frame"))
+    except Exception:
+        return None
+
+
+def _tip_frame_abs(session, chain):   # back-compat shim
+    return _frame_abs(session, chain["nodes"][-1])
+
+
+def roll_menu(session, chain, n=4, node=None):
+    """Roll the held menu for a node (default the tip) GROUNDED on its actual frame (ADR-0014 §6).
+    Returns (beats, caption, rating): one VLM pass captions + content-rates the frame (premise-aware,
+    safe default 'sfw'), then beats are proposed with the rating-selected steering AND the frame image,
+    with the story context taken along THAT node's branch. The caption is red-line-checked before it is
+    ever fed back / persisted / shown. Pure orchestration over E + S; the seam beats_for_node rolls against."""
+    node = node or chain["nodes"][-1]
+    frame_b64 = E.frame_to_b64(_frame_abs(session, node))
+    caption, rating = E.ground_frame(frame_b64, chain.get("premise"))
+    if caption and not S.red_line_ok(caption):     # a model-written caption is untrusted text too
+        caption = None
+    beats = propose(context_for(session, caption=caption, node=node), n=n, rating=rating, frame_b64=frame_b64)
+    return beats, caption, rating
+
+
+def beats_for_node(session, node_id=None, n=4, roll=True):
+    """The HELD "what happens next" menu for a node (default the tip; an explicit id branches from an
+    earlier beat). The menu is a deterministic property of THAT frame: proposed once, persisted on the
+    node, re-served verbatim — see beats_for_tip's contract below. Per-node so every beat in the tree
+    (the lit tip OR an alternate take you've scrolled back to) carries its own held set of next moves."""
+    chain = load_chain(session)
+    node = _node_or_tip(chain, node_id)
+    held = node.get("beats")
+    if isinstance(held, list) and held:            # already rolled for this frame — hold it
+        return held
+    if not roll:                                   # in-flight: never roll, just serve what's held
+        return held if isinstance(held, list) else []
+    proposed, caption, rating = roll_menu(session, chain, n=n, node=node)
+    if proposed:                                   # seal only a real menu (don't pin a transient [])
+        node["beats"] = proposed
+        node["rating"] = _max_rating(node.get("rating"), rating)   # monotone floor (sticky-up)
+        if caption:
+            node["caption"] = caption
+        save_chain(session, chain)
+    return proposed
 
 
 def beats_for_tip(session, n=4, roll=True):
@@ -184,31 +372,26 @@ def beats_for_tip(session, n=4, roll=True):
     Persisting onto the tip is the one late-bound write to an otherwise append-only node; it is sealed
     once a child node is appended (a new tip with no `beats` is what the next turn rolls against).
     """
-    chain = load_chain(session)
-    tip = chain["nodes"][-1]
-    held = tip.get("beats")
-    if isinstance(held, list) and held:           # already rolled for this frame — hold it
-        return held
-    if not roll:                                   # in-flight: never roll, just serve what's held
-        return held if isinstance(held, list) else []
-    proposed = propose(context_for(session), n=n)
-    if proposed:                                   # seal only a real menu (don't pin a transient [])
-        tip["beats"] = proposed
-        save_chain(session, chain)
-    return proposed
+    return beats_for_node(session, None, n=n, roll=roll)
 
 
 # ---------------- one leased, confirmed-evicted, gated video beat ----------------
-def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=False, length=None):
+def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=False, length=None,
+                   rating="sfw", guides=None):
     """B1 dance: actively evict beat model (`ollama stop`) + confirm -> lease -> generate -> release. Returns clip path,
     or None to skip the turn (fail open). The prompt MUST already have passed S.gate_prompt.
     Private sessions render to a sealed subdir and the clip is moved to tmpfs (ADR-0016).
+    `rating` (the tip frame's sealed content rating) sets the render LoRA strength so a SFW beat is
+    not rendered by the explicit-anatomy graph (code disposes; default SFW = LoRA off).
     `tier` (default "batch") is threaded to lease_spawn; the drainer passes "best-effort".
 
     `external_lease=True` (warm-keep, ADR-0015): the CALLER already holds a batch lease and the
     coordinator already owns a ready ComfyUI, so this turn neither Spawns nor Releases — it just
     evicts the beat model, confirms ComfyUI is up, and generates. The default (False) preserves the
-    per-beat Spawn/Release dance for every one-shot caller (create_from_image, the drain path)."""
+    per-beat Spawn/Release dance for every one-shot caller (create_from_image, the drain path).
+
+    `guides` (LTX-only spatial feed-forward): an ordered list of (frame_abs_path, t_seconds, tag)
+    forwarded to E.run_beat, which pins each frame as an LTXVAddGuide keyframe (fail-open; Wan ignores)."""
     private = ST.is_private(session)
     if not S.force_evict(E.MODEL):
         log(f"could not evict '{E.MODEL}' from VRAM — refusing to load video (B1 fail-closed)")
@@ -228,8 +411,8 @@ def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=F
                 return None
             scope = ST._priv_output_dir(session) if private else None  # never a global output walk
             return ST.place_clip(session, private, _newest_clip(scope))
-        clip, _seed = E.run_beat(prompt, anchor_frame, length=length,
-                                 output_prefix=ST.output_prefix(session, private))
+        clip, _seed = E.run_beat(prompt, anchor_frame, length=length, rating=rating,
+                                 output_prefix=ST.output_prefix(session, private), guides=guides)
         return ST.place_clip(session, private, clip)  # private: move out of shared output -> tmpfs
     except Exception as e:
         log(f"generation error ({e}) — likely preempted (SIGKILL); clip lost, loop yields")
@@ -254,8 +437,11 @@ def _newest_clip(scope_dir=None):
     return best
 
 
-def step(session, prompt, label, tier="batch", external_lease=False, is_current=None, length=None):
-    """One linear turn: gate the prompt (both paths), generate under lease, append a node.
+def step(session, prompt, label, tier="batch", external_lease=False, is_current=None, length=None,
+         parent_id=None):
+    """One leased turn: gate the prompt (both paths), generate under lease, append a node.
+    `parent_id` (optional) forks the new beat from THAT node instead of the tip — a new take growing
+    from an earlier frame (the tree branches). Default None = continue the linear tip (legacy callers).
     `length` (optional) is the caller's chosen next-segment frame count; clamped in lucid_engine
     (code disposes) and recorded on the node so the chain can show per-segment duration.
     `tier` (default "batch") preserves the interactive callers; the ADR-0019 drainer passes
@@ -269,37 +455,91 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
     `/api/delete`, or burn arrived), writing this stale in-memory chain back would resurrect deleted
     data or clobber the new dream. If the caller says the turn is no longer current, we discard the
     clip (a cache artifact) and leave the chain untouched — fail-open, exactly like a preempt."""
-    gated = S.gate_prompt(prompt)
-    if gated is None:
-        raise SystemExit("prompt refused by red-line gate (B3)")
     private = ST.is_private(session)
     chain = load_chain(session)
-    parent = chain["nodes"][-1]
+    parent = _node_or_tip(chain, parent_id)
     seg_len = E.clamp_length(length)
-    clip = generate_video(session, gated, parent["out_frame"], tier=tier,
-                          external_lease=external_lease, length=seg_len)
+    # Feed the PARENT node's moment annotations forward (ADR-0023). STEERING (semantic): a short,
+    # deterministic suffix built from the notes is appended to the base prompt BEFORE the gate, so the
+    # steering text is red-line-gated alongside the prompt (no note can carry text past the gate). With
+    # no notes the suffix is "" and the prompt is unchanged — legacy behaviour intact.
+    notes = parent.get("notes") or []
+    # DECOMPOSITION (image-capable): screenshot each tagged MOMENT of the parent clip, hand the frames
+    # + their per-note intent to the VLM (E.decompose_notes) and let it author one refined i2v
+    # continuation prompt. The model SEES what the viewer pointed at; this is preferred over the blind
+    # text-suffix. Built BEFORE any GPU/lease work. Fail-open (ADR-0003): if there are no notes, or the
+    # model is unavailable / returns None, we fall back to the deterministic text-suffix path below, and
+    # with NO notes prompt_final == (prompt or "") — legacy behaviour exactly.
+    tagged = []
+    # GUIDES (image-conditioning, LTX-only): the SAME per-note frames screenshotted for the VLM are
+    # also collected as (abs_path, t, tag) so the LTX engine can pin guide-conditioning on each tagged
+    # MOMENT of the timeline. Only the clip-bearing parent contributes (the clip-less opening has no
+    # timeline to pin a guide on); applied to the engine below ONLY when the LTX engine is active.
+    guides = []
+    if notes:
+        clip = parent.get("clip")
+        for i, note in enumerate(sorted(notes, key=lambda x: x.get("t", 0.0))):
+            b64 = None
+            if clip:
+                nm, ap = ST.frame_ref(session, private, f"{session}_note{i}.png")
+                fn = E.extract_frame_at(clip, note.get("t", 0.0), nm, out_path=ap)
+                if fn:
+                    b64 = E.frame_to_b64(ap)
+                    guides.append((ap, float(note.get("t", 0.0)), note.get("tag")))   # LTX timeline pin
+            else:                                       # clip-less opening: b64 the parent's stored frame
+                b64 = E.frame_to_b64(_frame_abs(session, parent))
+            if b64:
+                tagged.append({"b64": b64, "tag": note.get("tag"),
+                               "text": note.get("text", ""), "t": float(note.get("t", 0.0))})
+    refined = E.decompose_notes(prompt or "", tagged, premise=chain.get("premise")) if tagged else None
+    # VLM decomposition preferred; the deterministic steering suffix is the FALLBACK (model unavailable
+    # / returned None / no tagged frames). The model's own output is still red-line-gated below.
+    prompt_final = refined if refined else ((prompt or "") + _steering_suffix(notes))
+    gated = S.gate_prompt(prompt_final)
+    if gated is None:
+        raise SystemExit("prompt refused by red-line gate (B3)")
+    nid = _next_id(chain)   # collision-free across the tree (parent+1 would clash once a node forks);
+    # computed up-front so the spatial anchor frame gets the new node's stable name.
+    # ANCHOR (spatial): a `hold` note pins the next beat to a tagged MOMENT of the parent clip, not just
+    # its last frame; falls back to parent["out_frame"] on no-hold / no-clip / extraction failure.
+    anchor = _anchor_for(session, parent, notes, f"{session}_n{nid}_anchor.png")
+    # The monotone content floor governs the render LoRA — taken along the NEW beat's branch (parent's
+    # ancestry), so a take consistent with the frame it grows from inherits that line's rating, and a
+    # SFW branch off a SFW ancestor isn't dragged mature by an unrelated sibling. The opening (typed
+    # before its first roll) falls back to "sfw" — the safe default. The red-line gate is independent.
+    rating = _max_rating(*(n.get("rating") for n in _ancestry(chain, parent)))
+    # GUIDES gate: hand the per-moment guide frames to the engine ONLY for the LTX engine (10eros),
+    # which applies them as guide-conditioning (fail-open in the engine). Wan keeps its VLM-decomposed
+    # prompt + single anchor path, so it gets guides=None. No notes -> guides is [] -> None either way.
+    g = guides if (guides and E.current_engine() == "10eros") else None
+    clip = generate_video(session, gated, anchor, tier=tier,
+                          external_lease=external_lease, length=seg_len, rating=rating, guides=g)
     if clip is None:
         log("turn skipped (fail open) — chain unchanged")
         return None
     if is_current is not None and not is_current():
         log("turn superseded mid-beat (session restarted/deleted) — discarding clip, chain unchanged")
         return None
-    nid = parent["id"] + 1
     ref_name, abs_path = ST.frame_ref(session, private, f"{session}_n{nid}.png")
     out_frame = E.extract_last_frame(clip, ref_name, out_path=abs_path)  # store owns the path
     node = {"id": nid, "parent": parent["id"], "label": label, "prompt": gated,
-            "seed": None, "clip": clip, "out_frame": out_frame, "length": seg_len}
+            "seed": None, "clip": clip, "out_frame": out_frame, "length": seg_len, "rating": rating}
     chain["nodes"].append(node)
     save_chain(session, chain)
     return node
 
 
-def context_for(session):
-    """Linear story-so-far from the chain (the labels along the single spine), led by the session's
-    premise (the initial prompt) so every proposed beat stays on-theme — not just the opening."""
+def context_for(session, caption=None, node=None):
+    """Story-so-far from the chain, led by the session's premise (the initial prompt) so every proposed
+    beat stays on-theme. `node` (optional) scopes the labels to THAT beat's branch (root -> node), so a
+    take growing from an earlier frame is proposed against its own line, not a sibling's; default None =
+    the linear whole-chain spine (legacy). `caption` (optional) is the freshly-grounded description of
+    the current frame, used as "on screen now" before it has been sealed on the node."""
     chain = load_chain(session)
-    labels = [n["label"] for n in chain["nodes"] if n["label"] not in (None, "opening")]
-    cap = chain["nodes"][-1].get("caption")
+    here = _by_id(chain).get(node["id"]) if node else None
+    spine = _ancestry(chain, here) if here else chain["nodes"]
+    labels = [n["label"] for n in spine if n["label"] not in (None, "opening")]
+    cap = caption if caption is not None else (here or chain["nodes"][-1]).get("caption")
     parts = []
     premise = chain.get("premise")
     if premise:
@@ -341,9 +581,8 @@ def _main():
         else:
             print(f"nothing private to burn for '{args.session}'")
     elif args.cmd == "beats":
-        ctx = context_for(args.session)
-        print("context:", ctx)
-        beats = propose(ctx)
+        beats, caption, rating = roll_menu(args.session, load_chain(args.session))
+        print(f"on screen: {caption or '(ungrounded)'}  |  rating: {rating}")
         if not beats:
             print("  (no valid beats — type your own)")
         for i, bt in enumerate(beats):
@@ -352,7 +591,7 @@ def _main():
         if args.prompt:
             prompt, label = args.prompt, args.label
         else:
-            beats = propose(context_for(args.session))
+            beats, _cap, _rating = roll_menu(args.session, load_chain(args.session))
             if not beats:
                 raise SystemExit("no beats proposed; pass --prompt to type your own")
             chosen = beats[args.choose or 0]

@@ -42,6 +42,10 @@ parent=<id>)`).
 
 ## Env knobs
 - `LUCID_MODEL` (default `gemma4:latest`) — Ollama model for beat-gen.
+- `LUCID_ENGINE` — i2v engine: `wan` (Wan 2.2 Remix GGUF + NSFW LoRA, ~17 GB) or
+  `10eros`/`ltx` (LTX-2.3 / 10Eros via `build_10eros_i2v`, Q6 ~22 GB; the lane the ADR-0025
+  spatial guides ride on). Falls back to the registry `i2v-engine` role, else `wan`, so
+  nothing changes until flipped (also live-toggleable from the web UI).
 - `LUCID_WORKFLOW` — override the i2v workflow JSON.
 - `LUCID_PORT` (default 8765), `LUCID_DREAMS`, `OLLAMA_HOST`, `COMFY_HOST`.
 
@@ -65,6 +69,61 @@ left open:
   `chain.json`, and **fails open** if the coordinator is down. Test seams (`LUCID_GEN_CMD`,
   `LUCID_READY_CMD`) prove the dance without a GPU.
 
+Since landed: ComfyUI **warm-keep** across the lease (`test_lucid_warmkeep.py`), the held
+per-frame "no reroll" menu, and the **React web surface** (`lucid_web.py` + `web/`) that replaces
+the stdlib panel — the player, the held beat menu, and the dream-tree view all live there.
+
 Still owed (see ADR-0015): the **image-side** likeness guard (B2 — a `seed_image_guard` hook, currently
-fail-closed off), ComfyUI warm-keep, the kill/keep metric, and everything behind the greenlight gate
-(branching, QML panel, §6 grounding, "set as wallpaper").
+fail-closed off), the kill/keep metric, the consent gate + opt-in, and "set as wallpaper" via the
+ADR-0005 tx.
+
+### Grounding + auto content-mode (ADR-0014 §6)
+
+The narrator is a **vision** model (`qwen2.5vl`) — so the MVP now lets it *see* the current frame
+instead of dreaming blind off a constant placeholder:
+
+- `lucid_engine.ground_frame(frame_b64, premise)` — one VLM pass over the tip frame returns a one-line
+  **caption** and an inferred content **rating** (`sfw`|`mature`). Sealed once per frame on the node
+  (`beats_for_tip`), beside the held menu, so it never re-rolls.
+- The caption grounds "on screen now" for every later beat; the rating is **model-proposes/code-disposes**:
+  only a literal `"mature"` opens up, *anything* uncertain (unreachable model, bad JSON, unknown value)
+  collapses to the safe default `sfw`. The rating swaps **only** the creative steering clause
+  (`build_sys`) and the render LoRA strength (`lora_low_for` — SFW keeps the explicit-anatomy LoRA OFF
+  so a SFW beat isn't rendered by an explicit graph). It can **never** widen the red line: the
+  deterministic `lucid_safety.red_line_ok` (no minors / no real people / no injection) runs fail-closed
+  on every beat **and** on the model-written caption, independent of the rating. Tests:
+  `test_lucid_ground.py` (disposal rules, no model).
+- Auto-inferred (no user toggle) from frame + premise: a clearly-adult premise can rate a tame opening
+  `mature`. The rating is a **monotone floor** along the chain (`_max_rating`): once any frame grounds
+  mature it stays mature for the rest of the dream — which keeps the render LoRA stable (no per-frame
+  flicker) AND means a **typed-own** beat fired before a frame's menu has rolled inherits the dream's
+  established rating instead of a blind `sfw` (`step` propagates the floor to every node it creates; only
+  the opening, typed before its first roll, falls back to the safe `sfw` default). Surfaced honestly — a
+  small `mature` tag rides the segment + the per-segment **prompt** is now shown under the player (the
+  surface used to hide it).
+
+### The dream tree realized + spatial feed-forward annotations (ADR-0025)
+
+ADR-0015 shipped the loop as a **line**; ADR-0025 turns on the branching half ADR-0014 always
+bet on, *without* superseding ADR-0015 (the append-only/atomic/private-aware chain and the held
+"no reroll" menu are kept verbatim — the chain's existing `parent` pointer is the seam the tree
+grows from). Two features:
+
+- **Branching takes.** Fork any beat (not just the tip) and keep both renders — reversibility is
+  native because every take is a cached file, never an overwrite. The held menu generalizes from
+  per-*tip* to per-*node*; `Chain.tsx` draws the result as a git-graph **dream tree**.
+- **Spatial feed-forward annotations ("tag a moment").** Drop a note on a region of the current
+  frame; on the next render it conditions the model via ComfyUI's own `LTXVAddGuide`
+  (`_inject_ltx_guides`) — keyframe guide-conditioning, only on the **10eros/LTX** engine
+  (`current_engine() == "10eros"`). Annotation free text feeds the model, so it is gated like any
+  prompt (B3 red-line), and the whole guide path is **additive + fail-open**: if the splice can't
+  land it degrades to today's single-anchor render, never a break.
+
+Surfaces: backend `lucid_linear.py` (tree fork, per-node menu, note persistence, step feed-forward),
+`lucid_engine.py` (`extract_frame_at`, `decompose_notes`, `_inject_ltx_guides`), `lucid_web.py`
+(`/api/note`, `?node=`, `parent`); frontend `web/src/Chain.tsx` + `api.ts`.
+
+**Verification: logic + graph-injection verified; GPU end-to-end NOT.** Unit suites green
+(`test_lucid_linear` 21, `test_lucid_warmkeep` 6, `test_lucid_engine_10eros` 5); the `LTXVAddGuide`
+splice is proven offline against the real `10eros-i2v.api.json`. Confirming the guides actually
+*land* on a render needs a 4090/ComfyUI run (`verify_guides.py --run`).

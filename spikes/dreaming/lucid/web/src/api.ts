@@ -5,15 +5,24 @@ export type Readiness = {
   coordinator: boolean; comfyui: boolean; ollama: boolean
   can_dream: boolean; why: string[]
 }
+// ADR-0023 spatial feed-forward: a "tag a moment" annotation pinned to a timestamp on a node's clip.
+// `hold` is the steering primitive — it anchors the next beat on that exact moment (more/less/change steer
+// the direction). The backend folds a node's notes into the next beat grown from it.
+export type Note = { id: string; t: number; tag: 'more' | 'less' | 'hold' | 'change'; text: string }
 export type DreamNode = {
   id: number; parent: number; label: string; prompt: string
   clip: string | null; out_frame: string; length?: number   // chosen segment frame count (@16fps); absent on the opening
+  caption?: string | null            // VLM grounding: one-line description of what's on this frame (opening has only this)
+  rating?: 'sfw' | 'mature'          // inferred content rating sealed at roll time; drives the render + an honest tag
+  notes?: Note[]                     // moment tags steering the next beat (spatial feed-forward)
 }
 export type Chain = { nodes: DreamNode[] } | null
 export type TurnPhase = 'idle' | 'dreaming' | 'done' | 'skipped' | 'refused' | 'error'
 export type Turn = { phase: TurnPhase; label: string | null; error: string | null; elapsed?: number }
+export type Engine = { active: string; options: string[] }
 export type LucidState = {
   session: string; readiness: Readiness; chain: Chain; private: boolean; turn: Turn
+  engine?: Engine   // ADR-0023: which i2v backend run_beat uses ('wan' | '10eros')
 }
 export type Beat = { label: string; prompt: string }
 
@@ -49,10 +58,11 @@ export function useLucidState() {
 // so the menu is pinned to THIS frame of THIS dream — never aliased to a same-length frame of a prior
 // dream after a burn/delete + restart (the old chain-length key collided). staleTime Infinity because
 // the server guarantees the hold; the key change (new tip) is what advances the story.
-export function useBeats(enabled: boolean, session: string, tipId: number) {
+export function useBeats(enabled: boolean, session: string, nodeId: number) {
   return useQuery<Beat[]>({
-    queryKey: ['beats', session, tipId],
-    queryFn: () => getJSON('/api/beats').then((j) => j.beats ?? []),
+    queryKey: ['beats', session, nodeId],
+    // `node` grounds the menu on THAT beat (the tip = continue, an earlier beat = branch a new take)
+    queryFn: () => getJSON('/api/beats?node=' + nodeId).then((j) => j.beats ?? []),
     enabled,
     staleTime: Infinity,
   })
@@ -76,12 +86,20 @@ function useStateMutation<V>(fn: (v: V) => Promise<any>, resets: unknown[][] = [
   })
 }
 
-export const useDream = () => useStateMutation((b: { prompt: string; label: string; length?: number }) => post('/api/dream', b))
+export const useDream = () => useStateMutation((b: { prompt: string; label: string; length?: number; parent?: number }) => post('/api/dream', b))
 export const useStart = () =>
   useStateMutation((b: { private: boolean; image_b64?: string; text?: string; consent?: boolean }) =>
     post('/api/start', b), [['beats']])
+export const useSetEngine = () => useStateMutation((engine: string) => post('/api/engine', { engine }))
 export const useBurn = () => useStateMutation((_: void) => post('/api/burn'), [['beats']])
 export const useDelete = () => useStateMutation((_: void) => post('/api/delete'), [['beats']])
+
+// ---- ADR-0023 moment tags (spatial feed-forward): annotate a node's clip; steers the next beat ----
+// Both go through useStateMutation so a settle invalidates ['state'] — the next poll reflects node.notes.
+export const useAddNote = () =>
+  useStateMutation((b: { node: number; t: number; tag: string; text?: string }) => post('/api/note', b))
+export const useDeleteNote = () =>
+  useStateMutation((b: { node: number; id: string }) => post('/api/note/delete', b))
 
 // ---- ADR-0019 reviewable request queue (the durable held + needs-review board) ----
 // Mirrors lucid_hub.board(): path-free by design (no snapshot, no spool location ever reaches here).
