@@ -59,11 +59,19 @@ with no warning). Everything here is therefore VRAM-gated and PID-safe.
 - **Packaging works** and is *light*: `BuildCookRun` ~47 s, no 22 GB spike (warm DDC +
   minimal blueprint content); 914 MB staged tree.
 - **Packaged runtime boots offscreen, loads CalmWallpaper in 42 ms, Vulkan, no crash.**
-- **FULL (native Lumen, 1440p, uncapped): UnrealGame ≈ 1.0–1.2 GB per-process** —
-  vs the ~22 GB editor. Card-level delta on the first run was contaminated by a gen
-  starting mid-sample (hence the sustained-calm + baseline-delta hardening).
-- **PENDING:** the *clean* FULL + **FLOOR** numbers (card-delta), then the coexistence
-  test, then frame-time (`stat`/CSV profiler), then the Phase-A verdict.
+- **FULL (native Lumen, 1440p, uncapped): ≈1.2 GB** — UnrealGame per-process 1187–1201 MiB;
+  clean-moment card-delta ~1.3 GB. GPU util 96–100%.
+- **FLOOR (Lumen GI+Refl off, pool-cap 512, 5 fps): ≈1.0 GB** — per-process 970–980 MiB;
+  clean card-delta 1000–1041 MiB (agree within 3%, so per-process is NOT undercounting here).
+  GPU util 39%.
+- **Read:** VRAM feasibility is emphatic — the packaged Lumen wallpaper is ~1 GB (vs the
+  ~22 GB editor), leaving ~23 GB for gens/models. On THIS tiny primitive scene the throttle
+  ladder's real lever is **GPU-time (96%→39% util), not VRAM** (only ~250 MB freed FULL→FLOOR):
+  the ~1 GB base runtime dominates and doesn't shrink. A richer dark-ride tableau
+  (textures/Nanite/more Lumen surfaces) will grow VRAM and make the pool-cap + Lumen-off yield
+  more — so re-measure on a representative-richness scene before locking the Phase-B budget.
+- **PENDING:** live coexistence (UE-FLOOR + gen + Ollama, mutual interference), frame-time
+  (CSV profiler), throttle LATENCY via Remote Control, richer-scene re-measure, then the verdict.
 
 ## Next docs owed (after the numbers settle)
 Fill the asserted-number tables in `cvar_ladder.md`/`packaged_run.md`; then the real

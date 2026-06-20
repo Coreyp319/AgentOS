@@ -32,7 +32,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CMD="${HOME}/UnrealEngine/Engine/Binaries/Linux/UnrealEditor-Cmd"
 PROJECT="${HOME}/UnrealProjects/AgentOSBlank/AgentOSBlank.uproject"
-SCENE="${SCRIPT_DIR}/scene_setup.py"
+# Which authoring script to run + which success marker to wait for. Defaults
+# build the primitive scaffold (scene_setup.py); override to author the
+# gradient-wave tableau, e.g.:
+#   SCENE_SCRIPT=gradient_wave_setup.py MARK='Abyssal gradient-wave scene built' \
+#     bash spikes/ue-probe/author_scene.sh
+SCENE="${SCRIPT_DIR}/${SCENE_SCRIPT:-scene_setup.py}"
 LOG="${SCRIPT_DIR}/ue_author.log"
 LEVEL_UMAP="${HOME}/UnrealProjects/AgentOSBlank/Content/AgentOS/CalmWallpaper.umap"
 
@@ -83,7 +88,7 @@ echo "  log  : $LOG"
 # idle editor again. Authoring is <2 min; if we don't see the success marker (or
 # a natural exit) within AUTHOR_TIMEOUT, we kill it and report FAIL.
 TIMEOUT="${AUTHOR_TIMEOUT:-360}"
-MARK='calm Lumen wallpaper scene built'
+MARK="${MARK:-calm Lumen wallpaper scene built}"
 
 "$CMD" "${ARGS[@]}" > "$LOG" 2>&1 &
 UE_PID=$!
@@ -111,7 +116,7 @@ grep -nE 'AgentOS scene_setup|calm Lumen wallpaper scene built|save_current_leve
 echo "--- python errors (should be empty) ---"
 grep -niE 'LogPython:.*(error|traceback)|AttributeError|TypeError|RuntimeError|ModuleNotFound' "$LOG" | tail -n 8
 
-if [[ -f "$LEVEL_UMAP" ]] && grep -q 'calm Lumen wallpaper scene built' "$LOG"; then
+if [[ -f "$LEVEL_UMAP" ]] && grep -q "$MARK" "$LOG"; then
   echo "PASS: scene authored + saved -> $LEVEL_UMAP"
   ls -la --time-style=+%H:%M:%S "$LEVEL_UMAP"
   exit 0
