@@ -802,14 +802,18 @@ class Handler(BaseHTTPRequestHandler):
             _end_session()                       # leave the current dream cleanly (it stays saved)
             set_session(sess)
             return self._json200({"ok": True, "session": sess})
-        if path == "/api/rename":                # rename the CURRENT library dream (chain.name)
-            sess = cur_session()
+        if path == "/api/rename":                # rename a saved library dream — the current one, or any by `session`
+            sess = req.get("session")
+            if sess is None:                     # no session -> the CURRENT dream (back-compat)
+                sess = cur_session()
+            elif not (isinstance(sess, str) and L.ST.valid_session(sess)):   # path-safety, mirrors /api/open
+                return self._json200({"error": "bad session"})
             chain = chain_or_none(sess)
             if chain is None or chain.get("private"):
-                return self._json200({"error": "no dream to rename"})
+                return self._json200({"error": "no such saved dream"})
             chain["name"] = str(req.get("name") or "").strip()[:80] or None
             L.ST.save_chain(sess, False, chain)
-            return self._json200({"ok": True, "name": chain["name"]})
+            return self._json200({"ok": True, "name": chain["name"], "session": sess})
 
         # ---------- stash: encrypted, passphrase-locked private dreams ----------
         if path == "/api/stash/init":

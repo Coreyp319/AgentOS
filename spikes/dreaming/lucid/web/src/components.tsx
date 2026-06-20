@@ -1,6 +1,35 @@
-import { useState } from 'react'
-import { useBurn, useDelete, useSetEngine } from './api'
-import type { Readiness, Engine } from './api'
+import { useEffect, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
+import { useBurn, useDelete, useRenameDream, useSetEngine, useStashSave } from './api'
+import type { Readiness, Engine, StashStatus } from './api'
+
+// ADR-0028: the app's section nav — a calm, wordmark-anchored pill row that replaces the ad-hoc
+// showHome toggle / back-link / per-screen engine disclosure. Persistent across screens; the live
+// dream (if any) leads as its own named item with an "up" dot. Stays in the instrument register
+// (pill family, system voice, reserved-emoji vocab) so it never fights the cinematic stage below it.
+export function Nav({ active, hasDream, dreamName, onNavigate }: {
+  active: string; hasDream: boolean; dreamName?: string | null; onNavigate: (v: string) => void
+}) {
+  const items: { key: string; label: string; ic?: string; live?: boolean }[] = [
+    ...(hasDream ? [{ key: 'dream', label: dreamName || 'Current dream', live: true }] : []),
+    { key: 'new', label: 'New dream', ic: '✦' },
+    { key: 'library', label: 'Dreams' },
+    { key: 'stash', label: 'Stash', ic: '🔒' },
+    { key: 'settings', label: 'Settings' },
+  ]
+  return (
+    <nav className="nav" aria-label="Lucid sections">
+      {items.map((it) => (
+        <button key={it.key} className={'nav-item' + (active === it.key ? ' on' : '')}
+          aria-current={active === it.key ? 'page' : undefined} onClick={() => onNavigate(it.key)}>
+          {it.live && <span className="nav-dot" aria-hidden="true" />}
+          {it.ic && <span className="nav-ic" aria-hidden="true">{it.ic}</span>}
+          <span className="nav-lbl">{it.label}</span>
+        </button>
+      ))}
+    </nav>
+  )
+}
 
 // ADR-0023: pick the i2v backend that animates each beat. 'wan' = Wan 2.2 GGUF (the default),
 // '10eros' = LTX-2.3 / 10Eros. Switching drops the warm GPU lease so the next beat re-admits at the
@@ -90,13 +119,17 @@ function DangerTwoStep({ label, confirmLabel, onConfirm, busy, outcome }: {
   label: string; confirmLabel: string; onConfirm: () => void; busy?: boolean; outcome: Outcome
 }) {
   const [armed, setArmed] = useState(false)
+  // a11y: when the confirm arms, the activated button unmounts — land focus on the SAFE default (Cancel)
+  // so focus isn't dropped to <body> and an accidental Enter cancels rather than performs the destruction.
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { if (armed) cancelRef.current?.focus() }, [armed])
   return (
     <>
       {outcome && <div className={'banner ' + (outcome.ok ? 'good' : 'bad')}>{outcome.text}</div>}
       {armed ? (
-        <div className="row">
+        <div className="row" role="group" aria-label={label}>
           <button className="beat danger" disabled={busy} onClick={() => { setArmed(false); onConfirm() }}>{confirmLabel}</button>
-          <button className="ghost" onClick={() => setArmed(false)}>Cancel</button>
+          <button ref={cancelRef} className="ghost" onClick={() => setArmed(false)}>Cancel</button>
         </div>
       ) : (
         <button className="beat danger" style={{ marginTop: 10 }} onClick={() => setArmed(true)}>{label}</button>
@@ -105,14 +138,22 @@ function DangerTwoStep({ label, confirmLabel, onConfirm, busy, outcome }: {
   )
 }
 
-export function PrivateCard() {
+export function PrivateCard({ stash, onGoStash }: { stash?: StashStatus; onGoStash?: () => void }) {
   const burn = useBurn()
+  const save = useStashSave()
   const [outcome, setOutcome] = useState<Outcome>(null)
+  const [saveMsg, setSaveMsg] = useState<string | null>(null)
   async function doBurn() {
     const j = await burn.mutateAsync()
     setOutcome(j?.failed?.length
       ? { ok: false, text: `Some traces could NOT be wiped and remain on disk: ${j.failed.join('; ')}. Retried at next start; delete by hand to be certain.` }
       : { ok: true, text: `This dream is gone — ${j?.burned ?? 0} location(s) wiped.` })
+  }
+  async function doSave() {
+    setSaveMsg(null)
+    const j = await save.mutateAsync({})
+    // plain text (no leading emoji): this rides an aria-live region, where a glyph is read out as its name.
+    setSaveMsg(j?.ok ? 'Saved to your private stash — encrypted, reopen with your passphrase.' : (j?.error || 'Could not save.'))
   }
   return (
     <div className="card private">
@@ -120,22 +161,66 @@ export function PrivateCard() {
       <div className="note" style={{ marginTop: 4 }}>
         Kept in memory, not in your saved files. Never shown elsewhere, never set as wallpaper. Wiped when you log out — the one frame the renderer must write to disk is sealed and burned with it.
       </div>
+      {/* ADR-0028: persist a private dream by SEALING it into the encrypted stash (not the open library) */}
+      {stash?.unlocked ? (
+        <>
+          <button className="beat warm" style={{ marginTop: 10 }} disabled={save.isPending} onClick={doSave}>
+            {stash.saved_id ? '🔒 Update in private stash' : '🔒 Save to private stash'}
+          </button>
+          {saveMsg && <div className="note" style={{ marginTop: 4 }} role="status" aria-live="polite">{saveMsg}</div>}
+        </>
+      ) : (
+        <div style={{ marginTop: 8 }}>
+          <div className="note" style={{ opacity: 0.8 }}>
+            To keep this dream past logout, {stash?.exists ? 'unlock' : 'create'} your encrypted private stash, then return here to save it.
+          </div>
+          {/* a real control to the RIGHT place — the stash lives under the "Stash" section, not "Your dreams" */}
+          <button className="ghost" style={{ marginTop: 8 }} onClick={() => onGoStash?.()}>
+            {stash?.exists ? 'Unlock your stash' : 'Create your stash'} →
+          </button>
+        </div>
+      )}
       <DangerTwoStep label="🔥 Burn this dream now" confirmLabel="Burn permanently — this can't be undone" onConfirm={doBurn} busy={burn.isPending} outcome={outcome} />
     </div>
   )
 }
 
-export function LibraryCard() {
+export function LibraryCard({ name }: { name?: string | null }) {
   const del = useDelete()
+  const rename = useRenameDream()
   const [outcome, setOutcome] = useState<Outcome>(null)
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => { if (editing) { inputRef.current?.focus(); inputRef.current?.select() } }, [editing])
   async function doDelete() {
     const j = await del.mutateAsync()
     if (j?.failed?.length) setOutcome({ ok: false, text: `Some files could NOT be deleted: ${j.failed.join('; ')}. Delete by hand to be certain.` })
     // success -> chain becomes null -> this card unmounts
   }
+  async function doRename(e: FormEvent) {
+    e.preventDefault()
+    const next = val.trim()
+    setEditing(false)
+    if (next && next !== (name || '')) await rename.mutateAsync({ name: next })
+  }
   return (
     <div className="card">
-      <div className="note">Saved on this computer (your dream library) — kept until you delete it.</div>
+      {editing ? (
+        <form className="row" style={{ marginTop: 0 }} onSubmit={doRename}>
+          <input ref={inputRef} type="text" aria-label="Rename this dream" maxLength={80}
+            value={val} onChange={(e) => setVal(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') setEditing(false) }}
+            style={{ flex: '1 1 200px', marginTop: 0 }} />
+          <button type="submit" className="beat" style={{ width: 'auto', margin: 0 }} disabled={rename.isPending}>Save</button>
+          <button type="button" className="ghost" onClick={() => setEditing(false)}>Cancel</button>
+        </form>
+      ) : (
+        <div className="note" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span>Saved on this computer (your dream library) — kept until you delete it.</span>
+          <button className="ghost" style={{ padding: '4px 12px' }} onClick={() => { setVal(name || ''); setEditing(true) }}>Rename</button>
+        </div>
+      )}
       <DangerTwoStep label="🗑 Delete this dream" confirmLabel="Delete permanently — this can't be undone" onConfirm={doDelete} busy={del.isPending} outcome={outcome} />
     </div>
   )

@@ -115,6 +115,18 @@ check("rename updates the library label", rn.get("ok") and names.get(sess_a) == 
 _, bad = post("/api/open", {"session": "no-such-dream"})
 check("reopen of an unknown dream errors (no switch)", bad.get("error"))
 
+# ---- B1b: rename a NON-current saved dream by `session`, without opening it ----
+# current dream is sess_a here; rename sess_b (Beta) by session and confirm it targets the right one.
+_, rn2 = post("/api/rename", {"session": sess_b, "name": "Beta by session"})
+_, lib = get("/api/library")
+names = {d["session"]: d["name"] for d in lib["dreams"]}
+_, st = get("/api/state")
+check("rename-by-session renames the targeted dream", rn2.get("ok") and names.get(sess_b) == "Beta by session")
+check("rename-by-session does NOT switch the current dream", st["session"] == sess_a)
+check("rename-by-session leaves the other dream untouched", names.get(sess_a) == "Alpha renamed")
+_, rnbad = post("/api/rename", {"session": "../etc/passwd", "name": "x"})
+check("rename of an invalid session is rejected (path-safe)", rnbad.get("error"))
+
 # ================= the encrypted private stash =================
 _, ini = post("/api/stash/init", {"passphrase": "open-sesame"})
 check("stash init ok + auto-unlocked", ini.get("ok"))

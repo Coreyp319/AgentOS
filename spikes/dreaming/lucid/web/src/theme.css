@@ -1,6 +1,7 @@
 /* AgentOS instrument register (canon: integrations/design/instrument-tokens.md) + the Lucid-only
    authored-narrative serif. Data stays system-font; serif (Fraunces) is legal ONLY on the wordmark,
-   the beat caption, and the elapsed timer (per the visual-systems + brand reviews). */
+   the beat caption, the elapsed timer, and the model-authored narrative lines (beat / segment / future /
+   gutter prompts) — per the visual-systems + brand reviews. */
 :root{
   --inst-base:#12141c; --inst-deep:#161a28; --inst-horizon:#1a2238;
   --inst-text:#e6e9f0; --inst-muted:#8a90a0; --inst-label:#878c9b; /* G7/ADR-0019 F1b: #7a8090→#878c9b clears AA 4.53:1 on glass card */
@@ -24,6 +25,9 @@ body{
   -webkit-font-smoothing:antialiased;
 }
 .wrap{ max-width:760px; margin:0 auto; padding:36px 20px 72px; display:flex; flex-direction:column; gap:14px }
+/* the active dream view is roomier so the cinematic stage + side-gutter choices have space (the gutters
+   are pinned near their minimum at 760, leaving the choice cards too narrow); empty state stays at 760 */
+.wrap.wide{ max-width:1080px }
 
 /* wordmark — the editorial signature (flat ink, per brand review; not the gradient) */
 .brand{ display:flex; align-items:baseline; gap:12px; margin-bottom:6px }
@@ -52,7 +56,8 @@ body{
 @media (prefers-reduced-motion:reduce){ .disc-caret{ transition:none } }
 .disc-body{ padding:0 18px 16px }
 .card.private{ border-color:var(--hairline) }
-.card-title{ font-weight:600 }
+.card-title{ font-weight:600; font-size:1rem; margin:0 }   /* also used as an <h2> (Start) — keep the inline size, drop UA heading scale/margin */
+.card-title:focus{ outline:none }
 
 /* readiness — function-named dots with a screen-reader text equivalent (never colour alone) */
 .ready{ display:flex; gap:18px; flex-wrap:wrap; font-size:var(--fs-sm); color:var(--inst-muted) }
@@ -74,6 +79,9 @@ button{ font:inherit }
 .beat small{ color:var(--inst-muted) }
 .beat.danger{ background:transparent; border-color:var(--st-red-line) }
 .beat.danger:hover{ border-color:var(--st-red) }
+/* the `disabled={isPending}` flags across the app (Create stash / Unlock / Save / Change) were wired but
+   rendered identically to enabled — give the primary buttons the same disabled grammar as .lenbtn. */
+.beat:disabled, .beat.warm:disabled{ opacity:.5; cursor:default }
 .ghost{ background:transparent; border:1px solid var(--hairline); color:var(--inst-muted);
   border-radius:var(--radius-sm); padding:12px 14px; cursor:pointer }
 .ghost:hover{ border-color:var(--inst-muted) }
@@ -110,16 +118,18 @@ a{ color:var(--inst-blue) }
 /* the player is now a tall portrait stage (the clips are 9:16); the dream-tree attaches directly below
    it, so the stage is rounded on top only and the tree carries the matching bottom radius. */
 .stage{ position:relative; border-radius:var(--radius-md) var(--radius-md) 0 0; overflow:hidden;
-  border:1px solid var(--hairline); height:clamp(380px,52vh,560px); background:#070810;
+  border:1px solid var(--hairline); height:clamp(420px,58vh,660px); background:#070810;
   display:grid; place-items:center; box-shadow:0 24px 64px -42px #000 }
 .aurora{ position:absolute; inset:-24%; filter:blur(42px) saturate(115%); opacity:0; animation:develop 7s 1s ease forwards }
 .aurora i{ position:absolute; border-radius:50%; mix-blend-mode:screen; display:block }
 /* the canonical cool aurora ramp (instrument-tokens.md: auroraLo/Mid/Hi) — indigo -> blue -> violet,
    the same GPU-pressure "dawn" the keyhole halo + VRAM gauge wear, so a glance at the tray shows the
    colour the dream is made of. Screen-blended over the near-black stage, the ramp values bloom bright. */
-.aurora i:nth-child(1){ width:46%; height:60%; left:8%; top:14%; background:radial-gradient(circle,#27306E,transparent 62%); animation:drift1 19s ease-in-out infinite }
-.aurora i:nth-child(2){ width:54%; height:64%; right:4%; top:6%; background:radial-gradient(circle,#8A6BDC,transparent 62%); animation:drift2 23s ease-in-out infinite }
-.aurora i:nth-child(3){ width:50%; height:56%; left:24%; bottom:0; background:radial-gradient(circle,#4A5AD2,transparent 62%); animation:drift3 27s ease-in-out infinite }
+/* finite drift (council/perf): the aurora is a transitional "forming" affordance (replaced by the poster
+   bloom then the real video), so it settles instead of running infinitely over the multi-minute generation */
+.aurora i:nth-child(1){ width:46%; height:60%; left:8%; top:14%; background:radial-gradient(circle,#27306E,transparent 62%); animation:drift1 19s ease-in-out 3 }
+.aurora i:nth-child(2){ width:54%; height:64%; right:4%; top:6%; background:radial-gradient(circle,#8A6BDC,transparent 62%); animation:drift2 23s ease-in-out 3 }
+.aurora i:nth-child(3){ width:50%; height:56%; left:24%; bottom:0; background:radial-gradient(circle,#4A5AD2,transparent 62%); animation:drift3 27s ease-in-out 3 }
 .grain{ position:absolute; inset:0; opacity:.05; mix-blend-mode:overlay; pointer-events:none;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") }
 /* develop-resolve: the finished frame blooms IN over the developed aurora, in the same box, then the
@@ -132,13 +142,20 @@ a{ color:var(--inst-blue) }
   background:linear-gradient(0deg,rgba(9,11,17,.86),transparent) }
 .beat-q{ font-family:var(--display); font-style:italic; font-weight:380; font-size:1.4rem; line-height:1.28;
   color:#eef1f8; margin:0; max-width:34ch }
+/* live "forming" badge on the generating hero — a soft pulse signals work-in-progress the instant a beat commits */
+.forming-k{ display:block; margin-bottom:7px; font-size:var(--fs-xs); letter-spacing:.13em; text-transform:uppercase;
+  color:var(--inst-blue); animation:formpulse 1.6s ease-in-out infinite }
+@keyframes formpulse{ 0%,100%{ opacity:.5 } 50%{ opacity:1 } }
+@media (prefers-reduced-motion:reduce){ .forming-k{ animation:none; opacity:.85 } }
 .dreamrow{ display:flex; align-items:baseline; justify-content:space-between; gap:14px; flex-wrap:wrap }
 .elapsed-xl{ font-family:var(--display); font-weight:400; font-variant-numeric:tabular-nums;
   font-size:2rem; line-height:1; color:#cfd6e6 }
 
 /* ---- cinematic clip player: a 9:16 frame floating in the dark, its colour spilling behind it ---- */
 /* spill — a blurred, enlarged copy of the frame anchors the portrait clip in the wide stage */
-.spill{ position:absolute; width:78%; height:92%; object-fit:cover; filter:blur(54px) saturate(1.35);
+/* blur radius dropped 54->26 (perf): cost scales ~linearly with radius and at opacity:.5 on a low-detail
+   spill the difference is indistinguishable — this layer is on-screen the whole dream on a contended GPU */
+.spill{ position:absolute; width:78%; height:92%; object-fit:cover; filter:blur(26px) saturate(1.35);
   opacity:.5; transform:translateY(-4%) scale(1.12); pointer-events:none; z-index:0 }
 @media (prefers-reduced-transparency:reduce){ .spill{ opacity:.3 } }
 .clipwrap{ position:relative; z-index:1; display:grid; place-items:center; width:100%; height:100%;
@@ -154,6 +171,8 @@ a{ color:var(--inst-blue) }
   display:flex; align-items:flex-start; justify-content:space-between;
   background:linear-gradient(180deg,rgba(7,8,12,.5),transparent) }
 .stage-ix{ font-variant-numeric:tabular-nums; font-size:11px; letter-spacing:.1em; color:rgba(230,233,240,.78) }
+/* the beat index moved out of the top-left corner to sit just under the current clip's prompt */
+.beat-ix{ display:inline-block; margin-top:9px }
 /* the stage's bottom caption reuses .cap/.beat-q (shared with the develop hero); .eyebrow is the quiet
    system-voice line above the serif caption — the beat index, length, and an honest mature tag. */
 .cap{ z-index:3 }
@@ -206,8 +225,8 @@ a{ color:var(--inst-blue) }
   background:rgba(255,255,255,.025); border-color:var(--hairline) }
 .future-form{ display:flex; gap:7px; margin-top:6px }
 .future-form input{ margin-top:0 }
-.future-go{ flex:0 0 auto; width:38px; display:grid; place-items:center; background:var(--inst-blue);
-  color:#0c0e15; border:none; border-radius:var(--radius-sm); cursor:pointer; font-weight:700 }
+.future-go{ flex:0 0 auto; width:38px; min-height:44px; display:grid; place-items:center; background:var(--inst-blue);
+  color:#0c0e15; border:none; border-radius:var(--radius-sm); cursor:pointer; font-weight:700 }   /* min-height: WCAG 2.5.8 + matches the ~44px sibling input */
 .future-go:disabled{ opacity:.5; cursor:default }
 /* "looking back" affordance when the viewer has scrolled to an earlier beat */
 .lookback{ margin-top:14px; padding-top:13px; border-top:1px solid var(--hairline);
@@ -329,7 +348,7 @@ a{ color:var(--inst-blue) }
 .notechip .nc-t{ color:var(--inst-label); font-variant-numeric:tabular-nums }
 .notechip .nc-tag{ color:var(--inst-blue); font-weight:600 }
 .notechip .nc-text{ color:var(--inst-muted) }
-.nc-x{ display:grid; place-items:center; width:20px; height:20px; flex:0 0 auto; border-radius:50%;
+.nc-x{ display:grid; place-items:center; width:24px; height:24px; flex:0 0 auto; border-radius:50%; /* 24px = WCAG 2.5.8 target; the 15px glyph keeps the chip's visual size */
   background:transparent; border:none; color:var(--inst-muted); font-size:15px; line-height:1; cursor:pointer }
 .nc-x:hover:not(:disabled){ background:color-mix(in srgb,var(--inst-blue) 18%,transparent); color:var(--inst-text) }
 .nc-x:disabled{ opacity:.4; cursor:default }
@@ -345,8 +364,8 @@ a{ color:var(--inst-blue) }
    absolutely overlaid on the stage's margins on desktop, normal flow below it on mobile. (council §1a) */
 .stage-wrap{ position:relative }
 .choices{ position:absolute; inset:0; z-index:3; pointer-events:none }
-.gutter{ position:absolute; top:0; bottom:0; z-index:3; width:clamp(160px,22%,210px); display:flex;
-  flex-direction:column; justify-content:center; gap:14px; padding:18px 14px; pointer-events:none }
+.gutter{ position:absolute; top:0; bottom:0; z-index:3; width:clamp(245px,28%,345px); display:flex;
+  flex-direction:column; justify-content:space-evenly; gap:14px; padding:18px 14px; pointer-events:none }
 /* the real clip's blurred spill floods the gutters with bright imagery — darken the gutter zones behind
    the cards so they read as calm panels, not text-on-busy-photo. Only when choices are present; clear of
    the centred portrait clip (it sits ~30–70%, the scrim hugs the outer ~22%). */
@@ -355,46 +374,125 @@ a{ color:var(--inst-blue) }
     transparent 74%, rgba(7,8,12,.32) 84%, rgba(7,8,12,.74) 100%) }
 .gutter.left{ left:0; align-items:flex-start }
 .gutter.right{ right:0; align-items:flex-end }
+/* the right gutter splits into two IN-FLOW rows: the curated beats (which keep their even vertical spread)
+   grow to fill the top, and the compose card sits below them at the foot. Because compose is in normal flow
+   (not absolutely pinned), the beats can NEVER overlap it — they're laid out above it by construction, and
+   the flex:1 beats area gives the compose input clear room to breathe. */
+.gutter.right .gutter-beats{ flex:1 1 auto; min-height:0; width:100%; display:flex; flex-direction:column;
+  align-items:flex-end; justify-content:flex-start; gap:14px; overflow-y:auto; overscroll-behavior:contain;
+  scrollbar-width:thin;
+  /* safety net for the rare too-tall case (e.g. 2 right-gutter cards on a short window): the beats scroll
+     within their own area and the bottom edge fades, signalling "more below" — never overlapping compose. */
+  -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 22px),transparent);
+  mask-image:linear-gradient(to bottom,#000 calc(100% - 22px),transparent) }
+/* a gutter holding 2+ cards is height-starved (two stacked portrait cards + compose overflow most windows),
+   so shrink the glimpse thumb when there's more than one card — a single card keeps the richer 100px still.
+   Applies to both gutters so a 2-card left and 2-card right stay visually matched. */
+.gutter:has(.gchoice + .gchoice) .gthumb{ max-height:62px }
 /* base state is VISIBLE (opacity:1) — gbloom is only an entrance; resting visibility must never depend on
    the animation having fired (a non-advancing animation must not leave the choices invisible) */
-.gchoice{ pointer-events:auto; display:flex; flex-direction:column; gap:6px; width:100%; max-width:188px;
-  opacity:1; background:rgba(9,11,18,.74); border:1px solid rgba(255,255,255,.1); border-radius:12px; padding:9px;
-  backdrop-filter:blur(16px); box-shadow:0 14px 34px -18px rgba(0,0,0,.85); cursor:pointer; text-align:left;
-  color:inherit; font:inherit; animation:gbloom .5s ease; transition:border-color .2s ease, transform .2s ease }
-.gchoice:hover:not(:disabled){ border-color:var(--inst-blue); transform:translateY(-2px) }
+/* flat translucent fill over the existing .has-choices scrim — NOT per-card backdrop-blur (perf): up to 4
+   cards each re-sampling the moving spill every frame is the worst compositor case on a contended GPU; the
+   scrim already gives the calm-panel legibility, so a slightly more opaque flat fill matches it for free. */
+.gchoice{ pointer-events:auto; display:flex; flex-direction:column; gap:6px; width:100%; max-width:345px;
+  opacity:1; background:rgba(9,11,18,.82); border:1px solid rgba(255,255,255,.1); border-radius:12px; padding:9px;
+  box-shadow:0 14px 34px -18px rgba(0,0,0,.85); cursor:pointer; text-align:left;
+  color:inherit; font:inherit; animation:gbloom .5s ease; transition:border-color .2s ease, transform .2s ease, background .2s ease, opacity .2s ease, filter .2s ease }
+@media (prefers-reduced-transparency:reduce){ .gchoice{ background:rgba(15,18,28,.97) } }
+/* hover: the glimpse comes into focus — card lifts + brightens, and the dimmed conditioning still pops to full */
+.gchoice:hover:not(:disabled){ border-color:var(--inst-blue); transform:translateY(-2px); background:rgba(24,30,46,.92) }
+.gchoice:hover:not(:disabled) .gthumb img{ opacity:1; filter:saturate(1.05); transform:scale(1.1) translate(calc(var(--px,0) * -10px), calc(var(--py,0) * -10px)) }
+/* path focus: hovering one card pulls focus to it — the OTHER cards recede so the eye follows the single
+   lit connector toward the video centre (the path you're about to take). :has scopes it to a real hover. */
+.choices:has(.gchoice:hover) .gchoice:not(:hover){ opacity:.5; filter:saturate(.6) }
 .gchoice:disabled{ opacity:.5; cursor:default }
 .gchoice:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:2px }
 /* default thumb = the zero-GPU conditioning still (every path starts here); dashed = a glimpse, a resting
    state, not a failure. The motion glimpse that differentiates branches is a gated maybe (council §1b). */
-.gthumb{ position:relative; width:100%; aspect-ratio:9/16; max-height:128px; border-radius:8px; overflow:hidden;
+.gthumb{ position:relative; width:100%; aspect-ratio:9/16; max-height:100px; border-radius:var(--radius-sm); overflow:hidden;
   border:1px dashed color-mix(in srgb,var(--inst-blue) 45%,transparent); background:#0c1020 }
-.gthumb img{ width:100%; height:100%; object-fit:cover; opacity:.6; filter:saturate(.9) }
+.gthumb img{ width:100%; height:100%; object-fit:cover; opacity:.6; filter:saturate(.9); transition:opacity .2s ease, filter .2s ease, transform .16s ease-out }
 .gthumb::after{ content:''; position:absolute; inset:0; pointer-events:none;
   background:radial-gradient(70% 60% at 50% 38%, transparent, rgba(7,8,12,.5)) }
-.geyebrow{ font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:rgba(230,233,240,.5) }
+.geyebrow{ font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:rgba(230,233,240,.68) }   /* .5->.68 clears AA over the card+scrim+spill worst case */
 .glabel{ font-size:13.5px; font-weight:600; color:var(--inst-text) }
 .gprompt{ font-family:var(--display); font-style:italic; font-weight:380; font-size:.82rem; line-height:1.36;
   color:var(--inst-muted) }
+/* compose-your-own card (in the gutter, beside the curated beats) — a container, not a button */
+.gchoice.compose{ cursor:default; gap:8px }
+/* "or describe your own" sits at the FOOT of the right gutter, in normal flow below the curated beats
+   (which are wrapped in .gutter-beats and grow to fill the space above). In-flow means it can never be
+   overlapped by a beat card — the old absolute-pinned version collided with the lowest card on short stages. */
+.gutter.right .gchoice.compose{ margin:0 }
+.gc-form{ display:flex; gap:6px; align-items:center }
+.gc-form input{ margin-top:0; padding:8px 11px; min-width:0 }
+/* discoverability cue: fine-pointer desktop only, shown WHILE the choices are hidden, fades as they reveal —
+   a hidden primary action without a cue is a trap (review). Touch/mobile show choices always → no cue. */
+.choices-hint{ display:none }
+@media (min-width:821px) and (hover:hover) and (pointer:fine){
+  .choices-hint{ display:block; position:absolute; left:50%; top:13px; transform:translateX(-50%); z-index:4;
+    pointer-events:none; font-size:var(--fs-xs); color:rgba(230,233,240,.74); white-space:nowrap;
+    background:rgba(9,11,17,.72); border:1px solid var(--hairline); padding:5px 13px; border-radius:999px;
+    transition:opacity .3s ease }
+  .stage-wrap:hover .choices-hint, .stage-wrap:focus-within .choices-hint, .stage-wrap.revealed .choices-hint{ opacity:0 }
+  @media (prefers-reduced-motion:reduce){ .choices-hint{ transition:none } }
+}
 /* connector lines from the clip to each gutter card — draw in ONCE, then settle to a static hairline
    (no infinite march; council corrected the spike's forever-flow). Reuses the future-edge grammar. */
 .gutter-links{ position:absolute; inset:0; z-index:2; pointer-events:none }
-.gl-draw{ fill:none; stroke:var(--inst-blue); stroke-width:1.4; stroke-dasharray:1400; stroke-dashoffset:1400;
-  filter:drop-shadow(0 0 4px color-mix(in srgb,var(--inst-blue) 45%,transparent)); animation:gldraw .7s ease forwards }
+.gl-draw{ fill:none; stroke:var(--inst-blue); stroke-width:1.4; stroke-dasharray:1400; stroke-dashoffset:0;
+  filter:drop-shadow(0 0 4px color-mix(in srgb,var(--inst-blue) 45%,transparent));
+  transition:stroke-width .18s ease, stroke .18s ease, opacity .18s ease, filter .18s ease }   /* drawn by default (touch/coarse/reduced-motion get the static hairline); fine-pointer desktops undraw + draw-on-reveal below */
+/* per-card connector focus: the hovered card's path brightens + thickens toward the video centre; the rest recede */
+.gl-draw.hot{ stroke-width:2.4; stroke:#a9c4ff; filter:drop-shadow(0 0 6px color-mix(in srgb,var(--inst-blue) 75%,transparent)) }
+.gl-draw.dim{ opacity:.16 }
+@media (prefers-reduced-transparency:reduce){ .gl-draw{ filter:none } }   /* drop the glow with the other transparency effects */
 .gutter-loading{ position:absolute; left:50%; bottom:78px; transform:translateX(-50%); z-index:3;
   font-size:var(--fs-xs); color:var(--inst-muted); background:rgba(9,11,17,.6); padding:5px 12px;
   border-radius:999px; backdrop-filter:blur(8px) }
-/* the dwell (S1): the dream doesn't pause, it inhales — one slow breath on the colour spill while you
-   choose (frozen last frame; the clip does NOT re-loop). ~10s ≈ the wallpaper's warm-breath cadence. */
-.stage.dwell .spill{ animation:breath 10s ease-in-out infinite }
-@keyframes breath{ 0%,100%{ opacity:.5; transform:translateY(-4%) scale(1.12) }
-  50%{ opacity:.62; transform:translateY(-4%) scale(1.16) } }
+/* (the choice moment used to freeze the last frame + breathe the spill; the clip now LOOPS gently behind
+   the choices instead — the motion lives in the video, so no spill breath is needed) */
 /* entrance is transform-only (a gentle rise) — opacity stays 1 so the choices are never gated invisible
    by an animation that hasn't advanced (the headless op=0 trap; real visibility must not depend on it) */
 @keyframes gbloom{ from{ transform:translateY(8px) } to{ transform:none } }
-@keyframes gldraw{ to{ stroke-dashoffset:0 } }
+@keyframes gldraw{ from{ stroke-dashoffset:1400 } to{ stroke-dashoffset:0 } }   /* explicit `from` so the draw still runs fully when a static hover rule has set offset:0 */
 @media (prefers-reduced-motion:reduce){
-  .gchoice{ animation:none } .gchoice:hover:not(:disabled){ transform:none }
+  .gchoice{ animation:none } .gchoice:hover:not(:disabled){ transform:none } .gchoice:hover:not(:disabled) .gthumb img{ transform:none }
   .gl-draw{ animation:none; stroke-dashoffset:0 } .stage.dwell .spill{ animation:none } }
+
+/* DESKTOP (mouse) reveal: gated to FINE-POINTER + hover devices, so the hide-while-playing affordance
+   tracks the INPUT DEVICE, not raw window width — a mouse desktop keeps the clip clean while it plays and
+   reveals the choices on hover / keyboard focus / the dwell / a still (`.revealed`); a TOUCH (coarse) wide
+   device and the mobile stack fall through to the always-visible base, so the primary action is always
+   reachable. (Closes the desktop/mobile model inversion + the touch-unreachable blocker in one gate.) */
+@media (min-width:821px) and (hover:hover) and (pointer:fine){
+  .choices, .gutter-links{ opacity:0; transition:opacity .35s ease }
+  .choices .gchoice{ pointer-events:none }
+  .gl-draw{ stroke-dashoffset:1400 }   /* undrawn at rest so the reveal can draw it in (base stays drawn for touch) */
+  .stage-wrap:hover .choices, .stage-wrap:focus-within .choices, .stage-wrap.revealed .choices,
+  .stage-wrap:hover .gutter-links, .stage-wrap:focus-within .gutter-links, .stage-wrap.revealed .gutter-links{ opacity:1 }
+  .stage-wrap:hover .choices .gchoice, .stage-wrap:focus-within .choices .gchoice,
+  .stage-wrap.revealed .choices .gchoice{ pointer-events:auto }
+  /* hover/focus show the connector already-DRAWN (static); only the genuine choice-moment arrival
+     (.revealed, below) ANIMATES the draw — so crossing the stage can't replay the 700ms gesture */
+  .stage-wrap:hover .gl-draw, .stage-wrap:focus-within .gl-draw{ stroke-dashoffset:0 }
+  /* keyboard reveal is INSTANT so the focus ring is visible the frame focus lands (not mid-.35s fade) */
+  .stage-wrap:focus-within .choices, .stage-wrap:focus-within .gutter-links{ transition:none }
+  @media (prefers-reduced-motion:reduce){ .choices, .gutter-links{ transition:none } .gl-draw{ stroke-dashoffset:0 } }
+}
+/* while tagging the current clip (.tag-draft open), the "what happens next" choices step BEHIND the draft
+   and dim — the draft (in .cap) is the focus. Without this they overlap it: .cap and .choices are both
+   z-index:3 siblings in the stage-wrap, so the later-painted .choices covers the draft. Placed after the
+   desktop reveal block so it wins the opacity battle with :focus-within (opening the draft focuses the stage). */
+.stage-wrap .choices.tagging{ z-index:1; opacity:.3; transition:opacity .2s ease }
+.stage-wrap .choices.tagging .gchoice{ pointer-events:none }
+/* the connector DRAWS IN once, only when the choice moment genuinely ARRIVES (.revealed = dwell / still),
+   NOT on every hover — a CSS animation restarts whenever its selector begins matching, so hover-triggering
+   it replayed the 700ms "dream reaching out" gesture each pass (council spec: "draw in ONCE"). Hover/focus
+   just reveal it already-drawn via the static rule above. Motion only when welcome. */
+@media (min-width:821px) and (hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference){
+  .stage-wrap.revealed .gl-draw{ animation:gldraw .7s ease forwards }
+}
 
 /* NARROW (incl. most windowed desktop): the side gutters only have comfortable room next to the portrait
    clip near the 760px max wrap, so below ~820px they collapse and the choices flow as a wrapping row BELOW
@@ -403,15 +501,17 @@ a{ color:var(--inst-blue) }
   .stage.has-choices::before{ display:none }
   .stage{ height:clamp(300px,46vh,440px) }
   .choices{ position:static; pointer-events:auto; display:flex; flex-wrap:wrap; gap:10px; padding:12px 0 2px }
-  .gutter{ display:contents }
+  .gutter, .gutter-beats{ display:contents }   /* flatten both wrappers so every card wraps into the one grid */
   .gchoice{ flex:1 1 150px; max-width:none }
+  .gutter.right .gchoice.compose{ position:static; inset:auto; margin:0 }   /* stacked layout: compose flows inline */
   .gchoice .gthumb{ max-height:148px }
   .gutter-links{ display:none }
   .gutter-loading{ position:static; transform:none; align-self:center; margin:2px auto }
 }
 
 /* S2 — "paths not taken": the unpicked options from a branched-from beat, kept faint + one click from
-   blooming (reversibility made generative). Dashed/dim, reusing the .alt grammar; blue on intent. */
+   blooming (reversibility made generative). Dashed/dim — its own faint grammar, dimmer than the live
+   gutter cards on purpose; blue on intent (hover). */
 .ghosts{ display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; margin:2px 0 12px }
 .ghosts-k{ flex:0 0 auto; font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.06em;
   color:var(--inst-label); padding-top:6px }
@@ -428,9 +528,149 @@ a{ color:var(--inst-blue) }
 .ghostchip:hover:not(:disabled) .gh-bloom{ opacity:1 }
 @media (prefers-reduced-motion:reduce){ .ghostchip,.ghostchip .gh-bloom{ transition:none } }
 
-/* compose-your-own: the escape hatch beside the curated gutter choices, in the demoted tree */
-.tree-compose{ margin:2px 0 14px }
-.tc-k{ display:block; font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.06em;
-  color:var(--inst-label); margin-bottom:6px }
-.tc-row{ display:flex; gap:8px; align-items:center }
-.tc-row input{ margin-top:0 }
+/* ========================= ADR-0028: save & reopen + the private stash =========================
+   Built from the instrument register: saved dreams are cinematic 9:16 frames (echoing .node .cell +
+   the player still) floating in the glass card; section labels are the uppercase system voice (like
+   .queue-head / .seg-label), never the reserved serif; warm copper marks the private/sealed sibling. */
+
+/* the section menu — a calm pill row anchored under the wordmark, on every screen (replaces the old
+   showHome toggle / back-link / per-screen engine disclosure). Pill family, system register; the live
+   dream leads with an "up" dot. Wraps gracefully on a phone-width column. */
+.nav{ display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:2px 0 4px }
+.nav-item{ display:inline-flex; align-items:center; gap:7px; min-height:34px; background:transparent;
+  border:1px solid var(--hairline); color:var(--inst-muted); border-radius:999px; padding:6px 14px;
+  font-size:var(--fs-sm); cursor:pointer; transition:border-color .2s ease, color .2s ease, background .2s ease }
+.nav-item:hover{ border-color:var(--inst-muted); color:var(--inst-text) }
+.nav-item.on{ background:var(--blue-wash); color:var(--inst-text);
+  border-color:color-mix(in srgb,var(--inst-blue) 52%,transparent) }
+.nav-item .nav-ic{ font-size:.85em; line-height:1 }
+.nav-item .nav-lbl{ max-width:20ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.nav-dot{ width:6px; height:6px; border-radius:50%; flex:0 0 auto; background:var(--st-up);
+  box-shadow:0 0 7px color-mix(in srgb,var(--st-up) 80%,transparent) }
+@media (prefers-reduced-motion:reduce){ .nav-item{ transition:none } }
+
+/* section header — system voice, with a tabular count to the right (rendered as an <h2>, so reset the
+   UA heading weight/margin to keep the eyebrow look while gaining a real heading for SR/landmarks) */
+.lib-head{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin:0 0 14px;
+  font-size:var(--fs-xs); font-weight:400; text-transform:uppercase; letter-spacing:.08em; color:var(--inst-label) }
+.lib-head:focus{ outline:none }   /* programmatic focus target on section change — no visible ring */
+.lib-head .count{ color:var(--inst-muted); letter-spacing:.04em; font-variant-numeric:tabular-nums }
+.lib-empty{ font-size:var(--fs-sm); color:var(--inst-muted); line-height:1.5 }
+
+/* the gallery: cinematic 9:16 frames, staggered bloom-in (the app's reveal language). The tile is a
+   plain container; the OPEN action is a real <button> overlay (a11y: no div[role=button] nesting
+   real buttons), with the delete control as a sibling above it. */
+.lib-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(128px,1fr)); gap:14px }
+.lib-tile{ position:relative; border-radius:10px }
+.lib-open{ position:absolute; inset:0; z-index:1; background:none; border:none; cursor:pointer;
+  border-radius:10px; -webkit-tap-highlight-color:transparent }
+.lib-open:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:3px }
+.lib-thumb{ position:relative; aspect-ratio:9/16; border-radius:10px; overflow:hidden; background:#0c1020;
+  box-shadow:inset 0 0 0 1px var(--hairline), 0 14px 30px -20px rgba(0,0,0,.82);
+  transition:box-shadow .2s ease, transform .2s ease;
+  /* bloom-lite (opacity+transform only) — the shared @keyframes bloom runs a per-element `filter` which is
+     the most expensive thing to animate on N tiles at once, on a box sharing VRAM with the video generator.
+     The desaturate→colour is imperceptible under the stagger; the lite fork is the same reveal, composited. */
+  animation:bloom-lite .5s cubic-bezier(.2,.7,.2,1) both; animation-delay:var(--d,0s) }
+.lib-tile:hover .lib-thumb{ transform:translateY(-2px);
+  box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--inst-blue) 62%,transparent), 0 20px 38px -18px rgba(0,0,0,.88) }
+.lib-thumb img{ width:100%; height:100%; object-fit:cover; display:block }
+/* missing frame -> the aurora-tinted "forming" wash (no emoji placeholder) */
+.lib-thumb.blank{ background:radial-gradient(70% 55% at 50% 36%, color-mix(in srgb,#8A6BDC 30%,transparent), transparent), #0c1020 }
+/* the name rides a bottom scrim over the frame, like the player .cap. The scrim is opaque THROUGH the
+   text band (incl. the clamped 2nd line) + a text-shadow, so legibility never depends on the (possibly
+   bright) generated frame underneath (a11y 1.4.3 over uncontrolled imagery). */
+.lib-cap{ position:absolute; left:0; right:0; bottom:0; padding:24px 11px 9px; z-index:1; pointer-events:none;
+  background:linear-gradient(0deg, rgba(7,8,14,.95), rgba(7,8,14,.86) 52%, rgba(7,8,14,.4) 80%, transparent) }
+.lib-name{ font-weight:600; font-size:var(--fs-sm); color:#eef1f8; line-height:1.25; text-shadow:0 1px 3px rgba(0,0,0,.9);
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden }
+.lib-sub{ margin-top:3px; font-size:10px; letter-spacing:.04em; color:#cfd6e6; text-shadow:0 1px 2px rgba(0,0,0,.9);
+  font-variant-numeric:tabular-nums }
+/* frame-count chip, top-left — opaque enough to read over any frame (the player .stage-ix register) */
+.lib-frames{ position:absolute; top:6px; left:6px; z-index:1; pointer-events:none; font-size:9px; letter-spacing:.09em;
+  text-transform:uppercase; color:rgba(230,233,240,.9); background:rgba(7,8,14,.82);
+  padding:2px 7px; border-radius:999px; backdrop-filter:blur(6px) }
+/* delete — a text confirm above the open overlay. Resting low (not hidden) so it's discoverable by
+   touch + SR; lifts to full on hover/focus. 24px min target (WCAG 2.5.8). */
+.lib-del{ position:absolute; top:5px; right:5px; z-index:2; display:inline-flex; gap:5px; opacity:.55;
+  transition:opacity .15s ease }
+.lib-tile:hover .lib-del, .lib-tile:focus-within .lib-del{ opacity:1 }
+.lib-del button{ min-height:24px; background:rgba(7,8,14,.82); border:1px solid var(--hairline);
+  color:rgba(230,233,240,.92); border-radius:999px; padding:3px 10px; font:inherit; font-size:var(--fs-xs);
+  cursor:pointer; backdrop-filter:blur(6px) }
+.lib-del button:hover{ border-color:var(--inst-muted); color:#fff }
+.lib-del button.danger{ color:color-mix(in srgb,var(--st-red) 88%,#fff); border-color:var(--st-red-line) }
+@media (prefers-reduced-motion:reduce){ .lib-del{ transition:none } }
+@media (prefers-reduced-motion:reduce){ .lib-thumb{ animation:none; transition:none } .lib-tile:hover .lib-thumb{ transform:none } }
+
+/* ---- the private stash: a warm-edged, sealed sibling of the gallery ---- */
+.stash-panel{ border-color:color-mix(in srgb,var(--brand-warm) 22%,var(--hairline));
+  background:linear-gradient(180deg, color-mix(in srgb,var(--brand-warm) 4%,var(--glass)), var(--glass)) }
+.stash-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:2px;
+  font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.08em; color:var(--inst-label) }
+.stash-head .lk{ display:inline-flex; align-items:center; gap:7px; color:var(--brand-warm);
+  font:inherit; margin:0 }   /* rendered as <h2>: inherit the eyebrow type, drop UA heading weight/margin */
+.stash-head .lk:focus{ outline:none }
+.stash-lock{ background:none; border:none; color:var(--inst-muted); cursor:pointer; font:inherit;
+  font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.06em }
+.stash-lock:hover{ color:var(--inst-text) }
+.stash-intro{ color:var(--inst-muted); font-size:var(--fs-sm); line-height:1.55; margin-top:10px; max-width:58ch }
+.stash-fine{ color:var(--inst-label); font-size:var(--fs-xs); margin-top:8px }
+
+/* passphrase row — instrument inputs with a warm focus ring for the stash context */
+.pp-form{ display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; align-items:center }
+.pp-form input{ flex:1 1 170px; min-width:0; background:var(--inst-deep); border:1px solid var(--hairline);
+  color:var(--inst-text); border-radius:var(--radius-sm); padding:11px 13px; font:inherit; font-size:var(--fs-sm) }
+.pp-form input::placeholder{ color:var(--inst-label) }
+.pp-form input:focus{ outline:none; border-color:color-mix(in srgb,var(--brand-warm) 60%,transparent) }
+.pp-form .beat.warm{ width:auto; flex:0 0 auto; margin:0; padding:11px 18px }
+
+/* sealed tile — no thumbnail (encrypted): a dark frame, warm diagonal seal, small corner lock stamp */
+/* inherits .lib-thumb's bloom-lite (the redundant animation-name:bloom override is gone); the hatch warm is
+   now the --brand-warm token (was a decimal rgba of the same hue, which would silently desync on a re-hue). */
+.lib-tile.sealed .lib-thumb{
+  background:repeating-linear-gradient(135deg, color-mix(in srgb,var(--brand-warm) 5%,transparent) 0 9px, transparent 9px 20px),
+    radial-gradient(82% 62% at 50% 30%, color-mix(in srgb,var(--brand-warm) 12%,transparent), transparent), #0b0c12;
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--brand-warm) 26%,transparent), 0 14px 30px -20px rgba(0,0,0,.82) }
+.lib-tile.sealed:hover .lib-thumb{
+  box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--brand-warm) 55%,transparent), 0 20px 38px -18px rgba(0,0,0,.88) }
+.seal-mark{ position:absolute; top:7px; left:8px; z-index:1; pointer-events:none; font-size:12px; opacity:.8;
+  filter:drop-shadow(0 1px 2px rgba(0,0,0,.6)) }
+.lib-tile.sealed .lib-frames{ left:auto; right:6px }
+
+/* bloom-lite: the gallery/sealed-tile reveal — opacity+transform only (no per-element filter), so N tiles
+   blooming at once stay composite-cheap on the contended GPU. The shared @keyframes bloom (with its filter)
+   stays for the single hero stage frame where the cost is one element and justified. */
+@keyframes bloom-lite{ from{ opacity:0; transform:scale(1.04) } to{ opacity:1; transform:none } }
+
+/* a single press-down acknowledgement for the touch surface (the app had none); motion-gated + cheap. */
+@media (prefers-reduced-motion:no-preference){
+  .beat:active, .ghost:active, .nav-item:active, .lib-del button:active, .stash-lock:active{ transform:translateY(1px) }
+}
+
+/* inline rename (sealed tiles): the caption flips to a compact editor; the scrim gains pointer events and
+   the thumb dims behind it so the input is the focus. The Rename trigger reuses the .lib-del button chip. */
+.lib-tile.editing .lib-thumb{ filter:brightness(.6) }
+.lib-rename{ pointer-events:auto; display:flex; flex-direction:column; gap:7px; padding:9px 9px 10px;
+  background:linear-gradient(0deg, rgba(7,8,14,.97), rgba(7,8,14,.9) 72%, rgba(7,8,14,.55)) }
+.lib-rename input{ width:100%; min-width:0; margin:0; background:var(--inst-deep);
+  border:1px solid color-mix(in srgb,var(--inst-blue) 55%,transparent); color:var(--inst-text);
+  border-radius:7px; padding:6px 8px; font:inherit; font-size:var(--fs-xs) }
+.lib-rename input:focus{ outline:none; border-color:var(--inst-blue) }
+.lib-rename-row{ display:flex; gap:6px }
+.lib-rename-row button{ flex:1 1 0; min-height:24px; background:rgba(255,255,255,.06); border:1px solid var(--hairline);
+  color:rgba(230,233,240,.92); border-radius:7px; padding:3px 6px; font:inherit; font-size:var(--fs-xs); cursor:pointer }
+.lib-rename-row button[type=submit]{ background:var(--blue-wash);
+  border-color:color-mix(in srgb,var(--inst-blue) 50%,transparent); color:var(--inst-blue) }
+.lib-rename-row button:hover{ border-color:var(--inst-muted); color:#fff }
+
+/* the unseal — one warm gleam sweeps the sealed grid once, on a successful unlock (StashPanel sets
+   .unsealing for ~1s). A single overlay quad, transform+opacity only (composited, no per-frame paint),
+   in the decoration copper (never the reserved needs-you hue). Reduced-motion skips it entirely. */
+.lib-grid.unsealing{ position:relative; overflow:hidden }
+.lib-grid.unsealing::after{ content:''; position:absolute; top:0; bottom:0; left:-60%; width:55%; z-index:3;
+  pointer-events:none; will-change:transform,opacity;
+  background:linear-gradient(115deg, transparent, color-mix(in srgb,var(--brand-warm) 24%,transparent), transparent);
+  animation:unseal 1s cubic-bezier(.2,.7,.2,1) forwards }
+@keyframes unseal{ 0%{ transform:translateX(0); opacity:0 } 16%{ opacity:1 } 100%{ transform:translateX(320%); opacity:0 } }
+@media (prefers-reduced-motion:reduce){ .lib-grid.unsealing{ overflow:visible } .lib-grid.unsealing::after{ display:none } }
