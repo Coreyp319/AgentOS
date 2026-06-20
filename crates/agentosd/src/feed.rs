@@ -255,7 +255,11 @@ fn now_epoch() -> f64 {
 }
 
 fn current_uid() -> u32 {
-    fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(1000)
+    // Real getuid(2). The old `/proc/self`-then-`unwrap_or(1000)` path could, on a
+    // failed metadata read, point the `/run/user/<uid>` fallback at ANOTHER user's
+    // runtime dir (security-reviewer / ADR-0030 must-fix). getuid never fails.
+    // SAFETY: getuid() is an always-successful syscall with no preconditions.
+    unsafe { libc::getuid() }
 }
 
 /// `$XDG_RUNTIME_DIR/nimbus-aurora` (created if absent), with the `/run/user/<uid>`
@@ -267,7 +271,33 @@ pub(crate) fn feed_dir() -> std::io::Result<PathBuf> {
         .unwrap_or_else(|| format!("/run/user/{}", current_uid()));
     let dir = PathBuf::from(runtime).join("nimbus-aurora");
     fs::create_dir_all(&dir)?;
+    harden_feed_dir(&dir)?;
     Ok(dir)
+}
+
+/// The reactive feed files (`agent.json` / `wind.json` / `audio.json`) carry fleet +
+/// desktop signals; the dir must be private to us. `create_dir_all` inherits the
+/// umask — on this box that yields 0755 (world-readable), so any local uid can read
+/// the feed (security-reviewer / ADR-0030 must-fix). Force 0700, and refuse if the
+/// dir is owned by another uid (a pre-created dir is a write-trap, not ours to use).
+fn harden_feed_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = fs::metadata(dir)?;
+    if meta.uid() != current_uid() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "{} is owned by uid {} (not us) — refusing to use a foreign runtime dir",
+                dir.display(),
+                meta.uid()
+            ),
+        ));
+    }
+    // Only rewrite the mode if it grants group/other anything (idempotent + quiet).
+    if meta.permissions().mode() & 0o077 != 0 {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn hermes_path(file: &str) -> PathBuf {
@@ -558,5 +588,21 @@ mod tests {
         let p = std::env::temp_dir().join(format!("agentos_schema_absent_{}.db", std::process::id()));
         let _ = fs::remove_file(&p);
         assert!(matches!(probe_fleet_schema(&p), SchemaCheck::Absent(_)));
+    }
+
+    #[test]
+    fn harden_feed_dir_forces_private_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        // A world-readable runtime dir (what create_dir_all yields under a 022 umask)
+        // must be tightened to owner-only — the feed files carry fleet/desktop state.
+        let dir = std::env::temp_dir().join(format!("agentos_harden_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        // We own it (just created it), so harden tightens rather than refusing.
+        harden_feed_dir(&dir).unwrap();
+        let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "feed dir must be private to the owner");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
