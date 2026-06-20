@@ -15,6 +15,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -280,6 +281,49 @@ def test_live_receipt_nojs_href_from_forwarded_host(base):
     print("ok  receipt(live): X-Forwarded-Host yields a real no-JS dream link (port→LUCID_PORT)")
 
 
+def test_inbox_sweeps_expired():
+    # ADR-0027 retention: the Claude door's on-disk proposal (photo + caption) must forget itself
+    # past INBOX_TTL — no permanent PII. Age an existing proposal, then a fresh write sweeps it.
+    S.door_claude(_jpeg(exif=False), "old caption")
+    before = [n for n in os.listdir(S.CLAUDE_INBOX) if n.endswith((".jpg", ".json"))]
+    assert before, "a proposal should have been written"
+    old = time.time() - (S.INBOX_TTL + 60)
+    for n in before:
+        os.utime(os.path.join(S.CLAUDE_INBOX, n), (old, old))
+    fresh = S.door_claude(_jpeg(exif=False), "new caption")       # this write triggers the sweep
+    after = set(os.listdir(S.CLAUDE_INBOX))
+    for n in before:
+        assert n not in after, f"expired proposal {n} must be swept"
+    assert f"{fresh['proposal']}.jpg" in after and f"{fresh['proposal']}.json" in after, \
+        "the fresh, unexpired proposal must survive the sweep"
+    print("ok  claude inbox: proposals past INBOX_TTL are swept (no permanent on-disk PII)")
+
+
+def _post_raw(base, headers):
+    # minimal POST that exercises auth only (empty image → 400 'no image' once auth passes)
+    body = json.dumps({"dest": "lucid", "image_b64": "", "caption": ""}).encode()
+    req = urllib.request.Request(base + "/share", data=body, method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def test_live_token_requires_origin(base):
+    # the browser PWA authenticates with X-Share-Token; browsers always send Origin on a
+    # state-changing fetch, so the token branch must FAIL CLOSED on a missing/foreign Origin
+    # (the iOS Shortcut uses X-Share-Key and never reaches this branch — unaffected).
+    tok = {"Content-Type": "application/json", "X-Share-Token": S.CSRF}
+    assert _post_raw(base, tok) == 403, "token with NO Origin must be rejected (fail closed)"
+    assert _post_raw(base, {**tok, "Origin": "https://evil.example"}) == 403, \
+        "token with a foreign Origin must be rejected"
+    ok_origin = f"http://localhost:{S.PORT}"                       # a member of S.ORIGIN_OK
+    assert _post_raw(base, {**tok, "Origin": ok_origin}) != 403, \
+        "token with an allowed Origin must pass auth (then 400 on the empty image)"
+    print("ok  auth: PWA token fails closed without an allowed Origin (Shortcut key path unaffected)")
+
+
 def main():
     srv = ThreadingHTTPServer(("127.0.0.1", 8799), _Mock)         # the lucid upstream the door proxies
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -290,6 +334,7 @@ def main():
     test_clean_rejects_oversize_dims()
     test_lucid_door_sends_share_key()
     test_claude_door_is_inert()
+    test_inbox_sweeps_expired()
     test_unbuilt_doors_fail_honestly()
     test_receipt_no_photo_bytes_and_no_warm()
     test_receipt_state_word_present_per_dest()
@@ -305,6 +350,7 @@ def main():
     test_live_capture_page_csp_no_remote_fonts(base)
     test_live_malformed_receipt_id_404(base)
     test_live_receipt_nojs_href_from_forwarded_host(base)
+    test_live_token_requires_origin(base)
     real.shutdown()
     srv.shutdown()
     print("\nALL PASS")

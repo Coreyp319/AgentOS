@@ -24,6 +24,24 @@ StartLimitBurst=5
 NoNewPrivileges=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=true
+# The hub only ever talks to loopback (:8765 lucid, :8642 hermes) and is fronted by `tailscale
+# serve` over loopback — so deny all non-local egress. This hard-caps the SSRF blast radius: a
+# future bug in a proxy door still cannot reach off-box. (Ignored with a log line if the user
+# manager lacks IP filtering — fail-open, never blocks startup.)
+IPAddressDeny=any
+IPAddressAllow=localhost
+# Cheap, low-risk sandboxing for a stdlib HTTP server that writes only under $HOME (key + inbox).
+UMask=0077
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 StandardOutput=journal
 StandardError=journal
 

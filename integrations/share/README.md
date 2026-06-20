@@ -24,9 +24,12 @@ must not share the dream loop's lifecycle — see ADR-0027 §2). The only edit t
 - **Hermes' API key never leaves the box** and is never sent to the phone; the hub reads it from
   its own environment. Hermes `:8642` and ComfyUI `:8188` stay loopback-only.
 - **Every path strips EXIF/GPS** before anything else sees the image.
-- The **Claude door never spawns `claude -p`** — it writes an inert, labeled-untrusted proposal
-  file. Execution is Phase 3, behind its own blocking review gate (privacy/security/reversibility/
-  resource-safety/ux on record first).
+- The **Claude door never spawns `claude -p`** — but it is *live and does store data*: it writes
+  the EXIF-stripped photo + the caption (labeled untrusted) as an inert `0600` proposal under
+  `~/.local/share/agentos/share-inbox/` for later desktop approval. That proposal **auto-expires**
+  (`SHARE_INBOX_TTL`, default ~24h) so a held share is never permanent on-disk PII. Execution is
+  Phase 3, behind its own blocking review gate (privacy/security/reversibility/resource-safety/ux
+  on record first) — "never executes" does *not* mean "stores nothing."
 
 ## Install (on the box)
 ```sh

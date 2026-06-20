@@ -8,7 +8,7 @@ Supersedes nothing; net-new. Companion design artifacts: the discourse brief
 position) `docs/design/0027-agentos-share-council-final.md`.
 
 Maturity: Phase 0/1 shipped. The hub is a dedicated `spikes/dreaming/lucid/lucid_share.py` (stdlib +
-PIL on :8770, tailnet-only via `tailscale serve`; `test_lucid_share.py`, 19/19), with install units
+PIL on :8770, tailnet-only via `tailscale serve`; `test_lucid_share.py`, 21/21), with install units
 in `integrations/share/` and the `:8770` exposure added to `agentosd-remote.sh`. The only edit to the
 concurrently-rewritten `lucid_web.py` was the ~15-line `X-Share-Key` acceptance on `/api/start`.
 Phase 2/3 remain the contract to honor before that code lands — this ADR is now the record of the
@@ -91,7 +91,34 @@ contract disarms the latent a11y cap the rating panel flagged.
 - New inbound surface = new attack surface; mitigated by cloning the whole Lucid guard stack and by
   the trust-class staging. First phone→execution path in the project (gated, last, plan-first).
 
+## Phase 0/1 security + privacy review (2026-06-20, advisory)
+The shipped surface (`lucid_share.py`) was reviewed by `security-reviewer` + `responsible-ai-privacy-
+skeptic` — the project's first inbound phone→box surface. **No CRITICAL findings**; the scary classes
+are closed (Claude door provably inert — no `subprocess`/`exec`; no SSRF in the proxies; key never
+logged or sent to the phone; receipt is a zero-photo/zero-caption capability page; EXIF/GPS stripped
+on every path; B2 gate fails closed; `hmac.compare_digest`; strict CSP; no off-box egress). One
+**material, convergent** finding and a cheap hardening cluster were **fixed in this slice** (tests
+21/21):
+- **Retention (HIGH):** the Claude door persisted the photo + caption with no expiry. **Fixed** — the
+  inbox now self-expires (`INBOX_TTL`, default ~24h, swept on each write); a held share is no longer
+  permanent on-disk PII.
+- **Honest framing (MED):** the "held"/"never executes" copy read as "stores nothing." **Fixed** —
+  the door + README now say the photo *is* stored on-box (auto-expiring) for later approval.
+- **Hardening:** Origin **fail-closed** on the PWA token branch (verified against the real PWA flow —
+  the iOS Shortcut key-path is unaffected); private `0700` dirs (mode-corrected); `O_EXCL` key
+  creation (no cross-process key divergence with `lucid_web`); 30s socket timeout (Slowloris);
+  systemd `IPAddressDeny=any`/`IPAddressAllow=localhost` (SSRF blast-radius cap) + `ProtectSystem`/
+  `UMask=0077`/syscall-filter sandboxing.
+- **Deferred (tracked):** the identical Origin-missing pass exists in the `lucid_web.py`
+  `X-Share-Key` hook (`_authed`/`/api/start`) — **not fixed here** because that file is the
+  concurrently-rewritten ADR-0028 tree; apply the same fail-closed fix in a quiet window so the Dream
+  door isn't left with the weaker check. Also deferred (privacy follow-ups, not Phase-0/1 blockers):
+  an inbox list/delete affordance + a first-run consent/retention line.
+
 ## Open / to resolve before ratification
+- **`lucid_web.py` Origin twin-fix** (from the review above): make `_authed` on the Dream door's
+  `X-Share-Key`/`/api/start` hook fail closed on a missing Origin, matching `lucid_share.py`. Held
+  only to avoid clobbering the in-flight ADR-0028 rewrite of that file.
 - **Hermes-task write mechanism** (pinned default, council gap #1): verified there is NO
   task-creation REST endpoint in `api_server.py`. **Chosen default: (b) shell Hermes' own
   `kanban` CLI** — honors don't-reinvent (call Hermes' own tool, not its sqlite file). Fallback:

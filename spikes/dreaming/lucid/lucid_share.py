@@ -80,6 +80,19 @@ _RECEIPTS: "dict[str, dict]" = {}
 _RECEIPT_ORDER: "list[str]" = []
 _RECEIPT_LOCK = threading.Lock()
 RECEIPT_TTL = 600       # /r/<id> 404s ~10 min after the share (the ring-of-64 bounds count, not time)
+# The Claude door's on-disk proposal self-expires so a held photo + caption is never permanent PII
+# (ADR-0027 retention). Long enough to approve on the desktop, short enough to forget on its own.
+INBOX_TTL = int(os.environ.get("SHARE_INBOX_TTL", str(24 * 3600)))
+
+
+def _ensure_private_dir(path: str) -> None:
+    """0700 dir, mode-corrected even when it already exists (os.makedirs(exist_ok=True) skips the
+    mode on an existing dir, so a parent left world-traversable would expose filenames+mtimes)."""
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
 
 
 def _load_share_key() -> str:
@@ -92,10 +105,16 @@ def _load_share_key() -> str:
                 return k
     except FileNotFoundError:
         pass
+    _ensure_private_dir(os.path.dirname(SHARE_KEY_FILE))
+    # O_EXCL: exactly one creator wins on a cold box; a peer racing the same first-run start (e.g.
+    # lucid_web reading on demand) loses the create and re-reads the winner's key, so the two
+    # services never diverge onto different keys. 0600 from the first byte.
+    try:
+        fd = os.open(SHARE_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        with open(SHARE_KEY_FILE) as f:
+            return f.read().strip()
     k = secrets.token_urlsafe(32)
-    os.makedirs(os.path.dirname(SHARE_KEY_FILE), exist_ok=True)
-    # write 0600 atomically
-    fd = os.open(SHARE_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(k + "\n")
     return k
@@ -202,7 +221,8 @@ def door_claude(jpeg: bytes, caption: str) -> dict:
     """Phase 3 (ADR-0027): write an INERT proposal file for desktop approval. THIS FILE NEVER
     EXECUTES claude -p. The caption is stored verbatim, clearly labeled untrusted phone input.
     A separate, human-approved desktop step (behind the blocking review gate) would act on it."""
-    os.makedirs(CLAUDE_INBOX, exist_ok=True)
+    _ensure_private_dir(CLAUDE_INBOX)
+    _sweep_inbox()                      # forget proposals past INBOX_TTL (ADR-0027 retention)
     rid = secrets.token_hex(8)
     img_path = os.path.join(CLAUDE_INBOX, f"{rid}.jpg")
     with open(os.open(img_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
@@ -210,7 +230,9 @@ def door_claude(jpeg: bytes, caption: str) -> dict:
     meta = {"id": rid, "status": "proposed", "source": "phone-share",
             "untrusted": True, "caption_from_phone": (caption or "")[:MAX_CAPTION],
             "image": img_path, "ts": int(time.time()),
-            "note": "INERT. Requires explicit human approval on the desktop. Not executed."}
+            "expires_ts": int(time.time()) + INBOX_TTL,
+            "note": (f"INERT. Requires explicit human approval on the desktop. Not executed. "
+                     f"Auto-expires ~{INBOX_TTL // 3600}h after creation if not approved.")}
     with open(os.open(os.path.join(CLAUDE_INBOX, f"{rid}.json"),
                       os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         json.dump(meta, f, indent=2)
@@ -220,6 +242,28 @@ def door_claude(jpeg: bytes, caption: str) -> dict:
 
 DOOR_FN = {"lucid": door_lucid, "hermes-chat": door_hermes_chat,
            "hermes-task": door_hermes_task, "claude": door_claude}
+
+
+def _sweep_inbox() -> None:
+    """Drop Claude-inbox proposals (photo + caption) past INBOX_TTL so a held share forgets itself
+    the way the receipt ring does — no permanent on-disk PII (ADR-0027 retention). Best-effort and
+    quiet; run on each new write so the directory stays bounded without a separate timer."""
+    now = time.time()
+    try:
+        names = os.listdir(CLAUDE_INBOX)
+    except FileNotFoundError:
+        return
+    stems = {n.rsplit(".", 1)[0] for n in names if n.endswith((".json", ".jpg"))}
+    for stem in stems:
+        paths = [os.path.join(CLAUDE_INBOX, f"{stem}.json"),
+                 os.path.join(CLAUDE_INBOX, f"{stem}.jpg")]
+        mtimes = [os.path.getmtime(p) for p in paths if os.path.exists(p)]
+        if mtimes and now - max(mtimes) > INBOX_TTL:
+            for p in paths:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 
 def _remember(receipt: dict) -> str:
@@ -399,7 +443,7 @@ h1 em{font-style:italic;color:var(--cool)}
     <span class=t>Hermes task</span><span class=d>add to the board</span><span class=tag>soon</span></button>
   <button class="door is-future" data-dest=claude role=radio aria-checked=false>
     <svg viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=1.6 stroke-linecap=round stroke-linejoin=round><path d="M12 3l2.1 6.9L21 12l-6.9 2.1L12 21l-2.1-6.9L3 12l6.9-2.1Z"/></svg>
-    <span class=t>Claude</span><span class=d>propose for approval</span><span class=tag>held</span></button>
+    <span class=t>Claude</span><span class=d>save a proposal on your box</span><span class=tag>held</span></button>
 </div>
 
 <button class=go id=go disabled>Send to your box</button>
@@ -626,6 +670,8 @@ def _icon(size: int) -> bytes:
 # ---- HTTP handler -----------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
     server_version = "agentos-share"
+    timeout = 30          # reap a stalled/slow-drip connection (Slowloris) — StreamRequestHandler
+                          # applies this to the socket; a 20 MB tailnet upload fits comfortably.
 
     def log_message(self, *a):       # quiet; systemd journal captures what we choose to print
         pass
@@ -688,10 +734,11 @@ class Handler(BaseHTTPRequestHandler):
         if hmac.compare_digest(self.headers.get("X-Share-Key", ""), SHARE_KEY):
             return True
         if hmac.compare_digest(self.headers.get("X-Share-Token", ""), CSRF):
-            origin = self.headers.get("Origin")
-            if origin and origin not in ORIGIN_OK:
-                return False
-            return True
+            # The token = the browser PWA (the iOS Shortcut uses X-Share-Key above and never reaches
+            # here). Browsers send Origin on every state-changing fetch, so require it to be in the
+            # allowlist — fail closed on a missing/foreign Origin rather than letting a leaked token
+            # authenticate a cross-origin or non-browser caller.
+            return self.headers.get("Origin") in ORIGIN_OK
         return False
 
     def do_POST(self):
@@ -749,7 +796,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    os.makedirs(CLAUDE_INBOX, exist_ok=True)
+    _ensure_private_dir(CLAUDE_INBOX)
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     hk = "set" if HERMES_API_KEY else "MISSING (Hermes chat disabled)"
     print(f"[lucid_share] listening on http://{HOST}:{PORT}  lucid={LUCID_BASE}  hermes={hk}", flush=True)
