@@ -89,7 +89,29 @@ integrations/agentosd-remote.sh up       # serve the UIs   (down | status)
 
 `serve` CLI flags vary slightly by version — check `tailscale serve --help` if one differs.
 From the phone: `https://<your-box>.<your-tailnet>.ts.net:8765/` (Lucid), `:9123`, etc. TLS
-via the tailnet cert; reachable only by your devices; nothing public. **Do not** serve 8188
+via the tailnet cert; reachable only by your devices; nothing public.
+
+### Interactive-app origin caveat (learned 2026-06-19)
+
+The read-only panels work over `serve` as-is. Apps with **localhost-origin security** need the
+tailnet name explicitly allowed, or their POST actions fail under a different hostname:
+
+- **Lucid (8765)** rejects the tailnet `Origin` (a defense-in-depth check on top of its
+  per-process CSRF token), so the page loads but actions 403 — the UI then shows a "csrf"/reload
+  loop. Fix: allow the tailnet origin via env — a systemd drop-in for `agentos-lucid.service` at
+  `~/.config/systemd/user/agentos-lucid.service.d/override.conf`:
+
+  ```ini
+  [Service]
+  Environment=LUCID_EXTRA_ORIGINS=https://<your-box>.<tailnet>.ts.net:8765
+  ```
+
+  then `systemctl --user daemon-reload && systemctl --user restart agentos-lucid.service`.
+  (Backed by `LUCID_EXTRA_ORIGINS` in `spikes/dreaming/lucid/lucid_web.py`.)
+
+- **Hermes board (9119)** has a DNS-rebinding guard that rejects any non-loopback `Host` (400);
+  `--insecure` does NOT relax it. Its intended remote mode is a non-loopback bind + OAuth auth
+  gate — until that's set up, drive the board via Telegram. Don't `serve` it expecting it to work. **Do not** serve 8188
 (ComfyUI) or, unless you mean to, 8642 (the REST API already has its own Bearer auth).
 
 ### Teardown
