@@ -9,7 +9,8 @@ reopens when the last call finishes.
 
 Design + review: ``docs/research/0006-*`` (brief) and ``docs/research/0007-*`` (5-reviewer
 scorecard). The logic lives in ``lease_state.py`` (pure core) + ``coordinator.py`` (driver)
-+ ``lease_client.py`` (hardened busctl transport); this file is just the Hermes wiring.
++ ``lease_client.py`` (persistent jeepney transport, busctl fallback); this file is just
+the Hermes wiring.
 
 Fail-open everywhere (ADR-0003): if the coordinator is down/slow/denying, inference simply
 proceeds without the lease — a broken plugin can only fail to *serialize* the dream lane,
@@ -59,7 +60,7 @@ def _get_coordinator():
         return _COORD
     with _COORD_LOCK:
         if _COORD is None:
-            client = _lease_client.BusctlLeaseClient(
+            client = _lease_client.make_lease_client(
                 timeout_s=_env_float("AGENTOS_GPU_BUSCTL_TIMEOUT_S", 1.0),
             )
             _COORD = _coordinator.LeaseCoordinator(

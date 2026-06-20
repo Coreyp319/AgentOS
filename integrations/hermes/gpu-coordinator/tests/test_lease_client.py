@@ -12,12 +12,19 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import lease_client as _lc  # noqa: E402
 from lease_client import (  # noqa: E402
     parse_call_reply,
     parse_acquire,
     parse_bool_reply,
     parse_status,
+    _JEEPNEY_OK,
 )
+
+try:
+    from jeepney import MessageType as _MT
+except Exception:  # pragma: no cover
+    _MT = None
 
 # --- real captured samples ---
 ACQUIRE_DENIED = '{"type":"bts","data":[false,0,"denied: short 261M (free 2299M vs est 2048M + headroom 512M)"]}'
@@ -102,6 +109,114 @@ class TestParseStatus(unittest.TestCase):
 
     def test_short_is_none(self):
         self.assertIsNone(parse_status('{"type":"bstu","data":[true,"x"]}'))
+
+
+# --- persistent jeepney transport (the ADR-0013 B4 fix) ---------------------------------
+
+class _FakeHeader:
+    def __init__(self, mt):
+        self.message_type = mt
+
+
+class _FakeReply:
+    def __init__(self, body, mt=None):
+        self.body = body
+        self.header = _FakeHeader(mt if mt is not None else (_MT.method_return if _MT else None))
+
+
+class _FakeConn:
+    """A scripted stand-in for a jeepney blocking connection."""
+    def __init__(self, script):
+        self.script = list(script)   # each item: a _FakeReply, or an Exception to raise
+        self.calls = []
+        self.closed = False
+
+    def send_and_get_reply(self, msg, timeout=None):
+        self.calls.append(msg)
+        item = self.script.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    def close(self):
+        self.closed = True
+
+
+@unittest.skipUnless(_JEEPNEY_OK, "jeepney not installed")
+class TestJeepneyLeaseClient(unittest.TestCase):
+    def setUp(self):
+        self._orig_open = _lc.open_dbus_connection
+        self._made = []     # connections handed out, in order
+        self._queue = []    # connections to hand out (else an empty FakeConn)
+
+        def factory(*a, **k):
+            c = self._queue.pop(0) if self._queue else _FakeConn([])
+            self._made.append(c)
+            return c
+
+        _lc.open_dbus_connection = factory
+
+    def tearDown(self):
+        _lc.open_dbus_connection = self._orig_open
+
+    @staticmethod
+    def _r(body, mt=None):
+        return _FakeReply(body, mt)
+
+    def test_acquire_renew_release_reuse_one_connection(self):
+        # THE FIX: a cooperative lease must ride ONE persistent connection so the daemon's
+        # B4 peer-disconnect auto-release does not fire between calls.
+        conn = _FakeConn([
+            self._r([True, 7, "granted"]),   # Acquire
+            self._r([True]),                 # Renew
+            self._r([True]),                 # Release
+        ])
+        self._queue = [conn]
+        cl = _lc.JeepneyLeaseClient(timeout_s=1.0)
+        self.assertEqual(cl.acquire("interactive", 1024), (True, 7))
+        self.assertTrue(cl.renew(7))
+        self.assertTrue(cl.release(7))
+        self.assertEqual(len(self._made), 1)     # opened exactly once
+        self.assertEqual(len(conn.calls), 3)     # all three verbs over it
+        self.assertFalse(conn.closed)            # connection kept alive
+
+    def test_denied_acquire_fails_open(self):
+        self._queue = [_FakeConn([self._r([False, 0, "denied"])])]
+        self.assertEqual(_lc.JeepneyLeaseClient().acquire("interactive", 1024), (False, None))
+
+    def test_status_decodes_body(self):
+        self._queue = [_FakeConn([self._r([True, "interactive", 7, 12000])])]
+        self.assertEqual(_lc.JeepneyLeaseClient().status(), (True, "interactive", 7, 12000))
+
+    def test_socket_error_drops_then_reconnects(self):
+        broken = _FakeConn([RuntimeError("socket gone")])
+        fresh = _FakeConn([self._r([True, 9, "granted"])])
+        self._queue = [broken, fresh]
+        cl = _lc.JeepneyLeaseClient()
+        self.assertEqual(cl.acquire("interactive", 1024), (False, None))  # fail-open
+        self.assertTrue(broken.closed)                                    # dropped
+        self.assertEqual(cl.acquire("interactive", 1024), (True, 9))      # reconnected
+        self.assertEqual(len(self._made), 2)
+
+    @unittest.skipUnless(_MT is not None, "jeepney MessageType unavailable")
+    def test_dbus_error_reply_keeps_connection(self):
+        conn = _FakeConn([
+            self._r(["boom"], mt=_MT.error),   # error reply → fail-open, but conn is healthy
+            self._r([True, 3, "granted"]),     # reused, no reconnect
+        ])
+        self._queue = [conn]
+        cl = _lc.JeepneyLeaseClient()
+        self.assertEqual(cl.acquire("interactive", 1024), (False, None))
+        self.assertFalse(conn.closed)
+        self.assertEqual(cl.acquire("interactive", 1024), (True, 3))
+        self.assertEqual(len(self._made), 1)   # NOT reconnected on an error reply
+
+    def test_bad_tier_never_touches_the_bus(self):
+        conn = _FakeConn([])
+        self._queue = [conn]
+        self.assertEqual(_lc.JeepneyLeaseClient().acquire("bogus", 1024), (False, None))
+        self.assertEqual(len(conn.calls), 0)
+        self.assertEqual(len(self._made), 0)
 
 
 if __name__ == "__main__":
