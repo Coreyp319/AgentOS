@@ -12,3 +12,7 @@ __pycache__/
 
 # transient git worktrees (e.g. the act-verbs worktree) — never commit a nested working tree
 /.claude/worktrees/
+
+# editor/tool backups (DesignSync *.orig conflict-origins, *.bak) — never commit
+*.orig
+*.bak

@@ -12,12 +12,18 @@ Backend at `~/ComfyUI`; repo glue at `spikes/dreaming/`. Dated facts are mid-202
 | **Wan 2.2 5B (TI2V)** | Apache-2.0 | both | native, ~8 GB | fast | via 14B LoRAs | quick iteration, smoke tests |
 | **Wan 2.2 14B (A14B)** | Apache-2.0 | both (sep T2V/I2V) | fp8 ✓ / 720p heavy | med (4-step LoRA) | **largest** (Civitai) | **default for quality + NSFW** |
 | **HunyuanVideo 1.5 (8.3B)** | Tencent (EU/UK/KR excluded) | both | ~14 GB | med | thin | motion/cinematic; avoid for NSFW |
-| **LTX-2 (19B)** | Apache-2.0 | both + audio | fp8 ~14 GB | **fastest** | small | speed; watch for realism gains |
+| **LTX-2 (19B) / 2.3 (22B)** | Apache-2.0 | both + audio | 2: fp8 ~14 GB · **2.3: GGUF-only on 24 GB** (note) | **fastest** | 2.3: Sulphur-2, 10Eros | speed; watch for realism gains |
 
 **Architecture note (Wan 2.2 14B):** Mixture-of-Experts — a **high-noise expert** (early steps:
 composition, bodies, motion) + a **low-noise expert** (late steps: skin, detail). Run as two
 chains, each `UNETLoader → ModelSamplingSD3 → KSamplerAdvanced`, split at a step boundary; do not
 merge. Most 14B LoRAs/checkpoints ship paired **high + low** files.
+
+**Version note (LTX-2.3 vs LTX-2, 24 GB):** LTX-2.3 is ~**22B** (not the 19B LTX-2 above). Full BF16
+≈ 46 GB, fp8 ≈ 29–30 GB, NVFP4 ≈ 21.7 GB — so **fp8 does NOT fit cleanly on 24 GB** (the standard
+desktop build wants 32 GB; a separate 24 GB "Multifunctional" variant exists). On the 4090 LTX-2.3 is
+**GGUF-bound**: **Q6_K (17.8 GB)** is the quality/headroom sweet spot, Q8_0 (22.8 GB) is too tight
+(offload thrash). The rare case where §VRAM's "GGUF only when VRAM-bound" actually fires.
 
 **Closed / API-only (NOT local, content-filtered — ignore for this project):** Seedance (ByteDance),
 Veo (Google), Kling, Hailuo, Sora, **Wan 2.5/2.6/2.7** (weights never released). They top quality
@@ -92,6 +98,51 @@ Notable open mirrors: `Instara/instareal-wan-2.2` (realism LoRA, free mirror of 
 anatomy-focused, ships workflows), `Phr00t/WAN2.2-14B-Rapid-AllInOne` (all-in-one, Lightning-baked,
 deprecated/weak faces).
 
+**LTX-2.3 NSFW (newest line — watch-list, not default).** `TenStrip/LTX2.3-10Eros` — an NSFW
+**I2V-only** finetune (layer-scaled step merge on `SulphurAI/Sulphur-2-base`, itself an uncensored
+LTX-2.3 T2V/I2V finetune). The creator ships their own ComfyUI **workflows**
+(`TenStrip/LTX2.3-10Eros_Workflows`) **and custom nodes** (`github.com/TenStrip/10S-Comfy-nodes`), so
+the converter may need a bypass/subgraph pass before it slots into `comfy_client.py`. 24 GB path =
+GGUF mirror `vantagewithai/LTX2.3-10Eros-GGUF` (Q3_K→Q8_0; **Q6_K = 17.8 GB** sweet spot). I2V-by-
+design (no T2V anatomy lottery — matches NSFW rule #3) and **prompt-heavy** ("LTX must be commanded");
+**discourages distilled LoRAs** → no few-step mode → still good-when-slow, *not* the speed inflection.
+License unstated on the card (LTX-2 base = Lightricks license). Experimental; vet per-file for the
+minors/real-likeness exclusions below before download.
+
+**Working 24 GB I2V recipe (VERIFIED 2026-06-19 — clean coherent clip in ~85 s).** GGUF route on the
+box's installed LTX-2 stack (`comfyui-vrgamedevgirl` + `ComfyUI-GGUF` + KJNodes): `UnetLoaderGGUF` ←
+`10Eros_v1-Q4_K_M.gguf` (14.3 GB → `models/unet`); `DualCLIPLoaderGGUF` ← [gemma-3-12b TE (12.8 GB →
+`models/text_encoders`), `ltx-2.3_text_projection_bf16.safetensors` (2.3 GB), type **`ltxv`**];
+`VAELoaderKJ` ×2 ← `LTX23_video_vae_bf16` / `LTX23_audio_vae_bf16` (from `Kijai/LTX2.3_comfy`, ~1.8 GB).
+Build with `spikes/dreaming/build_10eros_i2v.py`: it clones ComfyUI's own `video_ltx2_i2v_distilled`
+template, swaps those loaders in, **prunes the 2nd-stage spatial-upscale refine** (halves VRAM, no
+upscaler download) and **bypasses the V3 `ResizeImageMaskNode`** (`scale_method` enum drift). Key
+gotchas: (1) the flattened template wires `EmptyLTXVLatentVideo.length` → `GetImageSize.width`, so it
+over-runs to ~505 frames and **melts past LTX's ~5 s window** — pin `length` to a literal (≤121).
+(2) `ollama stop <model>` first — Ollama auto-loads and eats ~19 GB.
+(3) **output resolution is hardwired** to an `EmptyImage → ImageScaleBy(0.5) → GetImageSize → 512×288`
+path, NOT the seed; `longer_edge` only resizes the *conditioning* image. Pin
+`EmptyLTXVLatentVideo.width/height` to literals (seed aspect, /32) **≥768** or **people render as a
+particle-mist** (low res = mangled faces, REF rule #4). (4) pruning the refine stage leaves the base
+stage on its **partial distilled sigma schedule** (8 steps front-loaded near σ=1, meant to hand to
+stage 2) → undercooked detail; swap `ManualSigmas` for **`LTXVScheduler(steps≈20)`** for a full
+single-stage denoise. (3)+(4) are *the* fix for "people are a mist of particles" on the minimal graph.
+The fp8mixed all-in-one (34 GB)
+and fp8 transformer (30 GB) do **not** fit 24 GB; GGUF Q4_K_M (or Q6_K, 17.8 GB) is the only clean fit.
+
+**Node-pack install gotchas (for TenStrip's *full* UI workflows).** The `~/ComfyUI/.venv` is
+**uv-managed and has NO `pip`** — `python -m pip install` silently no-ops ("No module named pip");
+use **`uv pip install --python ~/ComfyUI/.venv/bin/python <pkg>`** (pin `torch==2.6.0+cu124` +
+`numpy==2.4.4` via `-c` so a pack can't downgrade the core — numba/librosa try to). The full
+`10Eros_10SNodes_*` workflows need: `10s-comfy-nodes`, `ComfyMath`, `comfyui-various` (+`soundfile`),
+`ComfyUI-Easy-Use` (+`lark`), `RES4LYF` (+`pywavelets`/pywt), `ControlAltAI-Nodes`, `ComfyUI-mxToolkit`,
+and `ComfyUI-LTXVideo` for `STGGuiderAdvanced`. **LTXVideo breaks on kornia 0.8.3** (`cannot import
+'pad' from kornia.geometry.transform.pyramid`) — patch `pyramid_blending.py`: drop `pad` from the
+kornia import and add `pad = F.pad` (old kornia `pad` was a thin `torch.nn.functional.pad` wrapper).
+`RTXVideoSuperResolution` needs NVIDIA's proprietary MAXINE `nvvfx` SDK — leave it disabled and bypass
+that one node (final super-res) in the workflow. Installed-pack order matters: `comfyui-vrgamedevgirl`
+sorts after `ComfyUI-LTXVideo`, so it wins on the shared `LTXV*` nodes (the minimal recipe is unaffected).
+
 **Civitai = FREE to download** (it is not a paid service). You only need a **free account + API
 token** (Account → API Keys) because mature content sits behind login (and the `civitai.red`
 mirror); enable mature content in account settings. The optional paid side (membership / "Buzz") is
@@ -132,6 +183,17 @@ hard-won piece — it handles every gotcha discovered shipping the test matrix:
 - **Always surface `/prompt` 400 bodies** (`_post` raises with the body) — ComfyUI validation errors
   name the exact node/input.
 - **`free_vram()`** POSTs `/free` (empty body — don't JSON-parse; just check 2xx).
+
+**Known gap (found 2026-06-19, smoke-testing the `TenStrip/LTX2.3-10Eros` workflow):** the converter
+does **not yet resolve virtual nodes** — KJNodes `SetNode`/`GetNode` (set/get-by-name routing),
+single-value widget nodes (`mxSlider`/`PrimitiveFloat`/`TwoWaySwitch`/`Sigmas Easing`), and reroutes.
+ComfyUI's own *Save (API)* inlines these; `ui_to_api` emits them as real API nodes, so any input that
+wires *through* a Get/Set points at an unknown `class_type` → `/prompt` 400 (in `10Eros_…_TiledSampler.json`:
+**24 Get/Set nodes, 20 real inputs routed through them**). Wan-2.2 templates/Remix don't use Get/Set, so
+this only bites on LTX-2 community graphs. Fix = a **virtual-node pass** (map each `SetNode` title→its
+source link; rewrite each matching `GetNode` consumer to that source; inline single-value widget nodes),
+a sibling to the existing subgraph/bypass passes. The converter is otherwise robust on this graph
+(91 nodes, no subgraphs, zero bypassed nodes, `MarkdownNote` correctly dropped).
 
 Helpers built around it: `test_aio.py` (single all-in-one checkpoint → T2V) and `test_gguf_moe.py`
 (dual-expert GGUF, non-distilled, real CFG).
@@ -222,7 +284,9 @@ single config is *both*. Monitor these; when one lands, re-validate and revisit 
 - **Faster quants without the dequant tax** — NVFP4/fp4 on Ada, better fp8 kernels, GGUF speedups;
   anything that makes 720p/81f land in <~60 s without offload.
 - **Natively-fast open models** — the LTX-2.x line (speed-first, Apache); any new open arch that
-  closes the quality gap at low step counts.
+  closes the quality gap at low step counts. *Datapoint (2026-06): NSFW finetunes have now landed on
+  this line — `Sulphur-2`, `10Eros` on LTX-2.3 — but 2.3 is 22B / GGUF-bound on 24 GB and shuns
+  distill LoRAs, so it's good-when-slow, not yet the inflection.*
 - **Open weight drops** — if Wan 2.5+/a successor ever releases weights (currently API-only), or a
   new open SOTA appears (track Artificial Analysis video arena for open models closing on
   Seedance/Veo/Kling).
