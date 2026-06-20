@@ -1,4 +1,4 @@
-# ADR-0017: The boot stack and the status panel (read-only boot-health)
+# ADR-0026: The boot stack and the status panel (read-only boot-health)
 
 - Status: Proposed
 - Date: 2026-06-16

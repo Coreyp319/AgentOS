@@ -18,7 +18,7 @@ including what comes up **at boot** as `--user` systemd services.
 The **status panel** is the front door: it shows the live state of *every* service below
 (plus the Nimbus desktop services from the WhiteSur pack — wallpaper, reactivity bridges,
 notifications, theming), with quick links, inline "Why?" logs, and copy-don't-execute
-recovery. Per ADR-0017 it opens at login **only when something needs attention** (clean
+recovery. Per ADR-0026 it opens at login **only when something needs attention** (clean
 boots stay silent; the keyhole tray carries the calm). Its catalog is editable — see
 `status-panel/README.md`; the cross-surface division of labor is in `design/surface-labor.md`.
 

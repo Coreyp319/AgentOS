@@ -3,7 +3,7 @@
 A calm, read-only web panel that shows the live state of the whole AgentOS + Nimbus
 boot stack: each systemd unit's status (user + system) plus a quick port/HTTP
 reachability check for the services that expose one. Per the surface-labor contract
-(ADR-0017), the all-clear is silence: it opens at login **only when something needs
+(ADR-0026), the all-clear is silence: it opens at login **only when something needs
 attention** — a clean boot stays quiet (the keyhole tray carries the calm). Open it from
 the tray, or `http://127.0.0.1:9123`, any time.
 

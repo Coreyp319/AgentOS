@@ -17,7 +17,7 @@ install -m644 "$HERE/$UNIT" "$UNIT_DIR/$UNIT"
 # The panel is the login landing page; retire the dashboard-only opener if present.
 rm -f "$AUTOSTART_DIR/hermes-dashboard-open.desktop"
 
-# Ambient-first (ADR-0017, surface-labor contract): the all-clear is silence. The opener
+# Ambient-first (ADR-0026, surface-labor contract): the all-clear is silence. The opener
 # waits for the panel to serve, gives the stack a settle window, then opens the browser
 # ONLY if something needs attention (summary.attention > 0). A clean boot opens nothing —
 # the keyhole tray carries the calm. Plain grep (no jq); json.dumps emits `"attention": N`.

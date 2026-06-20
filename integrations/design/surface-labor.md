@@ -12,7 +12,7 @@ earned.** A surface that is quiet is not broken — it's the floor being solid.
 |---|---|---|---|
 | **Reactive wallpaper** | fleet *mood* | working · needs-you · snag · idle (and a *quieter-than-idle* stale posture) | boot-health, per-service failure, anything you must act on |
 | **Keyhole tray** (ADR-0012) | the glanceable *fact* + always-on fallback | fleet state, VRAM lease, and the boot board *on demand* (when you open it) | interrupting; standing alarms |
-| **Status panel** (ADR-0017) | the *full* boot board — diagnose & recover | every service's live state, "why", the copyable fix | mutating the system; being the all-clear (the all-clear is its own absence) |
+| **Status panel** (ADR-0026) | the *full* boot board — diagnose & recover | every service's live state, "why", the copyable fix | mutating the system; being the all-clear (the all-clear is its own absence) |
 | **swaync notifications** | the *interrupt* | "needs you", and a service that **fell over after boot** (a regression) | boot-time amber (expected churn); re-firing for a still-failed unit |
 
 ## Rules that fall out of this
