@@ -138,6 +138,38 @@ same-network; Tailscale is the real "anywhere" answer.
 
 ---
 
+## Hardening — the tailnet is the auth (do these)
+
+The exposed UIs are unauthenticated; their security rests entirely on the tailnet. Verified
+clean 2026-06-19: `serve` (not `funnel`), api_server localhost-only, secrets `0600`, Telegram
+fail-closed + allowlisted to one user. To keep it that way:
+
+1. **Enable Tailscale account 2FA** (and on the SSO it's tied to). A compromised account or an
+   added/malicious tailnet device = direct reach to Lucid (NSFW + GPU) and the panels. Highest-
+   leverage item.
+2. **Stay on `serve`, never `funnel`.** `serve` = tailnet-only; `funnel` = public internet. Check
+   with `tailscale serve status` — every line must say "tailnet only".
+3. **Restrict the serve ports with an ACL** (matters most once you add a user or share a node). In
+   the admin console → Access Controls, apply a policy like this, then assign `tag:agentos` to the
+   box:
+
+   ```json
+   {
+     "tagOwners": { "tag:agentos": ["autogroup:admin"] },
+     "acls": [
+       { "action": "accept", "src": ["autogroup:member"],
+         "dst": ["tag:agentos:8765,9123,9124,9119,22"] },
+       { "action": "accept", "src": ["autogroup:member"], "dst": ["autogroup:self:*"] }
+     ]
+   }
+   ```
+
+   Only your own devices reach the AgentOS ports; a shared/added user can't, even on the tailnet.
+4. **Never set `GATEWAY_ALLOW_ALL_USERS=true`** — it bypasses the Telegram allowlist (the bot is
+   currently fail-closed and locked to a one-entry allowlist).
+5. **Keep api_server (:8642) localhost-only** and the board (9119) host-guarded / OAuth-gated —
+   don't `serve` either without its auth.
+
 ## Why not just drive Lucid from Telegram?
 
 Lucid is visual, interactive-branching, heavy (minutes/beat through the VRAM lease), and B2
