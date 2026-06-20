@@ -20,6 +20,7 @@ clobber. (security-review S-class: never delegate path safety.)
 import json
 import os
 import re
+import secrets
 import shutil
 
 _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -275,6 +276,55 @@ def purge_persistent(session):
     # 3. the chain dir itself
     _rm(session_dir(session, False))
     return removed, failed
+
+
+def new_session_id(name=None):
+    """A fresh, collision-free, validated session id for a NEW dream — a slug of the user's `name`
+    plus a short random suffix. So named dreams coexist in the library (the old single hardcoded
+    'web' session clobbered the prior dream every start). Always passes valid_session()."""
+    base = re.sub(r"[^A-Za-z0-9]+", "-", (name or "").strip()).strip("-")[:40] or "dream"
+    for _ in range(50):
+        cand = f"{base}-{secrets.token_hex(3)}"
+        if valid_session(cand) and not os.path.exists(session_dir(cand, False)) \
+                and not os.path.exists(session_dir(cand, True)):
+            return cand
+    return "dream-" + secrets.token_hex(6)
+
+
+def list_persistent():
+    """The saved (non-private) dream LIBRARY: one metadata row per persistent session that has a
+    readable chain.json, newest-edited first. Path-free by design (the web layer maps `session` ->
+    routes); never lists a private dream (a private chain that somehow landed here is skipped, not
+    leaked). Robust: a torn/foreign/symlinked dir is skipped, never raised on."""
+    root = _persistent_root()
+    if not os.path.isdir(root):
+        return []
+    out = []
+    for s in os.listdir(root):
+        d = os.path.join(root, s)
+        cp = os.path.join(d, "chain.json")
+        if not valid_session(s) or os.path.islink(d) or not os.path.isfile(cp):
+            continue
+        try:
+            with open(cp) as f:
+                chain = json.load(f)
+        except Exception:
+            continue
+        if chain.get("private"):
+            continue
+        nodes = chain.get("nodes") or []
+        tip = nodes[-1] if nodes else None
+        out.append({
+            "session": s,
+            "name": chain.get("name") or s,
+            "premise": chain.get("premise"),
+            "created": chain.get("created"),
+            "updated": os.path.getmtime(cp),
+            "frames": len(nodes),
+            "tip": (tip.get("id") if tip else None),
+        })
+    out.sort(key=lambda e: e.get("updated") or 0, reverse=True)
+    return out
 
 
 def list_private():

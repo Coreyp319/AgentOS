@@ -41,10 +41,26 @@ import lucid_linear as L   # noqa: E402  (safe MVP path: gate -> confirm-evict -
 import lucid_safety as S   # noqa: E402
 import lucid_t2i as T2I    # noqa: E402  (text-to-opening seed source — ADR-0015)
 import lucid_hub as H      # noqa: E402  (ADR-0019: the held/needs-review board + retry/dismiss/approve)
+import lucid_stash as SH   # noqa: E402  (ADR-0028: the encrypted, passphrase-locked private stash)
 
 HOST = os.environ.get("LUCID_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LUCID_WEB_PORT", "8765"))
-SESSION = os.environ.get("LUCID_WEB_SESSION", "web")
+# The CURRENT dream is now mutable (ADR-0028: save & reopen). The web app was hardcoded to one
+# session ("web") and clobbered it on every start; it now switches between many named saved dreams
+# (the library) and decrypted stash dreams. _CUR holds the active session; SESSION_LOCK serializes a
+# switch against the readers. A switch always rides _end_session() (epoch bump + lease release) so a
+# beat in flight for the old session can neither clobber the new one nor leak its lease.
+_CUR = {"session": os.environ.get("LUCID_WEB_SESSION", "web")}
+SESSION_LOCK = threading.Lock()
+
+
+def cur_session():
+    return _CUR["session"]
+
+
+def set_session(name):
+    with SESSION_LOCK:
+        _CUR["session"] = name
 ORIGIN_OK = {f"http://{HOST}:{PORT}", f"http://localhost:{PORT}"}
 # Extra trusted origins (comma-separated) — e.g. a tailnet HTTPS name behind `tailscale serve`
 # so Lucid works on the go. The per-process CSRF token stays the primary guard (a cross-origin
@@ -61,6 +77,21 @@ _MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": 
 # Per-process CSRF token: embedded in the page, required as a header on every state-changing POST.
 # A cross-origin page can't read it (same-origin policy), so it closes the missing-Origin CSRF gap.
 CSRF = secrets.token_hex(16)
+
+
+def _share_key():
+    """ADR-0027: the file-backed X-Share-Key shared with the phone-share hub (lucid_share.py).
+    Read on demand so service start-order doesn't matter; '' (file missing) disables the share
+    path entirely. tailnet membership is the real boundary; this key is defense-in-depth."""
+    p = os.environ.get("SHARE_KEY_FILE") or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "agentos", "share.key")
+    try:
+        with open(p) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
 # Bound the expensive start path (each upload = an image decode + a ~13s vision model load) so a
 # burst of /api/start can't exhaust memory / thrash the GPU the coordinator arbitrates (security).
 _START_SEM = threading.BoundedSemaphore(2)
@@ -112,7 +143,7 @@ def _supersede_turn():
         TURN.update(phase="idle", label=None, error=None, started=None)
 
 
-def _run_turn(prompt, label, epoch=None, length=None, parent_id=None):
+def _run_turn(prompt, label, epoch=None, length=None, parent_id=None, session=None):
     """Worker: drive ONE leased turn, then record an honest outcome (never a silent no-op).
     Warm-keep: ensure the session's batch lease (spawn ComfyUI once, reuse after) and hand it to
     step() as external — step neither Spawns nor Releases, so ComfyUI stays warm across beats.
@@ -120,6 +151,7 @@ def _run_turn(prompt, label, epoch=None, length=None, parent_id=None):
     start/delete/burn supersedes this turn mid-beat, both step's chain persist and the terminal TURN
     update are discarded. `epoch=None` (tests / untracked callers) keeps the legacy unguarded path."""
     global TOKEN_DEADLINE
+    session = session or cur_session()   # captured at /api/dream time so a mid-beat switch can't reroute it
     try:
         if epoch is not None and not _epoch_current(epoch):  # superseded before we even spawned — skip
             return
@@ -127,7 +159,7 @@ def _run_turn(prompt, label, epoch=None, length=None, parent_id=None):
             phase, err = "skipped", None
         else:
             is_current = (lambda: _epoch_current(epoch)) if epoch is not None else None
-            node = L.step(SESSION, prompt, label, external_lease=True, is_current=is_current,
+            node = L.step(session, prompt, label, external_lease=True, is_current=is_current,
                           length=length, parent_id=parent_id)
             phase, err = ("done" if node else "skipped"), None
     except SystemExit as e:        # red-line gate refused the prompt (B3)
@@ -265,9 +297,9 @@ def _lease_reaper():
                 CURRENT_TOKEN, TOKEN_DEADLINE = None, None
 
 
-def chain_or_none():
+def chain_or_none(session=None):
     try:
-        return L.load_chain(SESSION)
+        return L.load_chain(session or cur_session())
     except Exception:
         return None
 
@@ -313,11 +345,17 @@ def _decode_seed(raw):
 def state():
     """Fast — readiness + chain + private. The slow beat proposal (Ollama) is a SEPARATE endpoint
     (/api/beats) so the page renders instantly and never blocks on a model load."""
-    chain = chain_or_none()
-    return {"session": SESSION, "readiness": readiness(), "chain": chain,
-            "private": L.ST.is_private(SESSION) or bool(chain and chain.get("private")),
+    sess = cur_session()
+    chain = chain_or_none(sess)
+    return {"session": sess, "name": (chain.get("name") if chain else None),
+            "readiness": readiness(), "chain": chain,
+            "private": L.ST.is_private(sess) or bool(chain and chain.get("private")),
             "turn": turn_snapshot(),
-            "engine": {"active": L.E.current_engine(), "options": ["wan", "10eros"]}}
+            "engine": {"active": L.E.current_engine(), "options": ["wan", "10eros"]},
+            # ADR-0028: the encrypted private stash — status only (never an entry list here; that
+            # requires an unlock and rides /api/stash). `saved` = is THIS dream already in the stash?
+            "stash": {"exists": SH.exists(), "unlocked": SH.is_unlocked(),
+                      "saved_id": SH.opened_sessions().get(sess)}}
 
 
 def beats(node_id=None):
@@ -332,7 +370,7 @@ def beats(node_id=None):
         rolling = TURN["phase"] != "dreaming"   # in-flight: serve what's held, never roll a new menu
     try:
         with BEATS_LOCK:                        # one roll per node even under concurrent reads
-            return L.beats_for_node(SESSION, node_id, roll=rolling)
+            return L.beats_for_node(cur_session(), node_id, roll=rolling)
     except Exception:
         return []
 
@@ -722,6 +760,129 @@ class Handler(BaseHTTPRequestHandler):
         self._send_raw(200, data, _MIME.get(os.path.splitext(p)[1].lower(), "application/octet-stream"),
                        cache=False)
 
+    def _serve_thumb(self):
+        """A saved LIBRARY dream's tip frame, for the grid thumbnail (ADR-0028). `session` is
+        valid_session-checked and must be a NON-private library dream — a private frame is never
+        served here. The frame ref comes from the chain (never user-supplied), resolved by lucid_store
+        (strict basename, no traversal)."""
+        from urllib.parse import urlparse, parse_qs
+        sess = parse_qs(urlparse(self.path).query).get("session", [""])[0]
+        if not L.ST.valid_session(sess):
+            return self._send(400, "bad session", "text/plain")
+        chain = chain_or_none(sess)
+        if chain is None or chain.get("private"):
+            return self._send(404, "no thumb", "text/plain")
+        nodes = chain.get("nodes") or []
+        of = nodes[-1].get("out_frame") if nodes else None
+        try:
+            p = L.ST.frame_abs(sess, False, of) if of else None
+        except Exception:
+            p = None
+        if not p or not os.path.isfile(p):
+            return self._send(404, "not found", "text/plain")
+        with open(p, "rb") as f:
+            data = f.read()
+        self._send_raw(200, data, _MIME.get(os.path.splitext(p)[1].lower(), "application/octet-stream"),
+                       cache=False)
+
+    def _json200(self, obj):
+        return self._send(200, json.dumps(obj), "application/json")
+
+    def _handle_library_or_stash(self, path, req):
+        """ADR-0028 — save & reopen (the library) and the encrypted private stash. CSRF + Origin were
+        already checked by do_POST. Every reply is a 200 {ok|error} the surface narrates."""
+        # ---------- library: reopen / rename a saved (non-private) dream ----------
+        if path == "/api/open":
+            sess = req.get("session")
+            if not (isinstance(sess, str) and L.ST.valid_session(sess)):
+                return self._json200({"error": "bad session"})
+            chain = chain_or_none(sess)
+            if chain is None or chain.get("private"):
+                return self._json200({"error": "no such saved dream"})
+            _end_session()                       # leave the current dream cleanly (it stays saved)
+            set_session(sess)
+            return self._json200({"ok": True, "session": sess})
+        if path == "/api/rename":                # rename the CURRENT library dream (chain.name)
+            sess = cur_session()
+            chain = chain_or_none(sess)
+            if chain is None or chain.get("private"):
+                return self._json200({"error": "no dream to rename"})
+            chain["name"] = str(req.get("name") or "").strip()[:80] or None
+            L.ST.save_chain(sess, False, chain)
+            return self._json200({"ok": True, "name": chain["name"]})
+
+        # ---------- stash: encrypted, passphrase-locked private dreams ----------
+        if path == "/api/stash/init":
+            try:
+                SH.init(req.get("passphrase") or "")
+            except FileExistsError:
+                return self._json200({"error": "a stash already exists"})
+            except ValueError as e:
+                return self._json200({"error": str(e)})
+            return self._json200({"ok": True})
+        if path == "/api/stash/unlock":
+            try:
+                ok = SH.unlock(req.get("passphrase") or "")
+            except FileNotFoundError:
+                return self._json200({"error": "no stash yet — set a passphrase to create one"})
+            except ValueError:
+                ok = False
+            return self._json200({"ok": bool(ok), **({} if ok else {"error": "wrong passphrase"})})
+        if path == "/api/stash/lock":
+            was_open = cur_session() in SH.opened_sessions()
+            SH.reseal_opened(burn=True)          # seal any open working copy, then forget the key
+            SH.lock()
+            if was_open:                         # the open dream was just burned -> clean slate
+                set_session(L.ST.new_session_id(None))
+            return self._json200({"ok": True})
+        if path == "/api/stash/save":
+            sess = cur_session()
+            if not SH.is_unlocked():
+                return self._json200({"error": "unlock the stash first"})
+            if not L.ST.is_private(sess):
+                return self._json200({"error": "only a private dream can be saved to the stash"})
+            try:
+                entry = SH.save_session(sess, name=req.get("name"))
+            except Exception as e:
+                return self._json200({"error": f"could not save: {e}"})
+            return self._json200({"ok": True, "id": entry["id"], "name": entry["name"]})
+        if path == "/api/stash/open":
+            if not SH.is_unlocked():
+                return self._json200({"error": "unlock the stash first"})
+            sid = req.get("id")
+            if not SH._valid_id(sid):
+                return self._json200({"error": "bad id"})
+            try:
+                _end_session()
+                sess, _chain = SH.open_into(sid)
+            except Exception as e:
+                return self._json200({"error": f"could not open: {e}"})
+            set_session(sess)
+            return self._json200({"ok": True, "session": sess})
+        if path == "/api/stash/rename":
+            if not SH.is_unlocked():
+                return self._json200({"error": "unlock the stash first"})
+            return self._json200({"ok": bool(SH.rename(req.get("id"), req.get("name") or ""))})
+        if path == "/api/stash/delete":
+            if not SH.is_unlocked():
+                return self._json200({"error": "unlock the stash first"})
+            sid = req.get("id")
+            if not SH._valid_id(sid):
+                return self._json200({"error": "bad id"})
+            removed = SH.delete(sid)
+            if cur_session() == SH.restore_name(sid):   # the open copy was burned by delete()
+                set_session(L.ST.new_session_id(None))
+            return self._json200({"ok": bool(removed)})
+        if path == "/api/stash/passphrase":
+            try:
+                ok = SH.change_passphrase(req.get("old") or "", req.get("new") or "")
+            except FileNotFoundError:
+                return self._json200({"error": "no stash yet"})
+            except ValueError as e:
+                return self._json200({"error": str(e)})
+            return self._json200({"ok": bool(ok), **({} if ok else {"error": "wrong current passphrase"})})
+        return self._send(404, "not found", "text/plain")
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path == "/healthz":   # X-Lucid-Pid lets a second instance ID this owner (yield/takeover)
@@ -739,6 +900,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_media("frame")
         if path == "/api/queue":   # ADR-0019: the durable held + needs-review board (read-only)
             return self._send(200, json.dumps(H.board()), "application/json")
+        if path == "/api/library":   # ADR-0028: the saved (non-private) dream library
+            return self._send(200, json.dumps({"dreams": L.ST.list_persistent()}), "application/json")
+        if path == "/api/library/thumb":   # ADR-0028: a saved dream's tip frame (grid thumbnail)
+            return self._serve_thumb()
+        if path == "/api/stash":   # ADR-0028: stash status; entry list ONLY when unlocked
+            out = {"exists": SH.exists(), "unlocked": SH.is_unlocked()}
+            if SH.is_unlocked():
+                out["dreams"] = SH.listing()
+            return self._send(200, json.dumps(out), "application/json")
         if HAS_DIST:                                 # the React build is the primary surface
             return self._serve_static(path)
         if path in ("/", "/index.html"):             # fallback: the inline vanilla page (no build present)
@@ -749,15 +919,27 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path not in ("/api/dream", "/api/burn", "/api/start", "/api/delete", "/api/engine",
                         "/api/note", "/api/note/delete",
-                        "/api/queue/retry", "/api/queue/dismiss", "/api/queue/approve"):
+                        "/api/queue/retry", "/api/queue/dismiss", "/api/queue/approve",
+                        # ADR-0028: save & reopen + the encrypted private stash
+                        "/api/open", "/api/rename", "/api/stash/init", "/api/stash/unlock",
+                        "/api/stash/lock", "/api/stash/save", "/api/stash/open", "/api/stash/rename",
+                        "/api/stash/delete", "/api/stash/passphrase"):
             return self._send(404, "not found", "text/plain")
         # CSRF: a state-changing POST must carry the per-process token embedded in the page (a
         # cross-origin page can't read it). Fail closed. Defense-in-depth: reject a bad Origin too.
-        if not hmac.compare_digest(self.headers.get("X-Lucid-Token", ""), CSRF):
-            return self._send(403, json.dumps({"error": "missing/invalid CSRF token"}), "application/json")
-        origin = self.headers.get("Origin")
-        if origin and origin not in ORIGIN_OK:
-            return self._send(403, json.dumps({"error": "cross-origin refused"}), "application/json")
+        # ADR-0027: /api/start ALSO accepts a valid file-backed X-Share-Key from the on-box share
+        # hub (lucid_share.py) — the iOS Shortcut can't read the per-process CSRF token. A non-empty
+        # key AND a non-empty header are both required (so ""=="" can never authenticate).
+        sk = _share_key()
+        share_ok = (path == "/api/start" and sk != ""
+                    and bool(self.headers.get("X-Share-Key"))
+                    and hmac.compare_digest(self.headers.get("X-Share-Key", ""), sk))
+        if not share_ok:
+            if not hmac.compare_digest(self.headers.get("X-Lucid-Token", ""), CSRF):
+                return self._send(403, json.dumps({"error": "missing/invalid CSRF token"}), "application/json")
+            origin = self.headers.get("Origin")
+            if origin and origin not in ORIGIN_OK:
+                return self._send(403, json.dumps({"error": "cross-origin refused"}), "application/json")
         try:
             n = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -778,14 +960,14 @@ class Handler(BaseHTTPRequestHandler):
             # Tiny + synchronous (no worker): just a guarded chain write. add_note clamps t, validates the
             # tag, and red-line-gates the untrusted text — a bad tag / failing text maps to a 200 {error}.
             try:
-                note = L.add_note(SESSION, int(req.get("node")), req.get("t", 0.0),
+                note = L.add_note(cur_session(), int(req.get("node")), req.get("t", 0.0),
                                   req.get("tag"), req.get("text", ""))
             except (ValueError, TypeError) as e:
                 return self._send(200, json.dumps({"error": str(e)}), "application/json")
             return self._send(200, json.dumps({"ok": True, "note": note}), "application/json")
         if path == "/api/note/delete":   # ADR-0023: drop a moment annotation by id (idempotent)
             try:
-                ok = L.remove_note(SESSION, int(req.get("node")), req.get("id"))
+                ok = L.remove_note(cur_session(), int(req.get("node")), req.get("id"))
             except (ValueError, TypeError) as e:
                 return self._send(200, json.dumps({"error": str(e)}), "application/json")
             return self._send(200, json.dumps({"ok": bool(ok)}), "application/json")
@@ -804,29 +986,51 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self._send(400, json.dumps({"error": "bad id"}), "application/json")
             return self._send(200, json.dumps({"ok": bool(ok)}), "application/json")
-        if path == "/api/burn":   # wipe the private session's every sink (ADR-0016)
+        if path in ("/api/open", "/api/rename", "/api/stash/init", "/api/stash/unlock",
+                    "/api/stash/lock", "/api/stash/save", "/api/stash/open", "/api/stash/rename",
+                    "/api/stash/delete", "/api/stash/passphrase"):
+            return self._handle_library_or_stash(path, req)   # ADR-0028 (save & reopen + private stash)
+        if path == "/api/burn":   # wipe the CURRENT private session's every sink (ADR-0016)
+            sess = cur_session()
             _end_session()        # invalidate any in-flight beat + reclaim the GPU lease BEFORE wiping
-            removed, failed = L.burn(SESSION)
+            removed, failed = L.burn(sess)
+            set_session(L.ST.new_session_id(None))   # back to a clean empty slate (library / Start)
             return self._send(200, json.dumps({"ok": not failed, "burned": len(removed),
                                                "failed": failed}), "application/json")
-        if path == "/api/delete":   # delete a PERSISTENT dream's every sink (a private one -> burn)
-            _end_session()        # invalidate any in-flight beat + reclaim the GPU lease BEFORE wiping
-            if L.ST.is_private(SESSION):
-                removed, failed = L.burn(SESSION)
+        if path == "/api/delete":   # delete a dream's every sink (a private one -> burn). Optional
+            # `session` deletes ANY saved dream from the library; omitted = the current dream.
+            req_sess = req.get("session")
+            target = req_sess if (isinstance(req_sess, str) and L.ST.valid_session(req_sess)) else cur_session()
+            is_cur = (target == cur_session())
+            if is_cur:
+                _end_session()    # invalidate any in-flight beat + reclaim the GPU lease BEFORE wiping
+            if L.ST.is_private(target):
+                removed, failed = L.burn(target)
             else:
-                removed, failed = L.ST.purge_persistent(SESSION)
+                removed, failed = L.ST.purge_persistent(target)
+            if is_cur:
+                set_session(L.ST.new_session_id(None))   # deleted the active dream -> clean slate
             return self._send(200, json.dumps({"ok": not failed, "deleted": len(removed),
                                                "failed": failed}), "application/json")
-        if path == "/api/start":  # begin a dream; uploaded image (B2-gated in start) or synthetic frame
+        if path == "/api/start":  # begin a NEW dream; uploaded image (B2-gated in start) or synthetic frame
             private = bool(req.get("private"))
             consent = bool(req.get("consent"))
+            name = req.get("name")   # human label for the library (ADR-0028)
             img_b64 = req.get("image_b64")
             if not _START_SEM.acquire(blocking=False):   # bound concurrent decode + vision-model loads
                 return self._send(429, json.dumps({"error": "busy — try again in a moment"}), "application/json")
             try:
-                _supersede_turn()     # invalidate any in-flight beat BEFORE clearing — and reset to idle
-                L.ST.clear(SESSION)   # clean any prior session of this name before a fresh start
-                _release_lease()      # a fresh dream starts cold — drop the prior session's ComfyUI lease
+                # Starting a new dream LEAVES the current one intact (it stays in the library) — no clear.
+                # Only tear down the current session's in-flight beat + GPU lease; mint a fresh session id
+                # so named dreams coexist. Switch the current session ONLY after start() succeeds.
+                _end_session()
+                new_sess = L.ST.new_session_id(name)
+
+                def _started(p):
+                    set_session(new_sess)
+                    return self._send(200, json.dumps(
+                        {"ok": True, "private": p, "session": new_sess}), "application/json")
+
                 if img_b64:
                     if not readiness()["ollama"]:   # B2 needs the vision model; fail fast, don't hang
                         return self._send(200, json.dumps({"error": "can't check the image — the narrator (Ollama) is unavailable"}), "application/json")
@@ -838,7 +1042,7 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         return self._send(200, json.dumps({"error": f"invalid image: {e}"}), "application/json")
                     try:
-                        L.start(SESSION, seed, private=private, consent=consent)  # B2 runs INSIDE start()
+                        L.start(new_sess, seed, private=private, consent=consent, name=name)  # B2 INSIDE start()
                     except L.SeedBlocked as e:
                         return self._send(200, json.dumps({"blocked": True, **e.verdict.as_dict()}), "application/json")
                     except Exception as e:
@@ -848,7 +1052,7 @@ class Handler(BaseHTTPRequestHandler):
                             os.remove(seed)
                         except OSError:
                             pass
-                    return self._send(200, json.dumps({"ok": True, "private": private}), "application/json")
+                    return _started(private)
                 if req.get("text"):   # text-to-opening: render via t2i, then B2 (a t2i CAN render a person)
                     if _ensure_lease() is None:   # spawn+own ComfyUI for the opening render (on-demand)
                         return self._send(200, json.dumps({"error": "the video generator is unavailable — can't paint an opening (GPU busy?)"}), "application/json")
@@ -867,7 +1071,7 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                         return self._send(200, json.dumps({"error": str(e)}), "application/json")
                     try:
-                        L.start(SESSION, seed, private=private, consent=consent)  # B2 on the generated image
+                        L.start(new_sess, seed, private=private, consent=consent, name=name)  # B2 on the gen
                     except L.SeedBlocked as e:
                         return self._send(200, json.dumps({"blocked": True, **e.verdict.as_dict()}), "application/json")
                     except Exception as e:
@@ -877,11 +1081,11 @@ class Handler(BaseHTTPRequestHandler):
                             os.remove(seed)
                         except OSError:
                             pass
-                    return self._send(200, json.dumps({"ok": True, "private": private}), "application/json")
+                    return _started(private)
                 # no image, no text -> a server-generated abstract opening (trusted; no real person)
                 seed = _synthetic_opening()
                 try:
-                    L.start(SESSION, seed, private=private, _trusted_seed=True)
+                    L.start(new_sess, seed, private=private, _trusted_seed=True, name=name)
                 except Exception as e:
                     return self._send(200, json.dumps({"error": f"start failed: {e}"}), "application/json")
                 finally:
@@ -889,7 +1093,7 @@ class Handler(BaseHTTPRequestHandler):
                         os.remove(seed)
                     except OSError:
                         pass
-                return self._send(200, json.dumps({"ok": True, "private": private}), "application/json")
+                return _started(private)
             finally:
                 _START_SEM.release()
         # ---- /api/dream: start ONE gated, leased turn on a WORKER and return at once ----
@@ -916,7 +1120,9 @@ class Handler(BaseHTTPRequestHandler):
                     {"error": "A dream is already in flight — one beat at a time."}), "application/json")
             epoch = TURN["epoch"]   # this turn's generation; a later start/delete/burn bumps it to supersede
             TURN.update(phase="dreaming", label=label, error=None, started=time.monotonic())
-        threading.Thread(target=_run_turn, args=(prompt, label, epoch, length, parent_id), daemon=True).start()
+        # capture the session NOW so a switch mid-beat can't reroute this turn (the epoch still guards persist)
+        threading.Thread(target=_run_turn, args=(prompt, label, epoch, length, parent_id, cur_session()),
+                         daemon=True).start()
         return self._send(202, json.dumps({"ok": True, "started": True}), "application/json")
 
 
@@ -1023,17 +1229,33 @@ def main():
             print(f"reaped {len(reaped)} orphaned private session(s): {reaped}", flush=True)
     except Exception as e:
         print(f"orphan reap skipped: {e}", flush=True)
+    # Reopen where the user left off (ADR-0028): the most-recently-edited saved dream, else a fresh
+    # empty slate. LUCID_WEB_SESSION still pins a specific session (tests / explicit). Honors the
+    # library instead of the old single hardcoded "web".
+    if not os.environ.get("LUCID_WEB_SESSION"):
+        try:
+            lib = L.ST.list_persistent()
+            set_session(lib[0]["session"] if lib else L.ST.new_session_id(None))
+        except Exception:
+            set_session(L.ST.new_session_id(None))
     # Warm-keep lease must be released when the server stops: the coordinator owns ComfyUI
     # INDEPENDENTLY of this process, so a held lease would leak ~17 GB if we just exit. Release on
     # SIGTERM/SIGINT (systemd stop / Ctrl-C); the idle reaper covers the walked-away case. A hard
     # SIGKILL of this server still leaks until the daemon restarts — a documented edge (ADR-0015).
+    # ADR-0028: before releasing, re-seal any OPEN stash working copy back to ciphertext and burn its
+    # tmpfs (the key is still in memory here; the ExecStop --burn-private hook runs in a separate
+    # process that has no key, so reseal must happen in THIS process on stop).
     def _shutdown(_signum, _frame):
+        try:
+            SH.reseal_opened(burn=True)
+        except Exception:
+            pass
         _release_lease()
         sys.exit(0)
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
     threading.Thread(target=_lease_reaper, daemon=True).start()
-    print(f"Lucid web → http://{HOST}:{PORT}  (session '{SESSION}')", flush=True)
+    print(f"Lucid web → http://{HOST}:{PORT}  (session '{cur_session()}')", flush=True)
     server.serve_forever()
 
 

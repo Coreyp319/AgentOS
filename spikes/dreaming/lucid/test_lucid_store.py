@@ -157,6 +157,41 @@ os.makedirs(_qroot, exist_ok=True)
 check("clear_priv_queue_dir removes a present queue dir we own",
       ST.clear_priv_queue_dir() is True and not os.path.exists(_qroot))
 
+# --- library listing + named session ids (ADR-0028) ---
+import json as _json  # noqa: E402
+
+
+def _persist(session, name, premise, nodes):
+    d = ST.session_dir(session, False)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "chain.json"), "w") as f:
+        _json.dump({"session": session, "private": False, "name": name, "created": 1.0,
+                    "premise": premise, "nodes": nodes}, f)
+
+
+_persist("lib_a", "Garden", "a garden", [{"id": 0}, {"id": 1}, {"id": 2}])
+_persist("lib_b", "Aurora", None, [{"id": 0}])
+# a stray PRIVATE chain that must never surface in the library
+d_priv = ST.session_dir("lib_priv", False); os.makedirs(d_priv, exist_ok=True)
+with open(os.path.join(d_priv, "chain.json"), "w") as f:
+    _json.dump({"session": "lib_priv", "private": True, "nodes": [{"id": 0}]}, f)
+
+lib = ST.list_persistent()
+libnames = {e["session"]: e for e in lib}
+check("list_persistent finds both saved dreams", "lib_a" in libnames and "lib_b" in libnames)
+check("list_persistent omits a private chain", "lib_priv" not in libnames)
+check("library row carries name/frames/premise/tip",
+      libnames["lib_a"]["name"] == "Garden" and libnames["lib_a"]["frames"] == 3
+      and libnames["lib_a"]["premise"] == "a garden" and libnames["lib_a"]["tip"] == 2)
+check("library row is path-free",
+      all("/" not in str(v) for v in libnames["lib_a"].values() if isinstance(v, str)))
+
+nid = ST.new_session_id("My Cool Dream!!")
+check("new_session_id is valid + slugged", ST.valid_session(nid) and nid.startswith("My-Cool-Dream-"))
+check("new_session_id is unique", ST.new_session_id("x") != ST.new_session_id("x"))
+check("new_session_id handles empty name", ST.valid_session(ST.new_session_id("")))
+check("new_session_id handles all-symbol name", ST.valid_session(ST.new_session_id("!!!@@@")))
+
 # --- cleanup ---
 import shutil  # noqa: E402
 shutil.rmtree(_TMP, ignore_errors=True)
