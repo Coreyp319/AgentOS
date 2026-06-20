@@ -136,6 +136,51 @@ pub(crate) fn read_fleet(db: &Path) -> rusqlite::Result<FleetCounts> {
     })
 }
 
+/// Columns `FLEET_SQL` depends on. We read straight into Hermes' internal `tasks` table
+/// (no API boundary), so if that schema drifts — a column renamed or dropped on a Hermes
+/// upgrade — `read_fleet` errors and the caller folds it into all-zeros. That makes a real
+/// schema break indistinguishable from "Hermes is down" or "no tasks": phantom calm on the
+/// wallpaper. We probe ONCE at startup and log loudly so drift lands in the journal instead.
+/// Diagnostic only — the runtime path stays fail-open (ADR-0003).
+const FLEET_COLUMNS: [&str; 2] = ["status", "consecutive_failures"];
+
+/// Outcome of the one-shot startup schema probe (`probe_fleet_schema`).
+pub(crate) enum SchemaCheck {
+    /// `tasks` exists and exposes every column `FLEET_SQL` reads.
+    Ok,
+    /// DB or `tasks` table not present yet — benign: Hermes simply isn't up.
+    Absent(String),
+    /// `tasks` exists but a column we depend on is gone — a real Hermes schema drift.
+    Drift(String),
+}
+
+/// One-shot check that Hermes' `tasks` table still exposes the columns `FLEET_SQL` needs,
+/// so a schema change surfaces as a log line rather than a silent slide to idle.
+pub(crate) fn probe_fleet_schema(db: &Path) -> SchemaCheck {
+    let conn = match Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(e) => return SchemaCheck::Absent(format!("open {}: {e}", db.display())),
+    };
+    let mut have = std::collections::HashSet::new();
+    match conn.prepare("SELECT name FROM pragma_table_info('tasks')") {
+        Ok(mut stmt) => match stmt.query_map([], |r| r.get::<_, String>(0)) {
+            Ok(rows) => have.extend(rows.flatten()),
+            Err(e) => return SchemaCheck::Absent(format!("pragma_table_info: {e}")),
+        },
+        Err(e) => return SchemaCheck::Absent(format!("prepare pragma: {e}")),
+    }
+    if have.is_empty() {
+        return SchemaCheck::Absent("`tasks` table not found (Hermes not initialized?)".into());
+    }
+    let missing: Vec<&str> =
+        FLEET_COLUMNS.iter().copied().filter(|c| !have.contains(*c)).collect();
+    if missing.is_empty() {
+        SchemaCheck::Ok
+    } else {
+        SchemaCheck::Drift(format!("`tasks` is missing {missing:?}"))
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct GatewayFile {
     #[serde(default)]
@@ -263,6 +308,19 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
     let needs_you_path = hermes_path("needs_you.json");
     let lucid_review_path = lucid_data_path("review.json");
     println!("agentosd feed → {}", out.display());
+
+    // Surface a Hermes `tasks` schema drift loudly once at startup; the runtime read below
+    // stays fail-open either way (the drift would otherwise read as phantom calm).
+    match probe_fleet_schema(&kanban) {
+        SchemaCheck::Ok => {}
+        SchemaCheck::Absent(why) => {
+            println!("agentosd feed: kanban not ready ({why}); fail-open to idle until Hermes is up")
+        }
+        SchemaCheck::Drift(why) => eprintln!(
+            "agentosd feed: WARNING — Hermes kanban schema drift: {why}. Fleet counts now read \
+             as zero (fail-open); update FLEET_SQL in feed.rs to match Hermes' tasks table."
+        ),
+    }
 
     let mut last: Option<AgentFeed> = None;
     loop {
@@ -467,5 +525,38 @@ mod tests {
             serde_json::to_string(&f).unwrap(),
             r#"{"state":1,"busy":0.7,"warm":0.0,"snag":0.0}"#
         );
+    }
+
+    // ---- schema-drift probe (hardens the direct-into-Hermes `tasks` SQL read) ----
+
+    fn write_tasks_db(path: &Path, columns: &str) {
+        let _ = fs::remove_file(path);
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(&format!("CREATE TABLE tasks ({columns});")).unwrap();
+    }
+
+    #[test]
+    fn schema_probe_ok_when_required_columns_present() {
+        let p = std::env::temp_dir().join(format!("agentos_schema_ok_{}.db", std::process::id()));
+        write_tasks_db(&p, "id INTEGER, status TEXT, consecutive_failures INTEGER, extra TEXT");
+        assert!(matches!(probe_fleet_schema(&p), SchemaCheck::Ok));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn schema_probe_flags_drift_when_a_column_is_dropped() {
+        // `consecutive_failures` gone → FLEET_SQL would error → loud Drift, not silent zeros.
+        let p = std::env::temp_dir().join(format!("agentos_schema_drift_{}.db", std::process::id()));
+        write_tasks_db(&p, "id INTEGER, status TEXT");
+        assert!(matches!(probe_fleet_schema(&p), SchemaCheck::Drift(_)));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn schema_probe_absent_when_db_missing() {
+        // No DB yet (Hermes not up) is benign, NOT drift.
+        let p = std::env::temp_dir().join(format!("agentos_schema_absent_{}.db", std::process::id()));
+        let _ = fs::remove_file(&p);
+        assert!(matches!(probe_fleet_schema(&p), SchemaCheck::Absent(_)));
     }
 }

@@ -138,6 +138,11 @@ floor under ADR-0009/0010/0011 — the load-bearing mechanism is now real code, 
 - The **Hermes plugin** (ADR-0006) — the daemon now exists for it to call; the plugin
   (`llm_request` priority tag, `llm_execution` `Acquire`/`Release` around the call) is unbuilt.
   This is the last hop to real end-to-end serialization of Hermes inference vs. overnight batch.
+  **Update (2026-06-19):** the plugin is now **built and committed** (`integrations/hermes/
+  gpu-coordinator/`); `llm_execution` wraps every call in `Acquire`/`Release` (the priority
+  tag stays unregistered pending the DEFERRED ADR-0002 proxy). The true remaining hop is
+  **install** — `gpu-coordinator` is not yet enabled in the live `~/.hermes/plugins/` (only
+  `needs-you-signal` is), so end-to-end serialization is test-proven but not production-active.
 - The **overnight batch lane / window trigger** (§6, Open questions) — Hermes' cron + kanban
   drive the sequence; agentosd only enforces one-holder-at-a-time. Not yet scheduled.
 - **No revoke signal / wait-queue.** A losing acquirer is told `queued` and must retry; there is

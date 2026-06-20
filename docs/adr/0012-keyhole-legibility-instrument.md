@@ -281,3 +281,25 @@ flow, faithful per-mood reactivity (warm-low, snag-grey, unknown-ghost), and liv
 integrated component (`ringtest.qml` → `ringtest.png`) confirms the glyph stays legible over the
 flow with rim + earned halo intact. `qmllint` clean on `AuroraRing.qml` and its consumers. No
 schema change. The shader is GPL-3.0-or-later (derived from nimbus aurora); the QML stays MIT.
+
+## Amendment (2026-06-19): the Hermes write-API gate (item 3) is RESOLVED — it exists
+
+The open pre-`Accepted` gate was "the human confirms the Hermes approval-WRITE path." Direct
+read-only inspection of the live install resolves it: **Hermes already exposes a full REST
+control API** in `~/.hermes/hermes-agent/gateway/platforms/api_server.py`:
+
+- `POST /v1/runs/{id}/approval` — resolve a pending run approval  → the keyhole **approve/steer**
+- `POST /v1/runs/{id}/stop`     — interrupt a running agent        → the keyhole **pause/cancel**
+- `POST /v1/runs`               — start a run (202 + run_id)       → create work
+- `GET  /v1/runs/{id}/events`   — SSE lifecycle stream             → could replace the kanban.db SQL poll
+- `GET  /health/detailed`       — rich liveness                    → fixes the "stale file vs live" blind spot
+- `GET  /v1/capabilities`       — machine-readable feature discovery for external UIs
+
+So the gate **downgrades from "does a write-API exist?" (yes) to two concrete tasks**:
+(1) **enable the API server** — it is coded but **not currently bound** (default port **8642**,
+`API_SERVER_PORT`; the live gateway runs only its `:9119` surface, and `platforms.api_server`
+is not enabled in `~/.hermes/config.yaml`); (2) **build the agentosd→Hermes client** for the P2
+steer actions, hitting these endpoints. The non-determinism/reversibility invariants in this ADR
+are unchanged — these are model-proposes/human-confirms POSTs, not autonomous writes. This same
+finding unblocks ADR-0019 Phase-3 (Hermes-mirror) and ADR-0020's act-verbs, which cite the same
+gate. See `docs/research/0013-hermes-api-surface-and-leverage.md` for the full surface inventory.

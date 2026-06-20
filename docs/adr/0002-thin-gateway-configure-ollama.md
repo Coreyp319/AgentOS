@@ -1,8 +1,8 @@
 # ADR-0002: Inference path — thin transparent enforcing gateway over a configured Ollama
 
-- Status: Accepted
+- Status: Accepted — enforcing proxy **DEFERRED** (see Implementation status, 2026-06-19)
 - Date: 2026-06-15
-- Relates to: ADR-0003 (fail-open), ADR-0004 (VRAM yield)
+- Relates to: ADR-0003 (fail-open), ADR-0004 (VRAM yield), ADR-0006/0010 (the lease — the control plane that actually shipped)
 
 ## Context
 `agentosd` wants a single enforced point on the inference path for request priority,
@@ -33,3 +33,23 @@ metrics, and the VRAM-yield trigger. A build-vs-buy research pass (2026-06-15) f
 - Small build; the enforcement invariant (single endpoint) is preserved.
 - Priority is lightweight: Ollama is FIFO, so the proxy injects ordering ahead of it.
 - Per-model streaming + tool-call fidelity must be validated (done for `qwen3.6-27b`).
+
+## Implementation status (2026-06-19) — proxy DEFERRED, lease is the control plane
+Verified against the live install:
+
+- **Hermes inference points straight at Ollama**, not at any agentosd proxy:
+  `~/.hermes/config.yaml` → `base_url: http://localhost:11434/v1`. Nothing is bound on
+  `:11435`. There is **no `proxy` subcommand** in `agentosd` — only the throwaway
+  `spikes/proxy-fidelity/` (which proves passthrough fidelity but "is not agentosd").
+- Because no enforcing proxy reads it, the Hermes plugin's `llm_request` `X-GPU-Priority`
+  middleware is **intentionally left unregistered** (`integrations/hermes/gpu-coordinator/
+  __init__.py`); request-level priority is therefore **non-functional today** and Ollama
+  remains plain FIFO.
+- This is acceptable because the **safety-critical inference-vs-batch control plane is the
+  ADR-0006/0010 D-Bus lease** (interactive `Acquire` SIGKILLs the running batch child), and
+  that path needs no proxy. The proxy only ever bought request-level *ordering* on top.
+
+**Decision:** keep the enforcing proxy **DEFERRED**. Revisit only when (a) request-level
+ordering is genuinely needed *and* (b) something downstream actually honors the priority
+header (Ollama does not). Until then the lease is sufficient and the proxy would be a
+single-endpoint chokepoint with no consumer. If it is never needed, supersede this ADR.

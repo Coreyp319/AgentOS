@@ -37,3 +37,20 @@ higher-tier acquire SIGKILLs the running job (validated live). See ADR-0010's im
 status and `crates/agentosd/src/lease.rs`. The **Hermes plugin** that calls it (`llm_request`
 priority tag, `llm_execution` `Acquire`/`Release` around the call, `pre_tool_call` veto) is
 still unbuilt — that is the remaining work for this ADR.
+
+## Implementation status update (2026-06-19) — plugin BUILT, not yet installed live
+The "still unbuilt" line above is stale. The plugin **ships and is committed** at
+`integrations/hermes/gpu-coordinator/`:
+
+- `llm_execution` middleware **is registered and wraps every inference call** in
+  `Acquire`/`Release` (refcounted so concurrent calls share one lease; a 60 s `Renew`
+  heartbeat thread; fail-open `busctl` transport with tests). This is the headline path.
+- `llm_request` `X-GPU-Priority` tagging is **deliberately left unregistered** — no
+  enforcing proxy reads it yet (ADR-0002, now DEFERRED), so Ollama would ignore it.
+- `pre_tool_call` `delegate_task` veto is **not implemented** (not yet needed).
+
+**The remaining gap is install, not build:** the live Hermes has only `needs-you-signal`
+in `~/.hermes/plugins/` — `gpu-coordinator` is **not enabled there**, so the end-to-end
+Hermes-inference-preempts-batch loop is proven in tests but **not active in production**
+until the plugin is installed/enabled in `~/.hermes/plugins/`. That switch is the real
+"last hop," and it is a deploy step, not code.
