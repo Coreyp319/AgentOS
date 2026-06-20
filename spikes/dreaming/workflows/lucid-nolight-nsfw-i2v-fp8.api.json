@@ -1,14 +1,16 @@
 {
  "uh": {
-  "class_type": "UnetLoaderGGUF",
+  "class_type": "UNETLoader",
   "inputs": {
-   "unet_name": "wan22_enhNSFW_nolight_cf_Q6K_high.gguf"
+   "unet_name": "wan22EnhancedNSFWSVICamera_nolightningSVICfFp8H.safetensors",
+   "weight_dtype": "fp8_e4m3fn"
   }
  },
  "ul": {
-  "class_type": "UnetLoaderGGUF",
+  "class_type": "UNETLoader",
   "inputs": {
-   "unet_name": "wan22_enhNSFW_nolight_cf_Q6K_low.gguf"
+   "unet_name": "wan22EnhancedNSFWSVICamera_nolightningSVICfFp8L.safetensors",
+   "weight_dtype": "fp8_e4m3fn"
   }
  },
  "clip": {

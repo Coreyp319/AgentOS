@@ -36,6 +36,11 @@ COMFY_ROOT = os.environ.get("COMFY_ROOT", "/home/corey/ComfyUI")
 OUTPUT_DIR = os.path.join(COMFY_ROOT, "output")
 
 CONTROL_VALS = {"randomize", "fixed", "increment", "decrement"}
+# Virtual "routing" nodes carry no compute — ComfyUI's own "Save (API)" inlines
+# them. We must resolve them away too, or consumers point at unknown class_types
+# and /prompt 400s. Reroute = 1-in/1-out passthrough; KJNodes Set/GetNode wire by
+# a shared label (Get fetches whatever feeds the same-named Set).
+VIRTUAL_ROUTING = {"Reroute", "Reroute (rgthree)", "SetNode", "GetNode"}
 _OBJ_CACHE = None
 
 
@@ -104,6 +109,19 @@ def _widget_default(spec):
         o = opts.get("options") or []
         return o[0] if o else None
     return {"INT": 0, "FLOAT": 0.0, "BOOLEAN": False, "STRING": ""}.get(t)
+
+
+def _virtual_name(n):
+    """Label of a KJNodes SetNode/GetNode (its set/get-by-name key)."""
+    wv = n.get("widgets_values")
+    if isinstance(wv, list) and wv and isinstance(wv[0], str):
+        return wv[0]
+    if isinstance(wv, dict):
+        for k in ("constant", "name", "previousName"):
+            if isinstance(wv.get(k), str):
+                return wv[k]
+    props = n.get("properties") or {}
+    return props.get("previousName") or props.get("constant")
 
 
 def flatten_subgraphs(wf):
@@ -220,16 +238,41 @@ def ui_to_api(wf):
     included = {
         nid: n
         for nid, n in nodes.items()
-        if n.get("mode", 0) == 0 and n["type"] not in skip_types
+        if n.get("mode", 0) == 0
+        and n["type"] not in skip_types
+        and n["type"] not in VIRTUAL_ROUTING
     }
     links = {}
     for l in wf.get("links", []):
         # [link_id, src_node, src_slot, dst_node, dst_slot, type]
         links[l[0]] = (l[1], l[2])
 
+    # Map each Set label -> SetNode id so a GetNode resolves to the Set's source.
+    set_by_name = {}
+    for _nid, _n in nodes.items():
+        if _n["type"] == "SetNode":
+            _nm = _virtual_name(_n)
+            if _nm is not None:
+                set_by_name[_nm] = _nid
+
+    def virtual_src(node_id):
+        """Immediate upstream a virtual routing node forwards to: a GetNode points
+        at its matching SetNode (resolved onward by resolve_src); Reroute/SetNode
+        pass through their single linked input."""
+        n = nodes[node_id]
+        if n["type"] == "GetNode":
+            sn = set_by_name.get(_virtual_name(n))
+            return (sn, 0) if sn is not None else None
+        for ip in n.get("inputs", []):
+            lk = ip.get("link")
+            if lk in links:
+                return links[lk]
+        return None
+
     def resolve_src(node_id, slot, seen=None):
         """Resolve a link source to an included node, passing through bypassed
-        (mode 4) nodes (model->model etc.). Returns (node_id, slot) or None."""
+        (mode 4) and virtual routing (Reroute/Set/Get) nodes. Returns
+        (node_id, slot) or None."""
         if node_id in included:
             return (node_id, slot)
         n = nodes.get(node_id)
@@ -239,6 +282,11 @@ def ui_to_api(wf):
         if node_id in seen:
             return None
         seen.add(node_id)
+        if n["type"] in VIRTUAL_ROUTING:  # routing node: forward to the real source
+            vs = virtual_src(node_id)
+            if not vs or vs[0] is None:
+                return None
+            return resolve_src(vs[0], vs[1], seen)
         if n.get("mode", 0) == 4:  # bypass -> pass-through by matching type
             outs = n.get("outputs", [])
             otype = outs[slot].get("type") if slot < len(outs) else None
