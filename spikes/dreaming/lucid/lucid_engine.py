@@ -43,7 +43,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # LOW-noise expert only (high stays 0.0 — see LORA_HIGH/LORA_LOW): fixes the distilled Remix's melt
 # AND the LoRA-on-high "anatomy from within anatomy" regression. ~4x the time per beat. Revert to pure
 # non-distilled = enhNSFW-nolight-i2v.api.json; to distilled = LUCID_WORKFLOW=<remix .json>.
-REPO_WF = os.path.join(HERE, "..", "workflows", "lucid-nolight-nsfw-i2v.api.json")
+# DEFAULT is now the 4+4 Lightning-on-low SPEED lane (lightx2v on the low expert + 8-step 4/4 split):
+# ~4.5 min/beat, 3x faster than the 20-step lane, anatomy validated on hands + turn/bend beats
+# (2026-06-19). Revert to the 20-step lane: LUCID_WORKFLOW=<…/lucid-nolight-nsfw-i2v.api.json>.
+REPO_WF = os.path.join(HERE, "..", "workflows", "lucid-nolight-nsfw-i2v-4x4.api.json")
 WORKFLOW = os.environ.get("LUCID_WORKFLOW", os.path.abspath(REPO_WF))
 INPUT_DIR = os.path.join(cc.COMFY_ROOT, "input")
 DREAMS_DIR = os.environ.get(
@@ -81,6 +84,12 @@ LORA_LOW = float(os.environ.get("LUCID_I2V_LORA_LOW", "0.6"))
 # LUCID_REALISM_HIGH / LUCID_REALISM_LOW and restart (realism on low is the skin/texture win).
 REALISM_HIGH = float(os.environ.get("LUCID_REALISM_HIGH", "0.0"))
 REALISM_LOW = float(os.environ.get("LUCID_REALISM_LOW", "0.7"))
+# Step-distill (lightx2v / Lightning) LoRA — the 4+4 SPEED lever. Rides the LOW-noise expert ONLY
+# (rule #2: lightning on the HIGH expert melts bodies); paired with the 8-step 4/4-split graph it cuts
+# a beat ~3x (14min -> ~4.5min) with anatomy intact. Full strength on low, hard 0.0 on high. Inert for
+# any graph without a lightx2v LoRA node (the 20-step lane is unaffected).
+LIGHTNING_HIGH = float(os.environ.get("LUCID_LIGHTNING_HIGH", "0.0"))
+LIGHTNING_LOW = float(os.environ.get("LUCID_LIGHTNING_LOW", "1.0"))
 
 # ── i2v ENGINE selection (ADR-0023 10Eros lane) ──────────────────────────────────────────────
 # Two interchangeable i2v backends behind run_beat: "wan" (the default — the non-distilled Wan 2.2
@@ -443,8 +452,10 @@ def _set_widgets_api(api, prompt, image_name, seed, w, h, length, output_prefix=
             ins["noise_seed"] = seed
         elif ct == "LoraLoaderModelOnly":
             name = ins.get("lora_name", "").lower()   # high-noise expert lays out bodies → keep LoRA off it
-            is_high = ("-h-" in name) or ("_high" in name)
-            if "instareal" in name:                   # realism filter — applies regardless of rating
+            is_high = ("-h-" in name) or ("_high" in name) or ("high_noise" in name)
+            if "lightx2v" in name or "lightning" in name:  # step-distill LoRA — LOW expert only (rule #2)
+                ins["strength_model"] = LIGHTNING_HIGH if is_high else LIGHTNING_LOW
+            elif "instareal" in name:                  # realism filter — applies regardless of rating
                 ins["strength_model"] = REALISM_HIGH if is_high else REALISM_LOW
             else:                                      # explicit-anatomy (NSFW-22) — rating-gated, off high
                 ins["strength_model"] = LORA_HIGH if is_high else lora_low
@@ -486,13 +497,32 @@ def _ltx_cond_latent_vae_sampler(api):
     if len(conds) != 1 or not samplers:
         return None
     cond_id = conds[0]
-    # the sampler that actually consumes a latent_image (the first-pass sampler in the stripped graph)
-    sampler_id = next((i for i in samplers
-                       if isinstance(api[i]["inputs"].get("latent_image"), list)), None)
-    if sampler_id is None:
-        return None
-    latent_src = list(api[sampler_id]["inputs"]["latent_image"])
-    # the video VAE: prefer the one the LTXVImgToVideoInplace seed uses; else any VAELoader* node
+    # LTXVAddGuide chains on the plain VIDEO latent it can .clone() — NOT a post-concat audio+video
+    # NestedTensor (which threw 'NestedTensor object has no attribute clone' on the real 10Eros graph).
+    # That video latent is the LTXVImgToVideoInplace output; splice the guides there and reconnect
+    # whatever consumed it (LTXVConcatAVLatent.video_latent in the AV graph, or the sampler in a
+    # non-AV graph) to the last guide — leaving the sampler pointing at the concat.
+    latent_src, consumer = None, None
+    inplace_ids = [i for i, n in api.items()
+                   if n.get("class_type", "").startswith("LTXVImgToVideoInplace")]
+    if inplace_ids:
+        prod = inplace_ids[0]
+        latent_src = [prod, 0]
+        for nid, n in api.items():
+            for k, v in n.get("inputs", {}).items():
+                if isinstance(v, list) and len(v) == 2 and v[0] == prod and v[1] == 0:
+                    consumer = (nid, k); break
+            if consumer:
+                break
+    if latent_src is None or consumer is None:
+        # non-AV / no inplace node: chain on whatever feeds the sampler's latent_image directly
+        sid = next((i for i in samplers
+                    if isinstance(api[i]["inputs"].get("latent_image"), list)), None)
+        if sid is None:
+            return None
+        latent_src = list(api[sid]["inputs"]["latent_image"])
+        consumer = (sid, "latent_image")
+    # the video VAE: prefer the one the LTXVImgToVideoInplace seed uses; else any non-audio VAELoader*
     vae_src = None
     inplace = [n for n in api.values()
                if n.get("class_type", "").startswith("LTXVImgToVideoInplace")]
@@ -506,7 +536,7 @@ def _ltx_cond_latent_vae_sampler(api):
             vae_src = [vae_node, 0]
     if vae_src is None:
         return None
-    return cond_id, latent_src, vae_src, sampler_id
+    return cond_id, latent_src, vae_src, consumer
 
 
 def _inject_ltx_guides(api, guides, length):
@@ -530,7 +560,7 @@ def _inject_ltx_guides(api, guides, length):
         if sp is None:
             print("LTX guides: could not identify conditioning/latent/vae/sampler — skipping (fail-open)")
             return api
-        cond_id, latent_src, vae_src, sampler_id = sp
+        cond_id, latent_src, vae_src, consumer = sp
         # output frame rate from the LTXVConditioning node (fallback 24)
         fps = 24
         try:
@@ -540,17 +570,22 @@ def _inject_ltx_guides(api, guides, length):
         except Exception:
             pass
         os.makedirs(INPUT_DIR, exist_ok=True)
-        # the anchor name seeds a collision-free base for the copied guide frames
-        base = os.path.splitext(os.path.basename(api[next(
-            (i for i, n in api.items() if n.get("class_type") == "LoadImage"), None)]
-            ["inputs"]["image"]))[0] if any(
-            n.get("class_type") == "LoadImage" for n in api.values()) else "guide"
+        # Co-locate guide frames with the SEED so a PRIVATE session's frames stay in its sealed subdir
+        # (.lucid-priv-<s>/, which the private burn wipes) — writing to input/ root would leak them AND
+        # break name resolution. Read the seed LoadImage's image (input-relative, maybe subdir'd).
+        seed_img = next((api[i]["inputs"]["image"] for i, n in api.items()
+                         if n.get("class_type") == "LoadImage"
+                         and isinstance(api[i].get("inputs", {}).get("image"), str)), "guide.png")
+        seed_dir = os.path.dirname(seed_img)            # "" (input/ root) or ".lucid-priv-<s>" (sealed)
+        base = os.path.splitext(os.path.basename(seed_img))[0]
+        if seed_dir:
+            os.makedirs(os.path.join(INPUT_DIR, seed_dir), exist_ok=True)
         # the conditioning sources for the FIRST guide come from the LTXVConditioning outputs
         pos_src, neg_src, lat_src = [cond_id, 0], [cond_id, 1], list(latent_src)
         new_ids = set()                          # nodes WE add — never rewire these back onto themselves
         for i, g in enumerate(guides):
             frame_abs_path, t_seconds, tag = g
-            name = f"{base}_guide{i}.png"
+            name = os.path.join(seed_dir, f"{base}_guide{i}.png")   # subdir-relative LoadImage name
             shutil.copy(frame_abs_path, os.path.join(INPUT_DIR, name))
             tagl = (tag or "").strip().lower()
             # "hold" = continue FROM this composition -> pin at the clip START (frame 0); more/less/change
@@ -567,8 +602,10 @@ def _inject_ltx_guides(api, guides, length):
             new_ids.add(img_id); new_ids.add(guide_id)
             # the next guide (and finally the sampler) chains from THIS guide's outputs
             pos_src, neg_src, lat_src = [guide_id, 0], [guide_id, 1], [guide_id, 2]
-        # rewire the sampler's latent_image to the last guide's latent output
-        api[sampler_id]["inputs"]["latent_image"] = list(lat_src)
+        # reconnect the consumer of the video latent (AV concat's video_latent, or the sampler in a
+        # non-AV graph) to the last guide's latent output — the sampler stays on the concat
+        cons_id, cons_key = consumer
+        api[cons_id]["inputs"][cons_key] = list(lat_src)
         # rewire whatever ELSE consumed the conditioning (CFGGuider/STGGuider*) to the last guide's
         # pos/neg. Skip the guide nodes we just added (the first one legitimately reads [cond,0/1]).
         for nid, n in api.items():
