@@ -81,6 +81,12 @@ tailscale serve --bg --https=9119 http://127.0.0.1:9119   # Hermes board
 tailscale serve status                                     # confirm mappings
 ```
 
+Or just run the helper (does all of the above + prints the phone URLs):
+
+```bash
+integrations/agentosd-remote.sh up       # serve the UIs   (down | status)
+```
+
 `serve` CLI flags vary slightly by version — check `tailscale serve --help` if one differs.
 From the phone: `https://<your-box>.<your-tailnet>.ts.net:8765/` (Lucid), `:9123`, etc. TLS
 via the tailnet cert; reachable only by your devices; nothing public. **Do not** serve 8188
