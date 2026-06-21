@@ -27,9 +27,11 @@ fi
 # porthole shader and shipped the test scaffolding).
 if kpackagetool6 --type Plasma/Applet --list 2>/dev/null | grep -qx "$APPLET_ID"; then
   kpackagetool6 --type Plasma/Applet --upgrade "$PKG" >/dev/null
+  ACTION=upgraded
   echo "✓ keyhole plasmoid upgraded ($APPLET_ID)"
 else
   kpackagetool6 --type Plasma/Applet --install "$PKG" >/dev/null
+  ACTION=installed
   echo "✓ keyhole plasmoid installed ($APPLET_ID)"
 fi
 
@@ -43,9 +45,27 @@ else
   echo "    or the tray will show the honest UNKNOWN look (em-dashes) until a feed exists"
 fi
 
-cat <<'EOF'
+# A kpackagetool6 --upgrade updates files on disk but does NOT hot-reload an applet already
+# instantiated in the running plasmashell — so an upgrade of a PLACED widget has NO visible
+# effect until the shell reloads. Detect exactly that and warn loudly; otherwise (fresh install,
+# or shell not running) just give the placement guidance. We never auto-restart the shell.
+APPLETS_CFG="$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc"
+PLACED=0
+[ -f "$APPLETS_CFG" ] && grep -q "^plugin=$APPLET_ID\$" "$APPLETS_CFG" 2>/dev/null && PLACED=1
+
+if [ "$ACTION" = upgraded ] && [ "$PLACED" = 1 ] && pgrep -x plasmashell >/dev/null 2>&1; then
+  cat <<'EOF'
+
+  ⚠ RELOAD REQUIRED — the widget is already on a panel and plasmashell is running, so it is
+    still showing the OLD build. The upgrade is on disk but won't appear until you reload the
+    shell (panels blank for ~1s, then redraw):
+        kquitapp6 plasmashell && (kstart plasmashell >/dev/null 2>&1 &)
+EOF
+else
+  cat <<'EOF'
   → add it to your panel: right-click the system tray → Configure System Tray → Entries →
     set "AgentOS Keyhole" to Shown (or Auto). It idle-vanishes when there's nothing to report.
   → if you already had it placed, restart the shell to pick up this build:
     kquitapp6 plasmashell && (kstart plasmashell >/dev/null 2>&1 &)
 EOF
+fi
