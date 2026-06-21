@@ -106,7 +106,17 @@ status-panel daemon (no new port, no new process — the unit runs `status_panel
   installs them, `restore.sh` removes them (reversible). Daemon now **refuses a non-loopback bind**
   unless `AGENTOS_STATUS_ALLOW_NONLOOPBACK=1` (`tailscale serve` is the only sanctioned exposure).
 - **Tests**: `tests/test_launch.py` ports the spike's origin/security invariants + adds route,
-  cache, launcher-generation, and host-validation tests (67 status-panel tests total, green).
+  cache, launcher-generation, and host-validation tests (70 status-panel tests total, green).
+- **Adversarial review (4 lenses: security/a11y/ux/channels) → findings closed (`3183f8b`).** The
+  sanctioned `tailscale serve --https` path was confirmed fail-closed (a shell one-liner never reaches
+  a remote client; doors never go dead). Hardened regardless: `classify_origin` now reads X-Real-IP /
+  Via / CF-Connecting-IP as forwarding markers, treats an **absent Host as untrusted** (no longer
+  relaxes `can_copy_fix`), and falls the door-rewrite host back from X-Forwarded-Host to **Host** so a
+  proxy omitting XFH doesn't blank every phone door. Launch view: split-brain "up-but-unreachable" no
+  longer reads confident-green, dormant≠down on the phone, copy-fix button clears the WCAG-2.5.8 24px
+  floor, demo rows match production. **Still owed:** the `panel.html:159` stale-state contrast fold-in
+  (gap #1 for the *production* panel — dim the signal, keep the text) and a `--tcp`-mode positive
+  loopback proof (low-risk; `--https` is what `agentosd-remote.sh` uses).
 
 ### Adversarial review pass (2026-06-20) — fixed inline
 Five parallel reviewers (security / reversibility / resource-safety / a11y / channels). No
