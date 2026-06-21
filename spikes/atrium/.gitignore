@@ -1,0 +1,5 @@
+# throwaway measurement artifacts — regenerate with `python3 measure.py`
+out/
+__pycache__/
+tests/__pycache__/
+# MEASUREMENTS.md is the writeup and IS committed; icons/ are committed (the PWA needs them).

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Atrium · contrast probe</title>
+<style>
+  /* Deterministic WCAG probe for ADR-0031 gap #1. Each column renders, under one stale
+     treatment, an INK swatch (the foreground text colour) and a PAPER swatch (the glass card
+     over the real backdrop). measure.py screenshots this at a fixed window size and samples
+     the swatch centres — because INK and PAPER pass through the IDENTICAL treatment as the real
+     text and its background, the two sampled colours are exactly the post-composite ink/paper,
+     and WCAG(ink,paper) is the real rendered contrast. No heuristics. */
+  :root {
+    --inst-base:#12141c; --inst-deep:#161a28; --inst-horizon:#1a2238;
+    --inst-text:#e6e9f0; --inst-muted:#8a90a0; --inst-label:#878c9b;
+    --inst-blue:#7aa2ff; --brand-warm:#e0884f;
+    --glass:rgba(38,42,54,0.46);
+  }
+  html,body { margin:0; height:100%; }
+  body { background:
+      radial-gradient(1200px 700px at 78% -8%, color-mix(in srgb,var(--inst-blue) 10%,transparent), transparent 60%),
+      radial-gradient(1000px 600px at 8% 108%, color-mix(in srgb,var(--brand-warm) 9%,transparent), transparent 55%),
+      linear-gradient(160deg,var(--inst-base),var(--inst-deep) 45%,var(--inst-horizon));
+    background-attachment:fixed; }
+  .col { position:absolute; width:190px; }
+  .ink, .paper { position:absolute; width:190px; height:185px; border-radius:8px; }
+  .ink { top:15px; background:var(--inst-text); }                       /* foreground ink */
+  .paper { top:215px; background:var(--glass); }                       /* glass over backdrop */
+
+  /* column 1: NORMAL (no treatment) */
+  #c-normal { left:15px; }
+  /* column 2: FIXED stale — ink UNTOUCHED, paper dimmed (the ADR-0031 fix) */
+  #c-fixed { left:220px; }
+  #c-fixed .paper { background:color-mix(in srgb,var(--glass) 60%, transparent); }
+  /* column 3: BUGGY stale — the original: opacity+saturate on the whole group (dims TEXT too) */
+  #c-buggy { left:425px; opacity:.5; filter:saturate(.6); }
+  /* columns 4–5: secondary inks in the NORMAL (live) state — --muted and --faint over glass,
+     so the gate covers descriptions/labels/footer, not just the headline text. */
+  #c-muted { left:630px; } #c-muted .ink { background:var(--inst-muted); }
+  #c-faint { left:835px; } #c-faint .ink { background:var(--inst-label); }
+</style>
+</head>
+<body>
+  <div class="col" id="c-normal"><div class="ink"></div><div class="paper"></div></div>
+  <div class="col" id="c-fixed"><div class="ink"></div><div class="paper"></div></div>
+  <div class="col" id="c-buggy"><div class="ink"></div><div class="paper"></div></div>
+  <div class="col" id="c-muted"><div class="ink"></div><div class="paper"></div></div>
+  <div class="col" id="c-faint"><div class="ink"></div><div class="paper"></div></div>
+</body>
+</html>

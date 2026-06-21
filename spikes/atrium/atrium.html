@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<meta name="theme-color" content="#12141c" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/icons/icon-192.png" />
+<title>AgentOS · the Atrium</title>
+<style>
+  /* ── Instrument "glass" register — mirrored from integrations/design/instrument-tokens.md,
+     the same skin as the status panel + keyhole tray. In production these tokens are shared;
+     here they're inlined so the spike stands alone. NO new colour constants (ADR-0031). ── */
+  :root {
+    --inst-base:#12141c; --inst-deep:#161a28; --inst-horizon:#1a2238;
+    --inst-text:#e6e9f0; --inst-muted:#8a90a0; --inst-label:#878c9b; /* 4.5:1 on glass (ADR-0031; was #7a8090/3.86:1) */
+    --inst-blue:#7aa2ff; --inst-warm:#ff9957; /* warm is RESERVED — never spent here */
+    --brand-warm:#e0884f;
+    --glass:rgba(38,42,54,0.46); --hairline:rgba(255,255,255,0.07);
+    --hairline-hi:rgba(255,255,255,0.12); --tint-hover:rgba(255,255,255,0.025);
+    --bg-0:var(--inst-base); --bg-1:var(--inst-deep); --bg-2:var(--inst-horizon);
+    --text:var(--inst-text); --muted:var(--inst-muted); --faint:var(--inst-label);
+    --blue:var(--inst-blue);
+    --card:var(--glass); --card-line:var(--hairline); --card-line-hi:var(--hairline-hi);
+    --st-up:#74d39a; --st-amber:#f2c879; --st-red:#ec7676; --st-idle:#757c8e; --st-unknown:#6f7894;
+    --st-up-fg:color-mix(in srgb,var(--st-up) 60%,var(--text));
+    --st-amber-fg:color-mix(in srgb,var(--st-amber) 62%,var(--text));
+    --st-red-fg:color-mix(in srgb,var(--st-red) 58%,var(--text));
+    --st-up-ring:color-mix(in srgb,var(--st-up) 16%,transparent);
+    --st-amber-ring:color-mix(in srgb,var(--st-amber) 16%,transparent);
+    --st-red-ring:color-mix(in srgb,var(--st-red) 20%,transparent);
+    --st-idle-ring:color-mix(in srgb,var(--st-idle) 15%,transparent);
+    --blue-line:color-mix(in srgb,var(--inst-blue) 30%,transparent);
+    --blue-wash:color-mix(in srgb,var(--inst-blue) 12%,transparent);
+    --fs-display:1.1875rem; --fs-lg:0.9rem; --fs-md:0.8125rem; --fs-sm:0.78125rem;
+    --fs-xs:0.75rem; --fs-2xs:0.71875rem; --fs-3xs:0.65625rem;
+    --fw-regular:400; --fw-medium:560; --fw-semibold:640;
+    --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-7:32px; --sp-8:40px;
+    --radius-sm:9px; --radius-md:16px; --radius-pill:999px;
+    --blur-overlay:18px; --glass-saturate:1.2; --shadow:0 12px 40px -16px rgba(0,0,0,0.7);
+    font-synthesis:none; -webkit-font-smoothing:antialiased;
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    :root { --glass:rgba(24,28,40,0.94); }
+    .card,.door,.pill { backdrop-filter:none !important; -webkit-backdrop-filter:none !important; }
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; }
+  /* A STILL ROOM (ADR-0031 non-goal: no reactive backdrop). One static gradient — no canvas,
+     no WebGL, no requestAnimationFrame. The launcher costs ~0 GPU; live mood is the wallpaper. */
+  body {
+    margin:0; color:var(--text);
+    font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    background:
+      radial-gradient(1200px 700px at 78% -8%, color-mix(in srgb,var(--inst-blue) 10%,transparent), transparent 60%),
+      radial-gradient(1000px 600px at 8% 108%, color-mix(in srgb,var(--brand-warm) 9%,transparent), transparent 55%),
+      linear-gradient(160deg,var(--bg-0),var(--bg-1) 45%,var(--bg-2));
+    background-attachment:fixed; min-height:100%; letter-spacing:0.1px;
+  }
+  .wrap { max-width:760px; margin:0 auto; padding:var(--sp-8) var(--sp-5) var(--sp-8); }
+
+  header { display:flex; align-items:flex-start; justify-content:space-between; gap:var(--sp-4); flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:var(--sp-3); }
+  .mark { width:34px; height:34px; border-radius:10px; flex:none; position:relative;
+    background:linear-gradient(150deg,var(--blue),var(--brand-warm));
+    box-shadow:0 0 0 1px rgba(255,255,255,0.10) inset, 0 6px 18px -8px var(--blue); }
+  .mark::after { content:""; position:absolute; inset:9px; border-radius:4px; background:var(--bg-0); opacity:.55; }
+  .brand h1 { font-size:var(--fs-display); font-weight:var(--fw-semibold); margin:0; line-height:1.1; }
+  .brand .sub { font-size:var(--fs-sm); color:var(--muted); margin-top:2px; }
+  .pill { display:inline-flex; align-items:center; gap:var(--sp-2); padding:var(--sp-2) var(--sp-4);
+    border-radius:var(--radius-pill); font-size:var(--fs-md); font-weight:var(--fw-semibold);
+    border:1px solid var(--card-line); background:var(--card);
+    backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); }
+  .pill .bead { width:9px; height:9px; border-radius:50%; background:var(--st-up); box-shadow:0 0 10px var(--st-up); }
+  .pill.nominal { color:var(--st-up-fg); border-color:color-mix(in srgb,var(--st-up) 32%,transparent); }
+  .pill.attention { color:var(--st-amber-fg); border-color:color-mix(in srgb,var(--st-amber) 34%,transparent); }
+  .pill.attention .bead { background:var(--st-amber); box-shadow:0 0 10px var(--st-amber); }
+  .pill.degraded { color:#c2c7d2; border-color:var(--card-line-hi); }
+  .pill.degraded .bead { background:var(--st-unknown); box-shadow:none; }
+
+  /* honest "which sense went blind" banner — only shown when actually blind */
+  .blindbar { margin-top:var(--sp-5); padding:var(--sp-3) var(--sp-4); border-radius:var(--radius-sm);
+    background:color-mix(in srgb,var(--st-unknown) 14%,transparent); border:1px solid var(--card-line-hi);
+    color:var(--text); font-size:var(--fs-sm); display:none; }
+  body.blind .blindbar { display:block; }
+
+  .group { margin-top:var(--sp-7); }
+  .group > h2 { font-size:var(--fs-2xs); font-weight:var(--fw-semibold); text-transform:uppercase;
+    letter-spacing:1.4px; color:var(--faint); margin:0 0 var(--sp-3) var(--sp-1); }
+  .doors { display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:var(--sp-3); }
+  @media (max-width:560px){ .doors { grid-template-columns:1fr; } }
+  /* a grid cell = the door + (when present, local-only) its recovery row beneath it. The fix
+     button must be a SIBLING of an <a> door, never nested inside it (no interactive nesting). */
+  .doorcell { display:flex; flex-direction:column; min-width:0; gap:var(--sp-1); }
+
+  /* A door. An <a> when it's a live destination; a <div> when it's monitor/desktop-only —
+     so non-doors are never focusable links you can't follow. */
+  .door { display:block; text-decoration:none; color:inherit; border:1px solid var(--card-line);
+    border-radius:var(--radius-md); background:var(--card); box-shadow:var(--shadow); overflow:hidden;
+    backdrop-filter:blur(var(--blur-overlay)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter:blur(var(--blur-overlay)) saturate(var(--glass-saturate));
+    transition:border-color .2s, background .2s, transform .12s; }
+  a.door:hover { border-color:var(--blue-line); background:color-mix(in srgb,var(--glass) 80%, var(--blue-wash)); }
+  a.door:active { transform:translateY(1px); }
+  a.door:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+  .doorline { display:flex; align-items:center; gap:var(--sp-3); padding:var(--sp-4) var(--sp-4); }
+  .meta { min-width:0; flex:1; }
+  .meta .name { font-size:var(--fs-lg); font-weight:var(--fw-medium); line-height:1.25; }
+  .meta .desc { font-size:var(--fs-xs); color:var(--muted); margin-top:2px;
+    overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .action { font-size:var(--fs-sm); font-weight:var(--fw-medium); white-space:nowrap; flex:none; }
+  a.door .action { color:var(--blue); }
+  .door.is-desktop-only .action, .door.is-monitor .action { color:var(--faint); }
+  .door.is-desktop-only { opacity:.92; }
+
+  /* dot grammar (subset of the panel's), carries status alongside the always-present text label */
+  .dot { width:11px; height:11px; border-radius:50%; flex:none; background:var(--st-idle);
+    box-shadow:0 0 0 4px var(--st-idle-ring); }
+  .dot.up { background:var(--st-up); box-shadow:0 0 0 4px var(--st-up-ring); }
+  .dot.ok { background:transparent; box-shadow:inset 0 0 0 2px var(--st-up); opacity:.82; }
+  .dot.idle { background:transparent; box-shadow:inset 0 0 0 2px var(--st-idle); opacity:.85; }
+  .dot.starting,.dot.stopping { background:var(--st-amber); box-shadow:0 0 0 4px var(--st-amber-ring); }
+  .dot.failed { background:var(--st-red); box-shadow:0 0 0 4px var(--st-red-ring),0 0 7px color-mix(in srgb,var(--st-red) 38%,transparent); }
+  .dot.down,.dot.absent { background:var(--st-idle); box-shadow:0 0 0 4px var(--st-idle-ring); }
+  .dot.unknown { background:transparent; border:1.5px dashed var(--st-unknown); }
+
+  /* S1 (designed, gated): the lease-aware cost line on an on-demand door. Cool-toned, single
+     line, NEVER the reserved warm. Lights up for real once `agentosd lease` is installed; until
+     then it states the honest dormant truth instead of faking a number. */
+  .cost { margin:0 var(--sp-4) var(--sp-4) calc(var(--sp-4) + 11px + var(--sp-3));
+    font-size:var(--fs-xs); color:color-mix(in srgb,var(--inst-blue) 70%, var(--muted));
+    border-top:1px dashed var(--card-line); padding-top:var(--sp-2); }
+  .cost.gated { color:var(--faint); font-style:italic; }
+  .statebadge { font-size:var(--fs-3xs); font-weight:var(--fw-semibold); padding:3px var(--sp-2);
+    border-radius:var(--radius-pill); border:1px solid var(--card-line-hi); color:var(--muted); white-space:nowrap; }
+  .row-fix { padding:0 var(--sp-4) var(--sp-4); }
+  button.fix { font:inherit; font-size:var(--fs-xs); font-weight:var(--fw-medium); color:var(--st-amber-fg);
+    cursor:pointer; padding:5px var(--sp-3); border-radius:var(--radius-sm);
+    background:color-mix(in srgb,var(--st-amber) 9%,transparent);
+    border:1px solid color-mix(in srgb,var(--st-amber) 34%,transparent); }
+  button.fix:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+
+  footer { margin-top:var(--sp-8); text-align:center; color:var(--faint); font-size:var(--fs-2xs); line-height:1.7; }
+  footer code { color:var(--muted); background:rgba(255,255,255,0.05); padding:1.5px 6px; border-radius:5px; }
+
+  /* ── STALE / BLIND treatment ─────────────────────────────────────────────────────────────
+     FIXED (default): the panel went blind, so dim the *signal* (dots, glass, borders) and raise
+     a banner — but NEVER the text. Foreground stays at full contrast (ADR-0031 gap #1 fix:
+     "dim background-only … never the foreground"). measure.py proves text clears WCAG AA here. */
+  body.stale .dot { filter:grayscale(.6) saturate(.5); opacity:.6; box-shadow:none; }
+  body.stale .door, body.stale .card { background:color-mix(in srgb,var(--glass) 60%, transparent);
+    border-color:var(--card-line); box-shadow:none; }
+  body.stale a.door .action { color:var(--muted); }   /* a door we can't trust right now reads quieter… */
+  /* …but its NAME/DESC text is untouched — that's the readable truth the user still needs. */
+
+  /* BUGGY (measurement only, ?buggystale=1): the original status-panel behaviour the council
+     flagged — opacity+saturate on the whole subtree dims the TEXT. Kept ONLY so the spike can
+     quantify the regression it replaces. Do not ship. */
+  body.buggystale main { opacity:.5; filter:saturate(.6); }
+
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="mark" aria-hidden="true"></div>
+        <div>
+          <h1>The Atrium</h1>
+          <div class="sub">open any AgentOS service · the front door</div>
+        </div>
+      </div>
+      <span id="pill" class="pill degraded" role="status" aria-live="polite">
+        <span class="bead"></span><span id="pill-text">checking…</span>
+      </span>
+    </header>
+
+    <div class="blindbar" id="blindbar" role="status"></div>
+
+    <main id="groups"></main>
+
+    <footer>
+      A read-only launch view of the AgentOS service family · link-out only, mutates nothing<br />
+      <span id="origin-note">served locally</span>
+    </footer>
+  </div>
+
+<script>
+  // ── tiny, dependency-free renderer. Consumes the SERVER's launch.json (origin already
+  //    decided server-side); falls back to a built-in demo set for ?demo=1 (offline/headless). ──
+  const Q = new URLSearchParams(location.search);
+  const DEMO = Q.has("demo");
+  const ESC = { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" };
+  const esc = (v) => String(v==null?"":v).replace(/[&<>"']/g,(c)=>ESC[c]);
+  const safeUrl = (u) => (/^https?:\/\//i.test(u||"") ? u : "");
+
+  function demoData() {
+    const remote = Q.has("remote");
+    const host = "4090.tailnet.ts.net:9123";
+    const mk = (id,name,group,desc,status,kind,url,tailnet=true) => {
+      let door;
+      if (!url) door = { state:"monitor-only", href:"" };
+      else if (!remote) door = { state:"open", href:url };
+      else if (!tailnet) door = { state:"desktop-only", href:"" };
+      else door = { state:"open", href:"https://4090.tailnet.ts.net:"+(new URL(url).port)+"/" };
+      return { id,name,group,desc,status,kind,door,
+               reach: status==="up"?"reachable":"", scope:"user" };
+    };
+    const services = [
+      mk("hermes-dashboard","Hermes web UI","AI core","Config, sessions, kanban board","up","daemon","http://127.0.0.1:9119"),
+      mk("comfyui","ComfyUI","AI core","Dreaming backend — local video/image gen (on demand)","idle","on_demand","http://127.0.0.1:8188",false),
+      mk("ollama","Ollama runtime","AI core","Local model server","up","daemon",""),
+      mk("status-panel","Status panel","AgentOS substrate","Boot-health front door","up","daemon","http://127.0.0.1:9123"),
+      mk("lucid","Lucid (dream loop)","Dreaming","Watch a clip, choose what happens next","up","daemon","http://127.0.0.1:8765"),
+      mk("share-hub","AgentOS Share","Dreaming","Phone → box photo ingest — share a photo to start a dream","up","daemon","http://127.0.0.1:8770"),
+      mk("swaync","Notifications","Notifications","swaync — the desktop's nervous system","failed","daemon",""),
+    ];
+    const fail = services.find(s=>s.status==="failed");
+    if (fail && !remote) fail.fix = "systemctl --user reset-failed swaync.service && systemctl --user restart swaync.service";
+    return { groups:["AI core","AgentOS substrate","Dreaming","Notifications"], services,
+             summary:{ total:services.length, healthy:5, attention:1 },
+             generated_at: Date.now()/1000, origin:{ remote, can_copy_fix:!remote, host: remote?host:null } };
+  }
+
+  const STATE_RANK = { failed:0, starting:1, stopping:1, down:2, unknown:3, up:4, idle:5, ok:5, absent:6 };
+
+  const CALM = new Set(["up", "ok", "idle"]);          // a status that is NOT an attention cue
+  const S1_NOTE = "Opening reads the GPU coordinator first — the cost lights up here once the lease daemon is installed.";
+
+  function actionLabel(s) {
+    if (s.door.state === "open")
+      return s.kind === "on_demand" ? "Open · ready when you are ↗" : "Open ↗";
+    if (s.door.state === "desktop-only") return "on your desktop";
+    return s.state || "";                               // monitor-only: show the live state, no action
+  }
+
+  function doorEl(s) {
+    const cls = "door is-" + s.door.state;
+    const dot = `<span class="dot ${esc(s.status)}" aria-hidden="true"></span>`;
+    const name = `<div class="name">${esc(s.name)}</div>`;
+    const desc = `<div class="desc">${esc(s.desc)}</div>`;
+    // WCAG 1.4.1: never carry health by colour (the dot) alone. For an open door whose status is
+    // NOT calm (failed/starting/down/…), show the state word as visible text too.
+    const stateBadge = (s.door.state === "open" && !CALM.has(s.status))
+      ? `<span class="statebadge">${esc(s.state || s.status)}</span>` : "";
+    const action = `<span class="action">${esc(actionLabel(s))}</span>`;
+    const inner = `<div class="doorline">${dot}<div class="meta">${name}${desc}</div><div class="right">${stateBadge}${action}</div></div>`;
+    // S1 (gated): on-demand doors carry the cost line. Honest dormant copy until the lease lands.
+    const cost = s.kind === "on_demand" ? `<p class="cost gated">${esc(S1_NOTE)}</p>` : "";
+
+    // The accessible name carries name + state + desc + action (+ the S1 note on on-demand doors),
+    // so SR users get what sighted users get — not a truncated label.
+    const aria = `${s.name}: ${s.state || s.status}. ${s.desc || ""} ${actionLabel(s)}`
+      + (s.kind === "on_demand" ? " " + S1_NOTE : "");
+
+    let doorHtml;
+    if (s.door.state === "open") {
+      const href = safeUrl(s.door.href);
+      doorHtml = `<a class="${cls}" href="${esc(href)}" target="_blank" rel="noopener" aria-label="${esc(aria)}">${inner}${cost}</a>`;
+    } else {
+      doorHtml = `<div class="${cls}" role="group" aria-label="${esc(aria)}">${inner}${cost}</div>`;
+    }
+    // copy-fix only ever present when the SERVER said the origin is local (never on the phone).
+    // It is a SIBLING of the door (an <a> can't contain a <button>) so it works for OPEN doors
+    // too — a split-brain "up but unreachable" service is exactly one you want to recover.
+    const fix = s.fix
+      ? `<div class="row-fix"><button class="fix" type="button" data-cmd="${esc(s.fix)}">Copy fix</button></div>` : "";
+    return `<div class="doorcell" data-id="${esc(s.id)}">${doorHtml}${fix}</div>`;
+  }
+
+  let lastSig = "";
+  function sigOf(data) {
+    return (data.services || []).map((s) => `${s.id}:${s.status}:${s.reach}:${s.door && s.door.state}:${s.fix ? 1 : 0}`).join("|")
+      + "|" + (data.services || []).length;
+  }
+
+  // Apply new data WITHOUT disorienting the user: skip the rebuild entirely when nothing
+  // meaningful changed (so a focused door isn't yanked away every poll), and when it does
+  // change, restore focus to the SAME door id afterwards (WCAG 2.4.3 Focus Order).
+  function applyData(data) {
+    const sig = sigOf(data);
+    if (sig === lastSig) return;
+    const active = document.activeElement;
+    const cell = active && active.closest ? active.closest(".doorcell") : null;
+    const focusedId = cell ? cell.dataset.id : null;
+    const wasFix = !!(active && active.classList && active.classList.contains("fix"));
+    render(data);
+    lastSig = sig;
+    if (focusedId) {
+      const sel = `.doorcell[data-id="${(window.CSS && CSS.escape) ? CSS.escape(focusedId) : focusedId}"]`;
+      const c = document.getElementById("groups").querySelector(sel);
+      const tgt = c && (wasFix ? c.querySelector("button.fix") : c.querySelector("a.door, .door"));
+      if (tgt && tgt.focus) tgt.focus();
+    }
+  }
+
+  function render(data) {
+    const byGroup = {};
+    for (const s of data.services) (byGroup[s.group] ||= []).push(s);
+    const order = data.groups && data.groups.length ? data.groups : Object.keys(byGroup);
+    let html = "";
+    for (const g of order) {
+      const list = (byGroup[g]||[]).slice().sort((a,b)=>STATE_RANK[a.status]-STATE_RANK[b.status]);
+      if (!list.length) continue;
+      html += `<section class="group"><h2>${esc(g)}</h2><div class="doors">${list.map(doorEl).join("")}</div></section>`;
+    }
+    document.getElementById("groups").innerHTML = html ||
+      `<section class="group"><div class="doors"><div class="door"><div class="doorline"><div class="meta"><div class="desc">No services in the catalog.</div></div></div></div></div></section>`;
+  }
+
+  function setPill(mode, text){ const p=document.getElementById("pill"); p.className="pill "+mode;
+    document.getElementById("pill-text").textContent=text; }
+  // Guarded so the aria-live blindbar only re-announces when the message actually changes.
+  function setBlind(msg){ const b=document.getElementById("blindbar"); if (b.textContent!==msg) b.textContent=msg; }
+
+  function paint(data, blind, blindMsg) {
+    const att = (data.summary && data.summary.attention) || 0;
+    const total = (data.summary && data.summary.total) || 0;
+    if (blind)        setPill("degraded", "showing last view");
+    else if (att>0)   setPill("attention", `${att} need${att===1?"s":""} attention`);
+    else              setPill("nominal", `${total} services · all open`);
+    document.body.classList.toggle("blind", !!blind);
+    if (blind) setBlind(blindMsg);
+    const note = data.origin && data.origin.remote
+      ? `over your tailnet · desktop-only services are shown but not linked`
+      : `served locally on 127.0.0.1`;
+    document.getElementById("origin-note").textContent = note;
+  }
+
+  // copy-fix is copy-don't-execute; the command only exists in the DOM when the server allowed it.
+  document.getElementById("groups").addEventListener("click", async (e) => {
+    const b = e.target.closest("button.fix"); if (!b) return;
+    try { await navigator.clipboard.writeText(b.dataset.cmd); const o=b.textContent; b.textContent="copied — run it"; setTimeout(()=>b.textContent=o,1800); }
+    catch { const o=b.textContent; b.textContent="copy failed"; setTimeout(()=>b.textContent=o,1800); }
+  });
+
+  async function tick() {
+    if (DEMO) {                              // headless / offline-standalone: render the demo set
+      const d = demoData();
+      applyData(d); paint(d, false);
+      // measurement flags: apply the stale class WITHOUT needing the server
+      if (Q.has("forcestale")) { document.body.classList.add("stale"); paint(d, true, "Data is stale — the panel hasn't refreshed."); }
+      if (Q.has("buggystale")) document.body.classList.add("buggystale");
+      return;
+    }
+    try {
+      const r = await fetch("/launch.json", { cache:"no-store" });
+      const data = await r.json();
+      applyData(data);
+      // STALE = reachable but the data is old (a different sense than blind/offline).
+      const age = data.generated_at ? Math.max(0, Date.now()/1000 - data.generated_at) : 0;
+      const stale = age > 12;
+      document.body.classList.toggle("stale", stale);
+      document.body.classList.remove("blind");
+      paint(data, stale, "Data is stale — the panel hasn't refreshed in a while.");
+    } catch (e) {
+      // BLIND = the network failed (offline / tailnet path down). A service worker serves the
+      // cached shell so we can still say *which sense went blind* — the box may be fine. Kept
+      // distinct from stale: we don't dim-as-stale here, we declare the view blind.
+      document.body.classList.remove("stale");
+      document.body.classList.add("blind");
+      setPill("degraded","can't reach the box");
+      setBlind("Offline — the tailnet path is quiet. Your box may be perfectly fine; this view just can't reach it right now.");
+    }
+  }
+
+  tick();
+  if (!DEMO) {
+    setInterval(tick, 5000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+    // PWA: register the service worker so the shell installs + opens offline with an honest state.
+    if ("serviceWorker" in navigator && location.protocol !== "file:") {
+      navigator.serviceWorker.register("/sw.js").catch(()=>{});
+    }
+  }
+</script>
+</body>
+</html>
