@@ -1,5 +1,10 @@
 # spikes/keyhole — feasibility spike for the AgentOS keyhole instrument
 
+> **Promoted.** The shipped plasmoid now lives in `integrations/keyhole/` (driver-managed,
+> `id: keyhole`). This directory is kept as the **validation record + test harness** only
+> (`harness.qml`, `mutate.sh`, `runtests.sh`, the headless poll/contract proofs). Edit the
+> canonical package under `integrations/keyhole/package/`, not here.
+
 Throwaway spike (ADR-0005 reversible; excluded from the cargo workspace). De-risks the
 **dominant unknown** for ADR-0012 / `docs/design/keyhole-instrument.md`: the
 **Rust→QML file-poll seam** and the Plasma-6 tray plasmoid that hosts it.

@@ -1,0 +1,21 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "AgentOS design-technologist",
+                "Email": "coreypreston@gmail.com"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "The keyhole — a read-only legibility instrument for AgentOS: VRAM lease/arbitration, model residency, fleet state. Reads keyhole.json (never opens NVML or the lease D-Bus).",
+        "Icon": "view-visible",
+        "Id": "org.agentos.keyhole",
+        "License": "MIT",
+        "Name": "AgentOS Keyhole",
+        "Version": "0.1.0",
+        "Website": "https://github.com/coreypreston/AgentOS"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-NotificationAreaCategory": "SystemServices"
+}
