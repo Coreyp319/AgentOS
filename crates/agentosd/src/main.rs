@@ -20,6 +20,10 @@
 //!   * `scene` — ADR-0030 reactive disposer: reads `agent.json`/`wind.json` → one pre-disposed
 //!     `scene-params.json` (mood axes only; clamp/slew/snap-to-rest, fail-to-calm) for the UE
 //!     dark-ride applier. PAUSED prototype ahead of the UE wallpaper layer (see `scene.rs`).
+//!   * `rc` — ADR-0030 D1 reactive MOOD pusher: reads `scene-params.json` → loopback UE Remote
+//!     Control (`SetScalarParameterValue` on the reactive MPC). MOOD only (NOT the throttle
+//!     channel); loopback-literal, allowlisted verb, silent-at-rest, resync-on-reconnect. GATED on
+//!     the ADR-0029 §B live security verification (see `rc.rs`).
 //!
 //! `monitor` proves the load-bearing pieces of the VRAM coordinator WITHOUT doing
 //! anything destructive:
@@ -46,6 +50,7 @@ mod governor;
 mod keyhole;
 mod lease;
 mod mcp;
+mod rc;
 mod reclaim;
 mod scene;
 mod scope_reclaim;
@@ -117,6 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "coexist" => analyze::run(std::env::args().skip(2).collect()),
         "mcp" => mcp::run(std::env::args().skip(2).collect()),
         "scene" => scene::run(std::env::args().any(|a| a == "--once")),
+        "rc" => rc::run(std::env::args().any(|a| a == "--once")),
         other => {
             eprintln!(
                 "agentosd: unknown mode `{other}`. Modes: monitor (read-only VRAM), \
@@ -125,7 +131,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  telemetry (append telemetry.jsonl history for coexistence tuning), \
                  coexist (analyze telemetry → propose a residency plan), \
                  mcp (agent-facing read-only GPU MCP server, ADR-0020), \
-                 scene (reactive dark-ride mood disposer → scene-params.json, ADR-0030). See docs/adr/."
+                 scene (reactive dark-ride mood disposer → scene-params.json, ADR-0030), \
+                 rc (reactive mood pusher: scene-params.json → loopback UE Remote Control, ADR-0030/0029 §B). See docs/adr/."
             );
             std::process::exit(2);
         }
