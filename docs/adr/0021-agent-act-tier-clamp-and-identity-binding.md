@@ -151,6 +151,17 @@ enabled, `inherit_mcp_toolsets: true`), have a parent delegate two concurrent ch
 **Until the spike clears it, act-verb enablement is scoped to the Claude-Code stdio transport; the
 Hermes path is gated.**
 
+**Spike RESULT (run 2026-06-21 — `spikes/mcp-session-granularity/probe.sh`):** ONE session — **both
+layers are blind on the Hermes path.** A direct probe of the real `agentosd mcp` confirms the MCP
+stdio frame carries no caller/session field (only the JSON-RPC `id`), and Hermes routes parent + all
+thread-children through one shared `ClientSession` (`mcp_tool.py:2076`/`:1504`/`:2773`,
+`delegate_tool.py:991`). So layer 2 (in-process per-session isolation) does **not** rescue the as-built
+Hermes case — the server can't tell the children apart either. **Disposition:** ship the act verbs
+**Claude-Code-stdio-scoped** (subprocess-per-session → distinct bus name → layer 1 suffices) and keep
+the **Hermes path GATED** until an *upstream* Hermes change gives each child its own MCP connection (or
+injects a trusted per-child principal the server can key on). Build layer 2's per-session table anyway
+for the day Hermes surfaces distinct sessions — but it is not the as-built Hermes fix.
+
 ### Resolution — Open-Q2: Batch-for-all (unanimous); per-profile deferred to its own ADR
 
 Keep the `Batch` ceiling for every agent — it is the highest tier that cannot preempt the desktop (the
@@ -228,7 +239,9 @@ MCP config line; the clamp and binding are inert without an agent caller. No sta
 2. ~~Default tier ceiling: `Batch` for all, or per-profile?~~ **Resolved (2026-06-21 panel,
    unanimous): `Batch`-for-all**, plus an agent *floor* of {`BestEffort`, `Batch`} (no `Yielding`).
    Per-profile is deferred to its own ADR (needs an authenticated principal + its own privacy review).
-3. **New (from the panel): is layer-2 session isolation implementable on the Hermes path at all?** The
-   spike answers it. If Hermes surfaces all thread-children as ONE MCP session, the fix is upstream
-   Hermes (per-child connection), and the Hermes act path stays gated while Claude-Code ships. →
-   wayland-computeruse-reviewer owns the spike.
+3. ~~Is layer-2 session isolation implementable on the Hermes path at all?~~ **Answered (2026-06-21
+   spike, `spikes/mcp-session-granularity/probe.sh`): NO, as Hermes is built today.** Hermes surfaces
+   all thread-children as ONE MCP session over one shared `ClientSession`, and the MCP frame carries no
+   caller field, so both layers are blind. The Hermes act path is **gated on an upstream Hermes change**
+   (per-child MCP connection, or a trusted per-child principal); the Claude-Code stdio path ships
+   meanwhile. See §Ratification pass → Spike RESULT.

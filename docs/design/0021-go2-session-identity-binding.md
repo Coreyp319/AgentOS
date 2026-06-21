@@ -63,6 +63,26 @@ per inbound `tools/call`, whether parent + the two children arrive as distinct M
 - **One session →** Hermes act path stays **gated**; ship the Claude-Code path only until upstream
   Hermes gives each child its own connection.
 
+### Spike result (RUN 2026-06-21) — ONE session: **both layers blind on the Hermes path**
+Answered by architecture + a direct probe (`spikes/mcp-session-granularity/probe.sh`), no live LLM
+delegation needed (it would only re-confirm what the transport dictates, at real cost to the live box):
+- **Transport:** MCP stdio is one bidirectional stream = one session per `initialize`. The probe drove
+  the real `agentosd mcp` with two `tools/call` frames on one stdin; the only per-frame discriminator
+  is the JSON-RPC `id` — `mcp.rs` reads `id` + `method` + `params`, **no caller/session/principal field**.
+- **Hermes client:** parent + all thread-children share ONE `ClientSession` — module-level `_servers`
+  (`mcp_tool.py:2076`), one `MCPServerTask.session` / one `initialize` (`:1504`), tool calls via
+  `server.session.call_tool` (`:2773`); children **inherit** the toolset, no new session
+  (`delegate_tool.py:991`).
+
+**Conclusion:** the server cannot tell Hermes' children apart, so **layer 2 is blind too** — it does
+*not* rescue the multiplexed Hermes case as currently built. GO-2 for the Hermes act path therefore
+needs an **upstream Hermes change**: either (a-Hermes) key `_servers` per child + spawn a per-child
+`agentosd mcp` subprocess (→ distinct bus name → layer 1 suffices), or inject a *trusted* per-child
+principal out-of-band that the server keys on (caller-supplied is rejected — self-assertable). **Until
+then, ship the act verbs Claude-Code-stdio-scoped (subprocess-per-session → layer 1 suffices) and keep
+the Hermes path GATED.** Layer 2's in-process per-session table is still worth building for the day
+Hermes surfaces distinct sessions, but it is not the as-built Hermes fix.
+
 The carried-`session_id` option (bind `(bus_name, session_id)` in the verb) is **rejected** — a sibling
 behind a shared connection can supply another sibling's id (self-asserted identity behind a shared trust
 boundary, the antipattern `AcquireAgent`-by-verb already avoids). Layer 2 in-process enforcement is the
