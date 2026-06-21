@@ -189,6 +189,26 @@ motion in build. This proves **UE-runs-live-on-Wayland** — but not the wallpap
       See the resolved Open questions §A below for the remaining productionization choice.
     - **(B) The Remote Control server (`:30010`) is an unauthenticated local-code-exec hole** and
       must be locked down before the throttle channel ships. Routed to `security-reviewer`.
+      **SHARPENED 2026-06-20 (governor-build + security review).** The lockdown is *deeper than
+      loopback-binding*: the mechanism `spikes/ue-probe/remote_control_setup.md` documents for pushing
+      a rung — `ExecuteConsoleCommand` via `PUT /remote/object/call` — **IS** the arbitrary-local-code-
+      exec primitive (it runs any console string). So "lock down RC" is **not** "send only ladder cvars
+      over the generic endpoint" (that endpoint stays a code-exec hole regardless of *what we* send);
+      it requires **DISABLING the generic call endpoint and exposing instead a net-new UE-side narrow
+      `UFUNCTION`** (e.g. `AgentOSThrottle.ApplyRung(int)`) that takes a **rung INDEX** and maps it to
+      the ladder cvars *inside UE* — so the allowlist is enforced engine-side and the wire carries an
+      integer, never a command. That UFUNCTION is **net-new UE/Blueprint code requiring a running
+      engine to verify** (the `[VERIFY-LIVE]` question of ADR-0030 D1: does a hardened params-only RC
+      channel prove clean on UE 5.8?). The Rust governor's **client-side half is BUILT** —
+      `governor::is_allowed_in_rung` (rung-scoped, value-scoped, cross-rung-refusing) + `Rung` as the
+      atomic unit of authorization — and the future hardened HTTP client MUST additionally: assert a
+      **literal `127.0.0.1` bind at runtime** (refuse any non-loopback target by construction; no
+      env-overridable host), treat **DNS-rebinding / browser-reachability as in-scope** (validate
+      `Host`/`Origin`, reject non-loopback `Host`), send cvars as **structured fields** never a
+      concatenated console string, and **charset-validate** every value (`^[A-Za-z0-9._-]+$`, already
+      pinned by a governor test). Until the UE-side narrow endpoint exists, the throttle channel cannot
+      ship securely — the governor decision is computed + logged but **never actuated** (see the BUILT
+      bullet above).
     - **(C) `capture_shot` offscreen self-verify is OVEREXPOSED** (SceneCapture2D self-auto-exposes,
       not yet exposure-matched to the `-game` runtime truth); and **motion auto-play in `-game` is
       pending live confirmation.** These are spike-verification gaps, not design decisions.
