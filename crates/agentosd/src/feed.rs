@@ -315,6 +315,20 @@ fn write_feed(dir: &Path, feed: &AgentFeed) -> std::io::Result<()> {
     fs::rename(&tmp, dir.join("agent.json"))
 }
 
+/// Reactive-feed liveness pulse (ADR-0030 D9). Written UNCONDITIONALLY each tick — unlike the
+/// edge-driven `agent.json`, which an idle producer stops rewriting (so its mtime goes old while the
+/// producer is perfectly alive). The reactive scene disposer (`scene.rs`) reads this to tell a
+/// live-but-idle feed (fresh heartbeat) from a dead one (stale heartbeat → `Freshness::Stale`, the
+/// quieter-than-idle "I can't see" look), the keyhole honest-UNKNOWN lesson applied to the wallpaper.
+/// A tiny separate file, so it NEVER perturbs `agent.json`'s idle-byte-identical frame. Atomic +
+/// best-effort/fail-open (a failed heartbeat just lets the consumer read Stale — calm, not alarming).
+fn write_heartbeat(dir: &Path, now: f64) -> std::io::Result<()> {
+    let json = format!("{{\"schema\":1,\"updated_at\":{}}}\n", round3(now));
+    let tmp = dir.join(format!(".heartbeat.{}.tmp", std::process::id()));
+    fs::write(&tmp, json)?;
+    fs::rename(&tmp, dir.join("heartbeat.json"))
+}
+
 pub(crate) fn state_word(s: u8) -> &'static str {
     match s {
         0 => "idle",
@@ -359,6 +373,11 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
         let needs_you = read_needs_you(&needs_you_path);
         let lucid_review = read_lucid_review(&lucid_review_path, now_epoch());
         let feed = derive_feed(&fleet, gw.as_ref(), needs_you, lucid_review);
+
+        // Honest-liveness heartbeat (ADR-0030 D9): pulse an UNCONDITIONAL timestamp every tick so the
+        // reactive scene disposer can distinguish "alive but idle" from "dead". Separate from the
+        // edge-driven agent.json below, so the idle feed stays byte-stable. Best-effort/fail-open.
+        let _ = write_heartbeat(&dir, now_epoch());
 
         let changed = last.as_ref() != Some(&feed);
         if changed || once {
@@ -588,6 +607,23 @@ mod tests {
         let p = std::env::temp_dir().join(format!("agentos_schema_absent_{}.db", std::process::id()));
         let _ = fs::remove_file(&p);
         assert!(matches!(probe_fleet_schema(&p), SchemaCheck::Absent(_)));
+    }
+
+    #[test]
+    fn heartbeat_writes_a_parseable_fresh_timestamp() {
+        // The ADR-0030 D9 liveness pulse: an unconditional, atomically-written {schema,updated_at}
+        // the scene disposer reads to gate Stale. Round-trip it through the same shape scene reads.
+        let dir = std::env::temp_dir().join(format!("agentos_hb_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        write_heartbeat(&dir, 1750000000.5).unwrap();
+        let s = fs::read_to_string(dir.join("heartbeat.json")).unwrap();
+        assert_eq!(s, "{\"schema\":1,\"updated_at\":1750000000.5}\n");
+        // and it parses as a positive finite timestamp (what scene::read_heartbeat requires).
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        let t = v["updated_at"].as_f64().unwrap();
+        assert!(t.is_finite() && t > 0.0);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

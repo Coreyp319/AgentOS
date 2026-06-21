@@ -415,10 +415,11 @@ struct WindFile {
     gust: f64,
 }
 
-/// A heartbeat file's shape — a single producer-liveness timestamp. OPTIONAL today: no producer
-/// writes `heartbeat.json` yet (a one-line follow-up in `feed.rs`'s loop), so its absence simply
-/// means "no staleness signal" → the feed reads Fresh-or-Blind, never Stale. When a heartbeat lands,
-/// `Stale` (the quieter-than-idle middle state, fully handled + tested) activates with no code change.
+/// A heartbeat file's shape — a single producer-liveness timestamp, written unconditionally each tick
+/// by `feed::write_heartbeat` (ADR-0030 D9). Still OPTIONAL by construction: if `heartbeat.json` is
+/// absent (the `feed` producer isn't running), there is simply no staleness signal → the feed reads
+/// Fresh-or-Blind, never Stale. When present, a past-gate timestamp activates `Stale` (the quieter-
+/// than-idle middle state) — which is why the consumer never depends on the producer being up.
 #[derive(Deserialize)]
 struct HeartbeatFile {
     #[serde(default)]
@@ -473,8 +474,9 @@ fn read_heartbeat(path: &Path) -> Option<f64> {
         .filter(|t| t.is_finite() && *t > 0.0)
 }
 
-/// Seconds past the last heartbeat at which a present feed reads `Stale` (> the producer's own tick;
-/// re-tune with the heartbeat cadence when one lands).
+/// Seconds past the last heartbeat at which a present feed reads `Stale`. 4× the `feed` producer's
+/// 2 s loop cadence — comfortably past a delayed tick (no false Stale), tight enough that a dead
+/// producer is noticed within a few seconds.
 const STALE_SECS: f64 = 8.0;
 
 /// Resolve `(mood, freshness)` from the feed dir at time `now`. The honest-UNKNOWN core (D9) —
