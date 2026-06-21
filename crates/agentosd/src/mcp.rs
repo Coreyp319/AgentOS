@@ -7,7 +7,8 @@
 //! **Perceive** (READ-ONLY: reads `keyhole.json` + the `coexist` plan over `telemetry.jsonl`, no NVML,
 //! no network): `gpu_status` (live VRAM + lease tier + resident models), `gpu_residency` (warm-pool/
 //! heavy-lane + each model's learned admission footprint), `gpu_why` (last-contention, sourced from
-//! telemetry — never invented, the ADR-0020 §Consequences honesty rule).
+//! telemetry — never invented, the ADR-0020 §Consequences honesty rule; with a `request_id` it narrates
+//! only the CALLER's own past waits, never another holder — ADR-0021 #10, in-process + holder-free).
 //!
 //! **Act** (intent-only; the agent proposes, the daemon's `admit`/`arbitrate` core disposes —
 //! ADR-0020 §1, gated by ADR-0021 GO-1 tier-clamp + GO-2 identity binding, both met + the ratification
@@ -98,9 +99,13 @@ fn tools_list() -> Value {
         },
         {
             "name": "gpu_why",
-            "description": "Plain-language explanation of the last GPU contention (wait/preempt), \
-                            sourced from telemetry — never invented. Use to explain a slow/queued run.",
-            "inputSchema": empty,
+            "description": "Plain-language explanation of GPU contention, sourced — never invented. With no \
+                            argument: the system card (last contention) PLUS your_recent_contention (THIS \
+                            session's own recent waits). With request_id (from a prior gpu_request): why ONLY \
+                            that request of yours waited — your own contention, never another holder.",
+            "inputSchema": {"type": "object", "properties": {
+                "request_id": {"type": "integer", "description": "optional: a request_id returned by gpu_request — narrate ONLY why that request of yours waited. Omit for the broad view."},
+            }},
         },
         {
             "name": "gpu_request",
@@ -109,7 +114,8 @@ fn tools_list() -> Value {
                             just-preempted cooldown — retry; no place is held, there is no queue) | \
                             denied{short_mib} (won't fit) | unavailable (coordinator down — do NOT launch). \
                             Your tier is clamped to 'batch' (an agent can never preempt the desktop). The \
-                            lease auto-expires unless held by this session — call gpu_release(token) when done.",
+                            lease auto-expires unless held by this session — call gpu_release(token) when done. \
+                            Every reply carries a request_id you can later pass to gpu_why to learn why it waited.",
             "inputSchema": {"type": "object", "properties": {
                 "tier": {"type": "string", "enum": ["batch", "best-effort"],
                          "description": "requested tier; 'interactive' is clamped to 'batch', 'yielding' raised to 'best-effort'"},
@@ -133,7 +139,11 @@ fn tools_call(req: &Value) -> Value {
     let (text, is_error) = match name {
         "gpu_status" => (gpu_status(), false),
         "gpu_residency" => (gpu_residency(), false),
-        "gpu_why" => (gpu_why(), false),
+        "gpu_why" => {
+            // ADR-0021 #10: an optional `request_id` switches gpu_why into the focused per-caller view.
+            let rid = arg("request_id").and_then(Value::as_u64);
+            (gpu_why(rid), false)
+        }
         "gpu_request" => {
             // Least-privilege on malformed input (security review, harvested): default to the LOWER
             // 'best-effort' (never the higher 'batch'), and saturate the estimate so a > u32 value can't
@@ -256,18 +266,54 @@ fn residency_json(plan: Option<crate::analyze::Plan>) -> Value {
     })
 }
 
-fn gpu_why() -> String {
-    why_json(read_keyhole(), crate::analyze::load_plan()).to_string()
+fn gpu_why(request_id: Option<u64>) -> String {
+    // The per-caller contentions are this session's own (in-process, holder-free). Snapshot them, then
+    // shape purely — `why_json` does the focused-vs-broad split + the no-leak split.
+    let caller = lock_contention().recent(LOCAL_SESSION);
+    why_json(read_keyhole(), crate::analyze::load_plan(), &caller, request_id).to_string()
 }
 
-/// Pure shaping of `gpu_why`. Sourced from the keyhole's `lease.preempt` narration (ADR-0012) + the
-/// coexist signals — NEVER generated. The honesty rule has three distinct states, not two:
-///   * both sources unreadable ⇒ `unavailable` ("blind", explicitly not "calm");
-///   * sources readable, empty preempt ⇒ the calm line ("the card was clear …") — a first-class
-///     honest answer, never a bare null;
-///   * a real preempt ⇒ its recorded narration, verbatim.
-fn why_json(keyhole: Option<Value>, plan: Option<crate::analyze::Plan>) -> Value {
-    if keyhole.is_none() && plan.is_none() {
+/// Pure shaping of `gpu_why` — two queries, one shaper.
+///
+/// FOCUSED (`request_id` given, ADR-0021 #10): "why did MY request wait?" — answered PURELY from this
+/// session's own holder-free contentions, NEVER the system-level `last_contention` (which may name a
+/// holder). Works even when blind, since the ring is in-process.
+///
+/// BROAD (`request_id` = None): the system card sourced from the keyhole's `lease.preempt` (ADR-0012) +
+/// coexist signals, NEVER generated, plus this session's own `your_recent_contention`. Three honest
+/// states, not two — both system sources unreadable AND no per-caller history ⇒ `unavailable` ("blind",
+/// not "calm"); readable + empty preempt ⇒ the calm line; a real preempt ⇒ its narration verbatim.
+fn why_json(
+    keyhole: Option<Value>,
+    plan: Option<crate::analyze::Plan>,
+    caller: &[Contention],
+    request_id: Option<u64>,
+) -> Value {
+    // FOCUSED per-caller query — caller-only, never the system card (the strict no-leak path).
+    if let Some(id) = request_id {
+        return match caller.iter().find(|c| c.request_id == id) {
+            Some(c) => json!({
+                "status": "ok",
+                "request_id": id,
+                "kind": c.kind,
+                "why": c.why,
+                "source": "your own act requests (in-process, this session) — never another holder",
+            }),
+            None => json!({
+                "status": "ok",
+                "request_id": id,
+                "why": format!(
+                    "no contention recorded for request {id} — it was granted and didn't wait, was never \
+                     issued, or has aged out of the recent window (last {CONTENTION_RING_CAP})"
+                ),
+                "source": "your own act requests (in-process, this session)",
+            }),
+        };
+    }
+
+    // BROAD query: "blind" (unavailable, not calm) ONLY when there is nothing to say at all — no system
+    // sources AND no per-caller history. (This early-return shape is pinned by test.)
+    if keyhole.is_none() && plan.is_none() && caller.is_empty() {
         return json!({
             "status": "unavailable",
             "detail": "can't see the GPU right now (no keyhole snapshot, no telemetry) — this is 'blind', not 'calm'",
@@ -296,11 +342,19 @@ fn why_json(keyhole: Option<Value>, plan: Option<crate::analyze::Plan>) -> Value
         }
         None => "no telemetry yet".to_string(),
     };
+    // Your OWN recent contentions (holder-free), alongside the system card. Distinct fields on purpose:
+    // the system `last_contention` MAY name a holder (it is the keyhole's already-published tray
+    // narration); `your_recent_contention` is the #10 surface and is holder-free by construction.
+    let your_recent_contention: Vec<Value> = caller
+        .iter()
+        .map(|c| json!({"request_id": c.request_id, "kind": c.kind, "why": c.why}))
+        .collect();
     json!({
         "status": "ok",
         "last_contention": last_contention,
         "recent_activity": recent_activity,
-        "source": "keyhole.json (lease.preempt) + telemetry signals — sourced, not generated",
+        "your_recent_contention": your_recent_contention,
+        "source": "keyhole.json (lease.preempt) + telemetry signals — sourced, not generated; your_recent_contention is this session's own act requests (in-process, holder-free)",
     })
 }
 
@@ -312,7 +366,7 @@ fn why_json(keyhole: Option<Value>, plan: Option<crate::analyze::Plan>) -> Value
 // calls FAIL CLOSED (a down/timed-out coordinator → `unavailable`, never a fabricated grant).
 // ---------------------------------------------------------------------------
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -395,6 +449,119 @@ impl SessionTable {
 /// layer-2 guard — we always get a usable guard.
 fn lock_sessions(sessions: &Mutex<SessionTable>) -> std::sync::MutexGuard<'_, SessionTable> {
     sessions.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+// ---------------------------------------------------------------------------
+// Per-caller contention log (ADR-0021 ratification must-fix #10) — the legibility refinement that lets
+// an agent ask "why did MY request wait?" and get back ONLY its own lost contentions, NEVER another
+// holder's identity. The no-leak guarantee is STRUCTURAL, not a runtime filter: every narration is
+// synthesized from the daemon's already-holder-free agent reply (`(granted, token, code,
+// tier_effective, short_mib, retry_after_ms)` — no holder name; the holder-naming `msg` goes only to
+// the *trusted* busctl/log path) or from the heartbeat's own lease-lost observation. The act layer
+// literally never receives a holder name, so it cannot leak one. Fully ephemeral + in-process: the log
+// lives only as long as the `agentosd mcp` process (one Claude-Code session), is never persisted, and
+// dies with the session — the same privacy bar as the rest of the act surface (ADR-0021 #7).
+//
+// Keyed by MCP session for the day a transport surfaces distinct sessions (mirrors `SessionTable`); the
+// live stdio path is one session (`LOCAL_SESSION`), so the per-session ring IS this agent's ring, and a
+// query is scoped to the CALLER's own ring (a guessed id from another session simply isn't found).
+// Bounded per session so a hot-looping agent can't grow it without limit.
+
+/// Max per-session retained contentions — the "recent window" `gpu_why` narrates. Small on purpose: an
+/// agent cares about its latest few waits, and a full history would be unbounded state for a hot caller.
+const CONTENTION_RING_CAP: usize = 8;
+
+/// One narrated contention THIS session experienced — holder-free by construction.
+#[derive(Debug, Clone)]
+struct Contention {
+    /// The correlation id the agent holds (returned by `gpu_request`) — its handle to ask
+    /// `gpu_why(request_id)` later. A self-issued event (an async lease loss the agent never polled for)
+    /// gets a fresh id so the ring entry stays individually addressable.
+    request_id: u64,
+    /// Stable machine tag for the contention class (`busy_retry` | `denied` | `lease_lost`).
+    kind: &'static str,
+    /// Plain-language "why YOUR request waited" — NEVER names another holder (the #10 invariant).
+    why: String,
+}
+
+/// In-process per-caller contention state (ADR-0021 #10): a monotonic correlation-id source plus a
+/// bounded per-session ring of narrated losses.
+#[derive(Debug, Default)]
+struct ContentionLog {
+    /// Monotonic correlation-id source (process-global; an id is an opaque handle, not identity, so a
+    /// shared counter across sessions is harmless — lookups are scoped to the caller's own ring).
+    next_id: u64,
+    /// session-key → its bounded ring of recent contentions (oldest at the front).
+    per_session: HashMap<String, VecDeque<Contention>>,
+}
+
+impl ContentionLog {
+    /// Mint the next correlation id (returned to the agent on EVERY `gpu_request`, loss or not).
+    fn mint_id(&mut self) -> u64 {
+        // `wrapping_add` documents that wrap is harmless (an id is an opaque per-session-scoped handle,
+        // not a count) and is immune to a future pedantic arithmetic lint. Wrap is unreachable in practice.
+        self.next_id = self.next_id.wrapping_add(1);
+        self.next_id
+    }
+    /// Record a narrated loss for `session`, evicting the oldest beyond the ring cap.
+    fn record(&mut self, session: &str, request_id: u64, kind: &'static str, why: String) {
+        let ring = self.per_session.entry(session.to_string()).or_default();
+        if ring.len() >= CONTENTION_RING_CAP {
+            ring.pop_front();
+        }
+        ring.push_back(Contention { request_id, kind, why });
+    }
+    /// This session's recent contentions, MOST-RECENT FIRST (for `gpu_why`'s broad list).
+    fn recent(&self, session: &str) -> Vec<Contention> {
+        self.per_session
+            .get(session)
+            .map(|r| r.iter().rev().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+fn contention_log() -> &'static Mutex<ContentionLog> {
+    static C: OnceLock<Mutex<ContentionLog>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(ContentionLog::default()))
+}
+
+/// Lock the contention log, recovering from poisoning (same rationale as `lock_sessions`: a plain ring
+/// with no cross-field invariant — a poisoned lock must never silently drop the legibility surface).
+fn lock_contention() -> std::sync::MutexGuard<'static, ContentionLog> {
+    contention_log().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Holder-free narration for a request-time loss, derived from the AGENT-FACING status (never the
+/// daemon's holder-naming prose). Pure, so the #10 no-leak invariant is testable here. `None` ⇒ not a
+/// contention to narrate: a grant didn't wait, and `unavailable`/`error` are substrate blindness, not a
+/// lease wait (`gpu_why`'s blind/unavailable posture already covers a down coordinator).
+fn contention_why(status: &str, requested_tier: &str, short_mib: u64) -> Option<(&'static str, String)> {
+    match status {
+        "busy_retry" => Some((
+            "busy_retry",
+            format!(
+                "your '{requested_tier}' request waited — the lease was held by an equal or higher tier \
+                 (or a just-preempted cooldown); no place is held, so it had to retry"
+            ),
+        )),
+        "denied" => Some((
+            "denied",
+            format!(
+                "your request was declined — about {short_mib} MiB short of free VRAM (declining is the \
+                 safe path; try a smaller estimate or retry once the GPU frees up)"
+            ),
+        )),
+        _ => None,
+    }
+}
+
+/// The async "a lease you held is gone" narration — the heartbeat saw `Renew → false` while we still
+/// believed we held it. Honest-AMBIGUOUS by design: the act layer can't tell preempt from TTL-expiry
+/// without daemon help (the daemon-authoritative refinement is deferred, ADR-0021 §10), so "sourced,
+/// never invented" means we state both possibilities and never name who took it.
+fn lease_lost_why() -> String {
+    "a lease this session held is no longer held — preempted by a higher-priority request, or it expired"
+        .to_string()
 }
 
 /// Session-lifetime D-Bus handle for the act verbs — built lazily on the first act call, so a
@@ -481,10 +648,25 @@ async fn heartbeat(conn: zbus::Connection, sessions: Arc<Mutex<SessionTable>>, i
         for (session, token) in held {
             if let Ok(Ok(false)) = tokio::time::timeout(ACT_DBUS_TIMEOUT, call_renew(&conn, token)).await {
                 // Authoritative: the daemon says we don't hold it. Prune (iff unchanged — a concurrent
-                // release/re-acquire may have moved it).
-                let mut t = lock_sessions(&sessions);
-                if t.held(&session) == Some(token) {
-                    t.released(&session);
+                // release/re-acquire may have moved it). Decide under the sessions lock, DROP it before
+                // touching the contention log (no nested locks — keeps the lock order acyclic).
+                let lost = {
+                    let mut t = lock_sessions(&sessions);
+                    if t.held(&session) == Some(token) {
+                        t.released(&session);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                // ADR-0021 #10: we still believed we held this lease, so it was lost out from under us —
+                // preempted or expired, NOT a self-release (a release would have cleared `held` already).
+                // Record a holder-free per-caller contention with a fresh id (the agent didn't poll for
+                // this; it discovers it in `gpu_why`'s list).
+                if lost {
+                    let mut c = lock_contention();
+                    let rid = c.mint_id();
+                    c.record(&session, rid, "lease_lost", lease_lost_why());
                 }
             }
         }
@@ -496,9 +678,16 @@ fn act_unavailable(detail: &str) -> Value {
 }
 
 fn gpu_request(requested_tier: &str, estimate_mib: u32) -> String {
+    // Mint the #10 correlation id up front so EVERY reply carries one (granted, busy_retry, denied,
+    // even a fail-closed `unavailable`) — it is the agent's handle to ask `gpu_why(request_id)` later.
+    let request_id = lock_contention().mint_id();
     let (handle, conn, sessions) = match act_handles() {
         Ok(h) => h,
-        Err(e) => return act_unavailable(&format!("act unavailable: {e} — is `agentosd lease` running?")).to_string(),
+        Err(e) => {
+            let mut v = act_unavailable(&format!("act unavailable: {e} — is `agentosd lease` running?"));
+            v["request_id"] = json!(request_id);
+            return v.to_string();
+        }
     };
     // Fail CLOSED: a timeout or any bus error ⇒ None ⇒ `unavailable`, never a fabricated grant (#4).
     let reply: Option<(bool, u64, String, String, u32, u32)> = match handle
@@ -514,7 +703,18 @@ fn gpu_request(requested_tier: &str, estimate_mib: u32) -> String {
             lock_sessions(&sessions).acquired(LOCAL_SESSION, token);
         }
     }
-    request_json(requested_tier, reply).to_string()
+    let mut v = request_json(requested_tier, reply);
+    v["request_id"] = json!(request_id);
+    // ADR-0021 #10: on a LOSS, record a holder-free per-caller contention so a later `gpu_why` can
+    // narrate why THIS request waited without naming who held the lease. Keyed off the agent-facing
+    // status (the single source of truth `request_json` already produced), never the daemon prose.
+    if let Some(status) = v.get("status").and_then(Value::as_str) {
+        let short = v.get("short_mib").and_then(Value::as_u64).unwrap_or(0);
+        if let Some((kind, why)) = contention_why(status, requested_tier, short) {
+            lock_contention().record(LOCAL_SESSION, request_id, kind, why);
+        }
+    }
+    v.to_string()
 }
 
 fn gpu_release(token: u64) -> String {
@@ -753,7 +953,7 @@ mod tests {
     fn why_blind_is_unavailable_not_calm() {
         // No keyhole AND no telemetry == "blind". Must be distinct from a clear card.
         assert_eq!(
-            why_json(None, None),
+            why_json(None, None, &[], None),
             json!({
                 "status": "unavailable",
                 "detail": "can't see the GPU right now (no keyhole snapshot, no telemetry) — this is 'blind', not 'calm'",
@@ -765,10 +965,12 @@ mod tests {
     #[test]
     fn why_clear_card_is_a_first_class_calm_line() {
         // Keyhole readable with an empty preempt is genuinely calm — a real sentence, not a null.
-        let v = why_json(Some(json!({"lease": {"preempt": ""}})), None);
+        let v = why_json(Some(json!({"lease": {"preempt": ""}})), None, &[], None);
         assert_eq!(v["status"], "ok");
         assert_eq!(v["last_contention"], "the card was clear; nothing waited on your behalf");
         assert_eq!(v["recent_activity"], "no telemetry yet");
+        // With no act history, the per-caller surface is present and empty (a first-class field, not absent).
+        assert_eq!(v["your_recent_contention"], json!([]));
     }
 
     // --- act verbs: typed-outcome mapping + fail-closed + layer-2 session isolation ---
@@ -862,5 +1064,147 @@ mod tests {
         t.released("A");
         assert!(!t.owns("A", 9));
         assert!(t.owns("B", 11), "releasing A does not touch B's hold");
+    }
+
+    // --- ADR-0021 #10: per-caller gpu_why (correlation id) — holder-free BY CONSTRUCTION ---
+
+    fn ctn(request_id: u64, kind: &'static str, why: &str) -> Contention {
+        Contention { request_id, kind, why: why.into() }
+    }
+
+    #[test]
+    fn contention_why_is_holder_free_and_only_for_real_waits() {
+        // A loss → a holder-free sentence keyed off the AGENT status (never the daemon's holder-naming
+        // prose). A grant didn't wait; unavailable/error are substrate blindness, not a lease wait.
+        let (kind, why) = contention_why("busy_retry", "batch", 0).unwrap();
+        assert_eq!(kind, "busy_retry");
+        assert!(why.contains("equal or higher tier") && why.contains("retry"));
+        let (kind, why) = contention_why("denied", "batch", 2048).unwrap();
+        assert_eq!(kind, "denied");
+        assert!(why.contains("2048 MiB"));
+        assert!(contention_why("granted", "batch", 0).is_none(), "a grant is not a contention");
+        assert!(contention_why("unavailable", "batch", 0).is_none(), "blindness is not a lease wait");
+        assert!(contention_why("error", "batch", 0).is_none());
+    }
+
+    #[test]
+    fn lease_lost_narration_is_ambiguous_and_holder_free() {
+        // The async loss is honest-AMBIGUOUS (the act layer can't tell preempt from expiry) and names no
+        // winner — only the caller's own experience.
+        let s = lease_lost_why();
+        assert!(s.contains("preempted") && s.contains("expired"), "states both possibilities");
+        assert!(!s.contains("interactive") && !s.contains("Hermes") && !s.contains("ComfyUI"));
+    }
+
+    #[test]
+    fn contention_log_ring_is_bounded_per_session_and_ids_are_monotonic() {
+        let mut log = ContentionLog::default();
+        // ids are monotonic from 1.
+        assert_eq!(log.mint_id(), 1);
+        assert_eq!(log.mint_id(), 2);
+        // Overfill A's ring; the oldest are evicted, the newest survive, most-recent-first.
+        for i in 0..(CONTENTION_RING_CAP as u64 + 3) {
+            log.record("A", 100 + i, "busy_retry", format!("wait {i}"));
+        }
+        let a = log.recent("A");
+        assert_eq!(a.len(), CONTENTION_RING_CAP, "ring is capped");
+        assert_eq!(a[0].request_id, 100 + CONTENTION_RING_CAP as u64 + 2, "most-recent first");
+        assert_eq!(a.last().unwrap().request_id, 100 + 3, "oldest within the window");
+        // A different session is untouched (per-caller isolation, mirrors SessionTable).
+        log.record("B", 7, "denied", "b-wait".into());
+        assert_eq!(log.recent("B").len(), 1);
+        assert_eq!(log.recent("A").len(), CONTENTION_RING_CAP, "recording for B does not touch A");
+        // An unseen session has no history.
+        assert!(log.recent("C").is_empty());
+    }
+
+    #[test]
+    fn why_focused_query_is_caller_only_and_never_the_system_card() {
+        // ADR-0021 #10: "why did MY request wait?" answers PURELY from the caller's own contention —
+        // NEVER the system-level last_contention (which can name a holder). Pin the no-leak structurally:
+        // feed a keyhole whose preempt names a holder, and assert it cannot appear in the focused reply.
+        let keyhole = json!({"lease": {"preempt": "batch preempted `SECRET_HOLDER` (fits)"}});
+        let caller = [ctn(7, "busy_retry", "your 'batch' request waited — held by an equal or higher tier")];
+        let v = why_json(Some(keyhole), None, &caller, Some(7));
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["request_id"], 7);
+        assert_eq!(v["kind"], "busy_retry");
+        assert!(v["why"].as_str().unwrap().contains("equal or higher tier"));
+        // The focused reply must NOT carry the system card at all, and must not leak the holder name.
+        assert!(v.get("last_contention").is_none(), "focused query never includes the system card");
+        assert!(!v.to_string().contains("SECRET_HOLDER"), "focused query must never name another holder");
+    }
+
+    #[test]
+    fn why_focused_query_for_unknown_id_is_an_honest_no_record_even_when_blind() {
+        // No keyhole/plan at all (blind) — but the focused query is in-process, so it still answers.
+        let v = why_json(None, None, &[], Some(999));
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["request_id"], 999);
+        assert!(v["why"].as_str().unwrap().contains("no contention recorded for request 999"));
+        // A foreign/guessed id is simply not found — the same no-record answer (enumeration is inert).
+        let caller = [ctn(7, "denied", "short")];
+        let v = why_json(None, None, &caller, Some(8));
+        assert!(v["why"].as_str().unwrap().contains("no contention recorded for request 8"));
+    }
+
+    #[test]
+    fn why_broad_query_surfaces_caller_contention_holder_free_alongside_the_system_card() {
+        let keyhole = json!({"lease": {"preempt": "batch preempted `SECRET_HOLDER` (fits)"}});
+        // `why_json` receives an already-most-recent-first slice (as `recent()` returns) and PRESERVES
+        // that order — so id 9 (the later event) leads.
+        let caller = [
+            ctn(9, "lease_lost", &lease_lost_why()),
+            ctn(7, "busy_retry", "your 'batch' request waited — held by an equal or higher tier"),
+        ];
+        let v = why_json(Some(keyhole), None, &caller, None);
+        assert_eq!(v["status"], "ok");
+        // The system card is the existing field (it MAY name a holder — out of #10's scope).
+        assert!(v["last_contention"].as_str().unwrap().contains("SECRET_HOLDER"));
+        // The #10 surface lists the caller's own waits, most-recent first, and is itself holder-free.
+        let yours = v["your_recent_contention"].as_array().unwrap();
+        assert_eq!(yours.len(), 2);
+        assert_eq!(yours[0]["request_id"], 9, "most-recent first");
+        assert_eq!(yours[0]["kind"], "lease_lost");
+        assert_eq!(yours[1]["request_id"], 7);
+        assert!(!v["your_recent_contention"].to_string().contains("SECRET_HOLDER"), "per-caller surface is holder-free");
+    }
+
+    #[test]
+    fn why_broad_query_is_not_blind_when_only_caller_history_exists() {
+        // System sources blind, but THIS session has its own history → ok (not unavailable), surfaced.
+        let caller = [ctn(7, "denied", "your request was declined — about 1820 MiB short")];
+        let v = why_json(None, None, &caller, None);
+        assert_eq!(v["status"], "ok", "caller history alone is enough to answer — not 'blind'");
+        assert_eq!(v["last_contention"], "no lease snapshot to read");
+        assert_eq!(v["your_recent_contention"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn why_focused_query_is_session_scoped_despite_a_shared_id_counter() {
+        // The correlation-id counter is process-global, but lookups are scoped to the CALLER's own ring.
+        // So even though session A minted id 1, session B — querying its OWN (here empty) ring — gets the
+        // honest no-record, never A's contention. Pins cross-session isolation for the multi-session future
+        // (review: determinism Low + privacy Nit — the shared counter must not become a cross-session read).
+        let mut log = ContentionLog::default();
+        let id = log.mint_id(); // == 1, minted "by A"
+        log.record("A", id, "busy_retry", "A's wait".into());
+        // B shares the counter but not the ring: its focused query sees only recent("B") (empty).
+        let v = why_json(None, None, &log.recent("B"), Some(id));
+        assert_eq!(v["status"], "ok");
+        assert!(v["why"].as_str().unwrap().contains("no contention recorded for request 1"));
+        assert!(!v.to_string().contains("A's wait"), "session B must never see session A's contention");
+        // A's OWN focused query does find it.
+        let va = why_json(None, None, &log.recent("A"), Some(id));
+        assert_eq!(va["why"], "A's wait");
+    }
+
+    #[test]
+    fn gpu_why_schema_advertises_an_optional_request_id() {
+        let tools = tools_list();
+        let why = tools["tools"].as_array().unwrap().iter().find(|t| t["name"] == "gpu_why").unwrap();
+        assert!(why["inputSchema"]["properties"]["request_id"].is_object());
+        // request_id is OPTIONAL — gpu_why has no required args (the broad view takes none).
+        assert!(why["inputSchema"].get("required").is_none());
     }
 }

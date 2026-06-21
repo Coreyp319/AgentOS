@@ -119,3 +119,56 @@ are latent-defect fixes; (3) build `AcquireAgent` + the MCP act wiring with laye
 Claude-Code-scoped, Hermes path gated on the spike result. It touches `lease.rs` + `mcp.rs` (the
 parallel session's files) — build in an isolated worktree or after that session is clear of the core,
 then run the review hooks before merging.
+
+## §#10 — per-caller `gpu_why` correlation id (DONE 2026-06-21)
+
+The last open ADR-0021 item. Lets an agent ask "why did **my** request wait?" and get back ONLY its own
+lost contentions, **never naming another holder** (ADR-0021 must-fix #10 — an identity-leak guardrail).
+
+**Decision — MCP-layer synthesis (not daemon-authoritative).** Two designs were live:
+
+- *(B, chosen)* Synthesize the per-caller narration in `mcp.rs` from the daemon's agent reply tuple
+  `(granted, token, code, tier_effective, short_mib, retry_after_ms)` — which carries **no holder name**
+  (the holder-naming `msg` goes only to the *trusted* busctl/log path) — plus the heartbeat's own
+  lease-lost observation. Mint the correlation id in the act layer.
+- *(A, rejected)* Have `AcquireAgent` return a daemon-minted id, the daemon keep a per-caller note (incl.
+  an authoritative "you were preempted"), and a new `WhyAgent` query verb scope to the caller's bus name.
+
+B was chosen because it is smaller (one file, no new D-Bus verb, no new daemon state), touches nothing
+safety-critical, and — decisively — makes "**never name another holder**" a **structural** property: the
+act layer literally never *receives* a holder name, so it cannot leak one. A makes it a runtime filter on
+a daemon that *does* know holder names — the exact leak surface #10 warns about. This is a documented
+deviation from the ADR's literal "`AcquireAgent` returns a correlation id": the id is minted in the act
+layer, honoring the intent (every `gpu_request` reply carries a `request_id`) without the daemon surface.
+
+**Shape.**
+- `gpu_request` mints a monotonic `request_id` (returned on **every** reply — granted/busy_retry/denied/
+  unavailable). On a *loss* it records a holder-free `Contention{request_id, kind, why}` in a bounded
+  per-session ring (cap 8). A grant records nothing; `unavailable`/`error` are substrate blindness, not a
+  lease wait.
+- The `Renew` heartbeat, on a `Renew → false` for a token we *still believed we held* (i.e. lost out from
+  under us, not self-released), records a `lease_lost` contention with a fresh id. It is **honest-ambiguous**
+  ("preempted by a higher-priority request, or it expired") — the act layer can't tell preempt from
+  TTL-expiry without daemon help.
+- `gpu_why(request_id?)`: **focused** (id given) answers purely from the caller's own ring — never the
+  system `last_contention` (which *may* name a holder), and works even when blind; **broad** (no id) keeps
+  the existing system card and adds `your_recent_contention[]` (holder-free, most-recent first).
+
+**State.** Process-lifetime, in-memory, per-session-keyed (mirrors `SessionTable`), never persisted — dies
+with the `agentosd mcp` process (same privacy bar as ADR-0021 #7). On the live Claude-Code stdio path one
+process = one session = `LOCAL_SESSION`, so the per-session ring is this agent's ring; lookups are scoped
+to the caller's own ring, so a guessed id from another session simply isn't found.
+
+**Deferred (daemon-authoritative refinement).** A future `WhyAgent`-style path could narrate preempt vs
+expiry *authoritatively* (and reuse the original acquire's id on an async preempt). Only worth it if the
+honest-ambiguous loss line proves insufficient in practice; it reintroduces the daemon-side leak surface,
+so it would need the privacy/resource panel.
+
+**Tests (`mcp.rs`):** `contention_why_is_holder_free_and_only_for_real_waits`,
+`lease_lost_narration_is_ambiguous_and_holder_free`,
+`contention_log_ring_is_bounded_per_session_and_ids_are_monotonic`,
+`why_focused_query_is_caller_only_and_never_the_system_card` (the no-leak pin — a holder name in the
+keyhole cannot appear in the focused reply), `why_focused_query_for_unknown_id_is_an_honest_no_record_even_when_blind`,
+`why_broad_query_surfaces_caller_contention_holder_free_alongside_the_system_card`,
+`why_broad_query_is_not_blind_when_only_caller_history_exists`,
+`gpu_why_schema_advertises_an_optional_request_id`.

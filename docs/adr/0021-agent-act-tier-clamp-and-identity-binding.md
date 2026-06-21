@@ -107,7 +107,9 @@ gates it.
 
 - The per-request **correlation id** for per-caller `gpu_why` is a *legibility* refinement, not a
   safety gate (council Q2, recommendation A): act ships with system-level `gpu_why`; per-caller
-  phrasing follows when the correlation id lands.
+  phrasing follows when the correlation id lands. **Update (2026-06-21): landed** — see §Ratification
+  pass → Implementation status #10 (MCP-layer synthesis; structural no-leak; the daemon-authoritative
+  preempt-vs-expire narration remains deferred).
 - The `acting` (state 3) felt-state design — escalated to the human (council Q1), reserve-and-defer
   recommended; earns its own ADR + moodboard, not a side effect of this resource work.
 
@@ -215,8 +217,15 @@ Per-item resolution of the must-fix list below:
    (preempt + can't-reclaim → release/offload promptly), not just buried in prose.
 9. **A1 re-frame** — recorded in the docs (design 0020 §). The `Trusted` verbs' same-uid DoS path is bounded
    by ADR-0013 A1 (deferred closer); `AcquireAgent` is strictly more restrictive.
-10. **Future `gpu_why` correlation id** — recorded as a constraint (out of scope): narrate only the calling
-    agent's own contentions, never name another holder.
+10. **Per-caller `gpu_why` correlation id** — **DONE (2026-06-21).** `gpu_request` now mints a `request_id`
+    (returned on every reply); `gpu_why(request_id)` narrates ONLY the calling session's own lost
+    contentions, never another holder. Synthesized in the act layer from the daemon's already-holder-free
+    agent reply (+ the heartbeat's lease-lost signal), so "never name another holder" is STRUCTURAL, not a
+    runtime filter — the act layer never receives a holder name. Ephemeral + in-process (per-session
+    bounded ring, dies with the session — same bar as #7). Pinned by
+    `why_focused_query_is_caller_only_and_never_the_system_card` (+ 6 more in `mcp.rs`). The
+    daemon-authoritative preempt-vs-expire narration is deferred (today the async lease loss is
+    honest-ambiguous). See `docs/design/0020-act-verbs-implementation.md` §#10.
 
 Agent **floor** (Open-Q2) is also built: `clamp_agent` → `{BestEffort, Batch}` (`Yielding` raised, not held).
 A security-Low fix refuses an agent acquire that cannot be identity-bound (absent D-Bus sender → fail closed).
@@ -259,8 +268,10 @@ A security-Low fix refuses an agent acquire that cannot be identity-bound (absen
    but sits beside; ADR-0013 A1 (private socket + `SO_PEERCRED`), or the weaker per-call
    `GetConnectionUnixUser == geteuid()` stopgap, is what bounds it. (`AcquireAgent` itself is strictly
    *more* restrictive, so it adds no new harm — but that is not the whole risk story.)
-10. **Constrain the future per-caller `gpu_why` correlation id** (already out-of-scope): when it lands it
-    must narrate only the *calling* agent's own lost contentions — never name another holder.
+10. **Constrain the future per-caller `gpu_why` correlation id** — **DONE (2026-06-21):** it landed
+    narrating only the *calling* agent's own lost contentions, never naming another holder — and that
+    invariant is STRUCTURAL (the act layer synthesizes from the daemon's holder-free reply; it never
+    receives a holder name to leak), not a filter on a daemon that knows them. See §Implementation status #10.
 
 ## Consequences
 
