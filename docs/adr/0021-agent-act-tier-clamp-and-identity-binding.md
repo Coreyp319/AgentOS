@@ -293,3 +293,11 @@ into one without a code change. No new identifiable state is persisted or put on
    caller field, so both layers are blind. The Hermes act path is **gated on an upstream Hermes change**
    (per-child MCP connection, or a trusted per-child principal); the Claude-Code stdio path ships
    meanwhile. See §Ratification pass → Spike RESULT.
+   **Ungating playbook — `docs/design/0021-hermes-act-path-ungating.md` (2026-06-21):** three options
+   scoped against the real Hermes MCP code — (A) per-child connection (full fidelity, HEAVY Hermes-core
+   surgery; agentosd needs nothing), (B) per-call trusted principal (REJECTED — the MCP frame has no
+   caller field and `arguments` is sibling-spoofable, so it's dominated by A), (C) parent-only act
+   toolset (RECOMMENDED near-term, LIGHT — one act principal per Hermes process, fits one-job-one-lease;
+   agentosd needs nothing). Disposition: **gate-by-need** — don't ungate speculatively; when a real
+   Hermes act use-case lands, start with C and escalate to A only if sub-agents must hold *independent*
+   concurrent leases. The DECISION (and any `~/.hermes` change) is the human's.
