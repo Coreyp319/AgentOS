@@ -77,6 +77,10 @@ struct RawRes {
     name: String,
     #[serde(default)]
     vram_mib: u64,
+    /// Total model size (MiB), telemetry schema 2+. `vram_mib < size_mib` ⇒ on-CPU offload. Defaults
+    /// to 0 on schema-1 history (offload simply unknown for those older ticks — never a false flag).
+    #[serde(default)]
+    size_mib: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +109,12 @@ pub struct ModelStat {
     /// How many clean load-deltas the footprint was learned from — a confidence the Phase-3 admission
     /// gate must check (don't trust a 1-sample footprint).
     pub footprint_samples: usize,
+    /// Ticks this model was observed running partially on CPU (`vram_mib < size_mib`) — the masking
+    /// signal behind the 87%-on-CPU failure (ADR-0018 item 6 #2). 0 on schema-1 history (size unknown).
+    pub offloaded_ticks: u64,
+    /// The most VRAM (MiB) this model had spilled to CPU across the window (`max(size_mib − vram_mib)`
+    /// over offloaded ticks) — the magnitude the report surfaces. 0 if never observed offloaded.
+    pub max_offload_mib: u64,
 }
 
 impl ModelStat {
@@ -217,6 +227,8 @@ fn aggregate(ticks: &[RawTick]) -> (Vec<ModelStat>, f64) {
     let mut reported: BTreeMap<String, u64> = BTreeMap::new();
     let mut deltas: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     let mut undercount_ratios: Vec<f64> = Vec::new();
+    // (offloaded_ticks, max_offload_mib) per model — the on-CPU spill signal (ADR-0018 item 6 #2).
+    let mut offload: BTreeMap<String, (u64, u64)> = BTreeMap::new();
 
     // Anchor recency to the newest sample (deterministic; no wall-clock).
     let max_ts = ticks.iter().map(|t| t.ts_ms).max().unwrap_or(0);
@@ -226,6 +238,13 @@ fn aggregate(ticks: &[RawTick]) -> (Vec<ModelStat>, f64) {
             *resident.entry(r.name.clone()).or_default() += 1;
             let e = reported.entry(r.name.clone()).or_default();
             *e = (*e).max(r.vram_mib);
+            // On-CPU offload: count the tick and remember the worst spill (single-sourced with the
+            // reclaim primitive's detector so "offloaded" means the same thing everywhere).
+            if crate::reclaim::offload_detected(r.vram_mib, r.size_mib) {
+                let o = offload.entry(r.name.clone()).or_default();
+                o.0 += 1;
+                o.1 = o.1.max(r.size_mib - r.vram_mib);
+            }
         }
         for ev in &t.events {
             if let Some(name) = ev.strip_prefix("load:") {
@@ -269,6 +288,7 @@ fn aggregate(ticks: &[RawTick]) -> (Vec<ModelStat>, f64) {
         .into_iter()
         .map(|name| {
             let d = deltas.remove(&name).unwrap_or_default();
+            let (offloaded_ticks, max_offload_mib) = offload.get(&name).copied().unwrap_or((0, 0));
             ModelStat {
                 ticks_resident: resident.get(&name).copied().unwrap_or(0),
                 loads: loads.get(&name).copied().unwrap_or(0),
@@ -277,6 +297,8 @@ fn aggregate(ticks: &[RawTick]) -> (Vec<ModelStat>, f64) {
                 reported_max_mib: reported.get(&name).copied().unwrap_or(0),
                 footprint_samples: d.len(),
                 real_footprint_mib: median(d),
+                offloaded_ticks,
+                max_offload_mib,
                 name,
             }
         })
@@ -483,6 +505,22 @@ fn report(plan: &Plan) {
     if plan.models.iter().any(|m| m.real_footprint_mib.is_none()) {
         println!("  (* estimated from size_vram × undercount — model never observed loading)");
     }
+    // On-CPU offload (ADR-0018 item 6 #2): a model that "loaded" but spilled to CPU (size_vram <
+    // size) — the masking signal behind the 87%-on-CPU failure. Surfaced here so the spill is an
+    // automatic line, not a manual `ollama ps` size-vs-size_vram compare. (Schema-1 history can't see
+    // it; size_mib is 0 there → never flagged.)
+    let offloaded: Vec<&ModelStat> = plan.models.iter().filter(|m| m.offloaded_ticks > 0).collect();
+    if !offloaded.is_empty() {
+        println!("\n  ⚠ Observed running PARTIALLY ON CPU (size_vram < size — VRAM was short):");
+        for m in offloaded {
+            println!(
+                "      {} — up to {} spilled to CPU, in {} tick(s) (graceful reclaim / ComfyUI-under-lease would free the card; ADR-0018 §2 + item 3)",
+                m.name,
+                gib(m.max_offload_mib as i64),
+                m.offloaded_ticks,
+            );
+        }
+    }
     println!();
 
     println!("Warm pool (coexist, ≤{:.0}% of budget each):", COEXIST_FRACTION * 100.0);
@@ -570,12 +608,36 @@ mod tests {
         RawTick {
             ts_ms: ts,
             vram: RawVram { used_mib: used, free_mib: free, total_mib: total },
-            residency: res.iter().map(|(n, v)| RawRes { name: n.to_string(), vram_mib: *v }).collect(),
+            // Existing tests: size_mib == vram_mib ⇒ fully resident, never flagged offloaded.
+            residency: res
+                .iter()
+                .map(|(n, v)| RawRes { name: n.to_string(), vram_mib: *v, size_mib: *v })
+                .collect(),
             events: events.iter().map(|s| s.to_string()).collect(),
         }
     }
     fn tick(used: i64, free: i64, total: i64, res: &[(&str, u64)], events: &[&str]) -> RawTick {
         tick_ts(0, used, free, total, res, events)
+    }
+
+    #[test]
+    fn offload_is_counted_and_sized_only_when_size_vram_below_size() {
+        // "big" loaded 9000M-resident of a 17000M total across two ticks → 8000M on CPU, twice.
+        // "small" is fully resident (size == size_vram) → never flagged.
+        let row = |name: &str, vram: u64, size: u64| RawRes { name: name.into(), vram_mib: vram, size_mib: size };
+        let two = |i| RawTick {
+            ts_ms: i,
+            vram: RawVram { used_mib: 9500, free_mib: 1000, total_mib: 24000 },
+            residency: vec![row("big", 9000, 17000), row("small", 500, 500)],
+            events: vec![],
+        };
+        let (models, _) = aggregate(&[two(1), two(2)]);
+        let big = models.iter().find(|m| m.name == "big").unwrap();
+        assert_eq!(big.offloaded_ticks, 2);
+        assert_eq!(big.max_offload_mib, 8000);
+        let small = models.iter().find(|m| m.name == "small").unwrap();
+        assert_eq!(small.offloaded_ticks, 0, "a fully-resident model is never an offload");
+        assert_eq!(small.max_offload_mib, 0);
     }
 
     #[test]

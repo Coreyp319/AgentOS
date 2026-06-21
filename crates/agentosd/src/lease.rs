@@ -135,6 +135,26 @@ fn cooling_down(cooldown: Option<(Tier, Instant)>, req: Tier, now: Instant) -> b
     matches!(cooldown, Some((t, until)) if t == req && req != Tier::Interactive && now < until)
 }
 
+/// Anti-strobe dwell for the ADR-0018 §2 graceful warm-pool reclaim: once a reclaim is attempted, no
+/// other request triggers another `ollama stop` storm for this long (so bursty heavy-lane admissions
+/// can't thrash the warm pool — the warm-eviction anti-strobe the review panel required, item #6).
+/// Tunable via `AGENTOSD_WARM_RECLAIM_DWELL_SECS`.
+fn warm_reclaim_dwell() -> Duration {
+    let s = std::env::var("AGENTOSD_WARM_RECLAIM_DWELL_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+    Duration::from_secs(s)
+}
+
+/// ADR-0018 §2 gate (the tier + VRAM half — pure + tested). Should a request that's about to be
+/// VRAM-denied first try a graceful warm-pool reclaim? ONLY the heavy lane that fails *closed* today
+/// (`Batch`/`BestEffort`), and ONLY on a real shortfall against a *readable* card. `Interactive` is
+/// deliberately untouched: it fails OPEN (ADR-0003) and must never be delayed by an `ollama stop`.
+/// `None` free (unreadable NVML) is never eligible — never unload the warm pool blind. The lease-free
+/// and anti-strobe-dwell checks are runtime state (decided under the lock), not part of this gate.
+fn warm_reclaim_eligible(tier: Tier, free_opt: Option<u64>, est: u64, headroom: u64) -> bool {
+    matches!(tier, Tier::Batch | Tier::BestEffort)
+        && matches!(free_opt, Some(free) if !admit(free, est, headroom).granted())
+}
+
 // ---------------------------------------------------------------------------
 // Pure lease state machine (the only new decision logic — unit-tested below).
 // ---------------------------------------------------------------------------
@@ -291,6 +311,10 @@ struct Inner {
     holder_deadline: Option<Instant>,
     /// A just-preempted tier and when its anti-strobe cooldown ends (ADR-0013 C7).
     cooldown: Option<(Tier, Instant)>,
+    /// When the last ADR-0018 §2 graceful warm-pool reclaim was *attempted* (marked at attempt
+    /// start, under the lock). Its dwell (`warm_reclaim_dwell`) blocks back-to-back `ollama stop`
+    /// storms — the warm-eviction anti-strobe the review panel required (ADR-0018 #6). `None` = never.
+    last_warm_reclaim: Option<Instant>,
 }
 
 impl Inner {
@@ -302,6 +326,7 @@ impl Inner {
             holder_peer: None,
             holder_deadline: None,
             cooldown: None,
+            last_warm_reclaim: None,
         }
     }
 }
@@ -542,7 +567,64 @@ impl Coordinator {
         }
 
         // R2: distinguish "couldn't read VRAM" (None) from "0 free".
-        let free_opt = free_mib(&self.nvml).await;
+        let mut free_opt = free_mib(&self.nvml).await;
+
+        // ADR-0018 §2 — GRACEFUL RECLAIM BEFORE THE SLEDGEHAMMER. A heavy-lane (batch/best-effort)
+        // request that would be VRAM-denied gets ONE off-lock warm-pool reclaim first: `ollama stop`
+        // resident models cold-first, RE-MEASURE free VRAM (never predict — we don't own Ollama's PID,
+        // acceptance #2), then fall through to the normal locked admission, which re-checks fit against
+        // the freshly measured `free_opt` (that locked `admit` stays the SOLE gate — no TOCTOU). We only
+        // reclaim when the lease is FREE: a held lease Queues/Preempts regardless of VRAM (warm-pool
+        // unload wouldn't help), so the cheap peek-lock below filters that out and avoids a wasted stop.
+        // The whole step is fail-open (ADR-0003): an unreachable Ollama or a stalled unload just leaves
+        // `free_opt` unchanged and the request denies honestly, exactly as before this code existed.
+        if warm_reclaim_eligible(tier, free_opt, est, headroom) {
+            let now = Instant::now();
+            let go = {
+                let mut g = self.inner.lock().await; // brief peek — dropped before any I/O
+                let lease_free = g.lease.holder_tier().is_none();
+                let cooling = g.last_warm_reclaim.is_some_and(|t| now < t + warm_reclaim_dwell());
+                if lease_free && !cooling {
+                    g.last_warm_reclaim = Some(now); // mark intent (anti-strobe) — held with the lock
+                    true
+                } else {
+                    false
+                }
+            };
+            if go {
+                let r = crate::reclaim::RealReclaimer { nvml: Arc::clone(&self.nvml) };
+                let out = crate::reclaim::reclaim_until_fits(
+                    &r,
+                    est,
+                    headroom,
+                    crate::reclaim::DEFAULT_MAX_STOPS,
+                    crate::reclaim::DEFAULT_POLL_TRIES,
+                    crate::reclaim::DEFAULT_POLL_INTERVAL,
+                )
+                .await;
+                if !out.stopped.is_empty() || !out.offloaded.is_empty() {
+                    eprintln!(
+                        "coordd: ADR-0018 §2 graceful reclaim for {} (est {est}M): ollama stop {:?}; \
+                         free {}M→{}M ({}){}",
+                        tier.as_str(),
+                        out.stopped,
+                        out.free_before,
+                        out.free_after,
+                        if out.satisfied { "now fits" } else { "still short — denies (fail-closed)" },
+                        if out.offloaded.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; warm-pool offloaded (size_vram<size): {:?}", out.offloaded)
+                        },
+                    );
+                }
+                // Re-admit against the freshly MEASURED free VRAM (measure-don't-predict): the locked
+                // admission below is the gate, now reading the post-reclaim number.
+                if !out.stopped.is_empty() {
+                    free_opt = Some(out.free_after);
+                }
+            }
+        }
 
         let mut inner = self.inner.lock().await;
         let prev_est = inner.lease.holder_est().unwrap_or(0);
@@ -1092,6 +1174,22 @@ mod tests {
     }
     fn wont_fit() -> Admission {
         admit(1_000, 50_000, HEADROOM_MIB) // far too big
+    }
+
+    #[test]
+    fn warm_reclaim_eligibility_is_heavy_lane_vram_short_only() {
+        let est = 17_000;
+        let hr = headroom_for(est);
+        // Batch/best-effort that won't fit (free far below est+headroom) → eligible for graceful reclaim.
+        assert!(warm_reclaim_eligible(Tier::Batch, Some(2_000), est, hr));
+        assert!(warm_reclaim_eligible(Tier::BestEffort, Some(2_000), est, hr));
+        // The SAME shortfall on Interactive is NOT eligible — it fails open and must never wait on an
+        // `ollama stop` (ADR-0003). This is the load-bearing asymmetry.
+        assert!(!warm_reclaim_eligible(Tier::Interactive, Some(2_000), est, hr));
+        // A batch request that already fits doesn't reclaim (no shortfall → admission would grant).
+        assert!(!warm_reclaim_eligible(Tier::Batch, Some(20_000), est, hr));
+        // Unreadable NVML (None) is never eligible — never unload the warm pool blind.
+        assert!(!warm_reclaim_eligible(Tier::Batch, None, est, hr));
     }
 
     #[test]

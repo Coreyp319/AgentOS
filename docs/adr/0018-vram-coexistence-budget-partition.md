@@ -220,3 +220,52 @@ experiment's go/no-go numbers) — do not write a separate "controller" ADR. Mar
 council): the real uncontested wedge is the **cross-engine GPU referee** (LLM + diffusion + graphics
 on one desktop GPU, fail-open, never-wedge) — not "optimal mix"; see
 `memory/dynamic-model-mix-council-verdict.md`.
+
+## Implementation update (2026-06-20): the gate is MET; the §2 graceful-reclaim PRIMITIVE landed
+
+**Go/no-go re-read (`agentosd coexist`, 62,873 samples).** The running experiment now reports
+contention above both gate thresholds (amendment item 2): **avoided-swaps = 40**, **OOM danger
+(< 512 MiB free) = 417 ticks** (near-miss < 1500 MiB = 1700 ticks; min free 135 MiB; max co-resident
+models = 1). The analyzer's own verdict flipped from "Phase 3 not justified yet" to *"free fell below
+the 512 MiB safety floor — the heavy-lane evictor would matter here."* The §2 reclaim is justified.
+
+**Built (the value-bearing slice, headless + tested — `crates/agentosd/src/reclaim.rs`).** The
+graceful warm-pool reclaim *primitive* (amendment item 6) and its integration:
+- `reclaim_until_fits` — `ollama stop` resident models **cold-first** (by soonest keep-alive expiry,
+  so the actively-used model is unloaded last, if at all), **re-MEASURING** free VRAM after each stop
+  (never predicting — agentosd doesn't own Ollama's PID, acceptance #2), **bounded** (≤ `DEFAULT_MAX_STOPS`
+  unloads, each a bounded post-stop poll), **fail-open** throughout (unreachable Ollama / failed
+  unload / unreadable NVML each degrade to "reclaimed what we could", never a panic or hang).
+- `offload_detected(size_vram, size)` — the `size_vram < size` post-load **offload detector**
+  (item 6 #2; the masking signal behind the 2026-06-19 87%-on-CPU failure), single-sourced and now
+  **surfaced through the whole read-only observability path** so the spill is an automatic signal
+  rather than a manual `ollama ps` compare: the **telemetry historian** records `size_mib` per
+  residency row (**schema 1→2**, additive — schema-1 history reads `size_mib=0` = "offload unknown",
+  never a false flag); the **`coexist` analyzer** aggregates `offloaded_ticks` + worst `max_offload_mib`
+  per model and prints an "Observed running PARTIALLY ON CPU" diagnostic; the **`gpu_residency` MCP**
+  exposes an `offloaded[]` list so a perceiving agent sees the spill. Verified backward-compatible on
+  the live schema-1 log (`coexist` runs clean, flags nothing — the signal lights up once the schema-2
+  telemetry binary is deployed).
+- Integrated into `lease.rs::do_acquire` as **graceful-reclaim-before-the-sledgehammer** (§2): a
+  heavy-lane (`Batch`/`BestEffort`) request that would be VRAM-**Denied** gets ONE off-lock reclaim
+  first, then the **existing locked `admit` re-checks fit against the freshly measured free VRAM** and
+  stays the sole gate (no TOCTOU — acceptance #5). It fires ONLY when the lease is free (a held lease
+  Queues/Preempts regardless of VRAM, so a peek-lock filters that out — no wasted unload), with an
+  anti-strobe **dwell** (`warm_reclaim_dwell`, item #6) marked at attempt start. `Interactive` is
+  deliberately **untouched** — it fails OPEN (ADR-0003) and must never wait on an `ollama stop`.
+  SIGKILL of an owned heavy holder stays the unchanged backstop (acceptance #3).
+- Tests: 9 new (8 reclaim-primitive incl. cold-first order, minimum-stops, bounded/unsatisfied,
+  fail-open-on-stop-failure, offload detection, no-op-when-fits; + the `warm_reclaim_eligible` gate
+  asymmetry). Full crate suite **111 green, clippy clean**. No `Cargo` dep change (reuses the
+  existing blocking `reqwest` on a blocking thread + `tokio::process` for `ollama stop`).
+
+**Still owed before this section flips to Accepted:**
+- **Live denial→grant e2e on the 4090** (success criterion = a batch dream that would have been
+  denied now GRANTS after a graceful warm unload; 208 s → GPU-speed). Headless CI can't observe it.
+- **The off-lease ComfyUI gap, deployment half (amendment item 3).** The lease *mechanism* already
+  owns ComfyUI (`Spawn(comfyui)` via `dream.sh`/`lucid_linear.py`), but the always-on `comfyui.service`
+  is currently **enabled+active**, squatting VRAM the lease can't reach — `start-comfyui.sh`'s own
+  port-race guard says to `systemctl --user disable --now comfyui.service`. That config decision is
+  the operator's (it trades the on-demand manual ComfyUI UI for coordinator-governed VRAM).
+- **The actuating model-mix controller** (the separate `tokio` task of §5) remains deferred; this
+  slice is the prerequisite primitive it will call, not the loop itself.

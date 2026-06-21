@@ -45,6 +45,7 @@ mod feed;
 mod keyhole;
 mod lease;
 mod mcp;
+mod reclaim;
 mod scene;
 mod scope_reclaim;
 mod telemetry;

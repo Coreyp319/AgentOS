@@ -173,6 +173,15 @@ fn residency_json(plan: Option<crate::analyze::Plan>) -> Value {
             .map(|n| json!({"model": n, "admit_mib": admit(n), "reason": plan.reasons.get(n)}))
             .collect()
     };
+    // On-CPU offload (ADR-0018 item 6 #2): models observed running partially on CPU (size_vram <
+    // size) — the masking signal behind the 87%-on-CPU failure. Surfaced so an agent perceiving GPU
+    // state sees the spill (and that the heavy-lane evictor / ComfyUI-under-lease would free the card).
+    let offloaded: Vec<Value> = plan
+        .models
+        .iter()
+        .filter(|m| m.offloaded_ticks > 0)
+        .map(|m| json!({"model": m.name, "on_cpu_mib": m.max_offload_mib, "ticks": m.offloaded_ticks}))
+        .collect();
     json!({
         "status": "ok",
         "budget_mib": plan.llm_budget_mib,
@@ -182,6 +191,7 @@ fn residency_json(plan: Option<crate::analyze::Plan>) -> Value {
         "confident": plan.confident,
         "warm_pool": lane(&plan.warm_set),
         "heavy_lane": lane(&plan.exclusive),
+        "offloaded": offloaded,
         "signals": {
             "max_concurrent": plan.signals.max_concurrent,
             "coexist_ticks": plan.signals.coexist_ticks,
@@ -191,7 +201,8 @@ fn residency_json(plan: Option<crate::analyze::Plan>) -> Value {
             "oom_danger_ticks": plan.signals.oom_danger_ticks,
         },
         "note": "admit_mib is the learned, size_vram-floored reservation; a model fits warm only if it \
-                 is in warm_pool. Phase-3 eviction is not yet active.",
+                 is in warm_pool. `offloaded` lists models that spilled to CPU (VRAM was short). \
+                 Phase-3 eviction is not yet active.",
     })
 }
 
@@ -342,6 +353,42 @@ mod tests {
                 "source": "coexist plan over telemetry.jsonl",
             })
         );
+    }
+
+    #[test]
+    fn residency_surfaces_offloaded_models_to_the_agent() {
+        // A model observed running partially on CPU must appear in `offloaded` so a perceiving agent
+        // sees the spill (ADR-0018 item 6 #2); a fully-resident model contributes nothing there.
+        let stat = |name: &str, off_ticks: u64, on_cpu: u64| crate::analyze::ModelStat {
+            name: name.into(),
+            ticks_resident: 10,
+            loads: 1,
+            unloads: 0,
+            load_score: 1.0,
+            reported_max_mib: 9000,
+            real_footprint_mib: None,
+            footprint_samples: 0,
+            offloaded_ticks: off_ticks,
+            max_offload_mib: on_cpu,
+        };
+        let plan = crate::analyze::Plan {
+            samples: 100,
+            total_mib: 24000,
+            baseline_mib: 4000,
+            llm_budget_mib: 19500,
+            undercount: 1.4,
+            models: vec![stat("big", 5, 8000), stat("small", 0, 0)],
+            warm_set: vec![],
+            exclusive: vec![],
+            reasons: std::collections::BTreeMap::new(),
+            signals: Default::default(),
+            max_loaded: 1,
+            keep_alive_min: 30,
+            confident: true,
+            warnings: vec![],
+        };
+        let v = residency_json(Some(plan));
+        assert_eq!(v["offloaded"], json!([{"model": "big", "on_cpu_mib": 8000, "ticks": 5}]));
     }
 
     #[test]

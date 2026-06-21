@@ -21,7 +21,7 @@
 //!    "gpu":{util_pct,power_w,temp_c},               // null == unknown, never synthesized
 //!    "gfx_mib":…,"compute_mib":…,                   // per-process attribution; -1 if NVML can't
 //!    "procs":[{name,mib,kind}],                     // who holds VRAM (nimbus-flux vs ollama vs …)
-//!    "residency":[{name,vram_mib,loaded_secs}],     // Ollama-reported size_vram UNDERCOUNTS (ADR-0018)
+//!    "residency":[{name,vram_mib,size_mib,loaded_secs}], // vram_mib<size_mib ⇒ on-CPU offload (ADR-0018)
 //!    "events":["load:…","unload:…"],                // diffed across ticks → load latency & churn
 //!    "lease":{tier,holder,preempt},                 // empty string == no datum
 //!    "tokens_per_sec":null}                          // null == UNKNOWN until the ADR-0002 proxy
@@ -42,7 +42,10 @@ use crate::keyhole::Lease;
 use crate::{mib, proc_name, used_mib};
 
 /// Bump on any breaking shape change to a `telemetry.jsonl` line. Pinned by a test below.
-const SCHEMA: u32 = 1;
+/// Schema 2 (2026-06-20): `residency[]` rows gained `size_mib` (total model size) so analysis can
+/// flag on-CPU offload (`vram_mib < size_mib`, ADR-0018 item 6 #2). Additive — schema-1 rows simply
+/// lack the field and the analyzer reads it as 0 (`#[serde(default)]`), i.e. "offload unknown".
+const SCHEMA: u32 = 2;
 
 /// Negative sentinel for an unreadable integer datum — distinct from a real `0` (ADR-0012 §4).
 const UNK: i64 = -1;
@@ -136,6 +139,10 @@ struct Residency {
     /// Ollama's reported `size_vram` in MiB. NOTE: undercounts the real footprint (ADR-0018) — the
     /// per-process `compute_mib` is the truer number; both are recorded so analysis sees the gap.
     vram_mib: u64,
+    /// Total model size Ollama reports (MiB). When `vram_mib < size_mib`, part of the model is on CPU
+    /// — the offload-masking signal behind the 87%-on-CPU failure (ADR-0018 item 6 #2). Recorded so the
+    /// analyzer can flag the spill instead of needing a manual `ollama ps` size_vram-vs-size compare.
+    size_mib: u64,
     loaded_secs: i64,
 }
 
@@ -154,6 +161,10 @@ struct PsModel {
     name: String,
     #[serde(default)]
     size_vram: u64,
+    /// Total model size Ollama reports (bytes). `size_vram < size` ⇒ part of the model is on CPU
+    /// (the offload-masking signal, ADR-0018 item 6 #2 — recorded so the analyzer sees the spill).
+    #[serde(default)]
+    size: u64,
 }
 
 /// NVML memory + util/power/temp (own handle). Returns the VRAM block, the GPU block, and the read
@@ -239,15 +250,16 @@ fn read_procs(nvml: Option<&Nvml>) -> (i64, i64, Vec<Proc>) {
     (gfx as i64, compute as i64, named)
 }
 
-/// Resident Ollama models → residency rows (name + reported size_vram + loaded_secs). `loaded_secs`
-/// comes from a producer-local first-seen clock (`/api/ps` reports no load time). Unreachable
-/// Ollama → empty.
+/// Resident Ollama models → residency rows (name + reported size_vram + total size + loaded_secs).
+/// `loaded_secs` comes from a producer-local first-seen clock (`/api/ps` reports no load time).
+/// `size_mib` is recorded alongside `vram_mib` so analysis sees offload (`vram_mib < size_mib`).
+/// Unreachable Ollama → empty.
 fn read_residency(
     http: &reqwest::blocking::Client,
     first_seen: &mut HashMap<String, Instant>,
     now: Instant,
 ) -> Vec<Residency> {
-    let models: Vec<(String, u64)> = http
+    let models: Vec<(String, u64, u64)> = http
         .get(OLLAMA_PS)
         .send()
         .and_then(|r| r.json::<PsResp>())
@@ -255,20 +267,20 @@ fn read_residency(
             ps.models
                 .into_iter()
                 .filter(|m| !m.name.is_empty())
-                .map(|m| (m.name, mib(m.size_vram)))
+                .map(|m| (m.name, mib(m.size_vram), mib(m.size)))
                 .collect()
         })
         .unwrap_or_default();
 
     // Forget models that have unloaded so a reload reports a fresh duration.
-    let live: Vec<String> = models.iter().map(|(n, _)| n.clone()).collect();
+    let live: Vec<String> = models.iter().map(|(n, _, _)| n.clone()).collect();
     first_seen.retain(|name, _| live.contains(name));
 
     models
         .into_iter()
-        .map(|(name, vram_mib)| {
+        .map(|(name, vram_mib, size_mib)| {
             let since = *first_seen.entry(name.clone()).or_insert(now);
-            Residency { name, vram_mib, loaded_secs: now.duration_since(since).as_secs() as i64 }
+            Residency { name, vram_mib, size_mib, loaded_secs: now.duration_since(since).as_secs() as i64 }
         })
         .collect()
 }
@@ -530,7 +542,7 @@ mod tests {
         // Producer pin (mirrors keyhole.rs). If this string changes, bump SCHEMA and update any
         // analysis tooling in lockstep.
         let tick = Tick {
-            schema: 1,
+            schema: 2,
             ts_ms: 1_718_500_000_000,
             nvml_ms: 3,
             vram: Vram { used_mib: 7734, free_mib: 16374, total_mib: 24564 },
@@ -541,6 +553,7 @@ mod tests {
             residency: vec![Residency {
                 name: "gemma4:latest".into(),
                 vram_mib: 3390,
+                size_mib: 3390,
                 loaded_secs: 12,
             }],
             events: vec!["load:gemma4:latest".into()],
@@ -549,7 +562,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&tick).unwrap(),
-            r#"{"schema":1,"ts_ms":1718500000000,"nvml_ms":3,"vram":{"used_mib":7734,"free_mib":16374,"total_mib":24564},"gpu":{"util_pct":39,"power_w":60.2,"temp_c":44},"gfx_mib":7700,"compute_mib":0,"procs":[{"name":"nimbus-flux","mib":1500,"kind":"gfx"}],"residency":[{"name":"gemma4:latest","vram_mib":3390,"loaded_secs":12}],"events":["load:gemma4:latest"],"lease":{"tier":"batch","holder":"ComfyUI","preempt":""},"tokens_per_sec":null}"#
+            r#"{"schema":2,"ts_ms":1718500000000,"nvml_ms":3,"vram":{"used_mib":7734,"free_mib":16374,"total_mib":24564},"gpu":{"util_pct":39,"power_w":60.2,"temp_c":44},"gfx_mib":7700,"compute_mib":0,"procs":[{"name":"nimbus-flux","mib":1500,"kind":"gfx"}],"residency":[{"name":"gemma4:latest","vram_mib":3390,"size_mib":3390,"loaded_secs":12}],"events":["load:gemma4:latest"],"lease":{"tier":"batch","holder":"ComfyUI","preempt":""},"tokens_per_sec":null}"#
         );
     }
 
