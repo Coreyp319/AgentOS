@@ -58,10 +58,34 @@ use serde::Deserialize;
 /// contract (ADR-0023's SemVer schema discipline). Pinned by the idle-frame test.
 pub const SCHEMA: u32 = 1;
 
-/// Fixed tick (~30 Hz — a capped-wallpaper frame rate; the slow mood spring needs nothing
+/// Fast tick (~30 Hz — a capped-wallpaper frame rate; the slow mood spring needs nothing
 /// faster, and the AIR channel re-reads `wind.json` each tick for direct-manipulation feel).
+/// Used while the scene is easing/changing; an idle scene backs off to `IDLE_POLL`.
 const TICK: Duration = Duration::from_millis(33);
+/// The fast tick as fractional seconds — the canonical dt the pure-`tick` tests drive with (the run
+/// loop itself uses the REAL measured elapsed dt, so this is only the tests' representative step).
+#[cfg(test)]
 const TICK_DT: f64 = 0.033;
+
+/// Slow idle poll. Once the scene has been byte-stable for `BACKOFF_AFTER_QUIET_TICKS`, the loop
+/// widens to this so a settled 24/7 wallpaper helper does not wake ~30×/s forever just to re-read
+/// unchanged feeds (the resource-safety review's idle-quiescence finding). A new mood is still
+/// detected within one slow-poll period and snaps the cadence back to `TICK` (the mood eases over
+/// 2–20 s anyway, so ≤250 ms detection latency is imperceptible). Mirrors `keyhole`'s adaptive cadence.
+const IDLE_POLL: Duration = Duration::from_millis(250);
+
+/// Consecutive write-free fast ticks before backing off to `IDLE_POLL` (~1 s of stability at `TICK`).
+const BACKOFF_AFTER_QUIET_TICKS: u32 = 30;
+
+/// The poll cadence as a pure function of how long the scene has been quiet (no frame written).
+/// Fast while moving, slow once settled. Pure → unit-tested without the loop.
+fn poll_interval(quiet_ticks: u32) -> Duration {
+    if quiet_ticks < BACKOFF_AFTER_QUIET_TICKS {
+        TICK
+    } else {
+        IDLE_POLL
+    }
+}
 
 /// Slow mood spring stiffness (rad/s). ~0.45 ⇒ a state change eases over ~2–3 s — the ambient
 /// 2–20 s family (ADR-0009 §2), below the attention-capture threshold. Deliberately far slower
@@ -568,11 +592,18 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
     let _ = write_scene(&dir, &SceneState::default().to_json(now_epoch()));
 
     let mut last_body: Option<String> = None;
+    let mut last_now = now_epoch();
+    let mut quiet_ticks: u32 = 0;
     loop {
         let now = now_epoch();
+        // Real elapsed dt so the spring eases correctly at ANY cadence (fast or backed-off). Clamped:
+        // a backward/huge clock jump can't drive a negative or explosive step (fail-safe, ADR-0003).
+        let dt = (now - last_now).clamp(0.0, 1.0);
+        last_now = now;
+
         let (mood, gust, fresh) = read_world(&dir, now);
         state.apply(mood, gust, fresh, reduce_motion);
-        state.tick(TICK_DT);
+        state.tick(dt);
 
         let body = state.body();
         let idle = state.is_idle();
@@ -580,17 +611,18 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
         // (a present-but-old idle frame reads calm; the applier holds last-good). Otherwise write only
         // when the rounded body changed (timestamp-only deltas don't move the scene).
         let already_idle = idle && last_body.as_deref() == Some(body.as_str());
-        if !already_idle && last_body.as_deref() != Some(body.as_str()) {
+        let wrote = !already_idle && last_body.as_deref() != Some(body.as_str());
+        if wrote {
             let _ = write_scene(&dir, &state.to_json(now)); // best-effort / fail-open
             last_body = Some(body);
         }
 
-        // TODO(ADR-0030, before 24/7): back the POLL cadence off while idle (the WRITE already goes
-        // quiet via the edge-write above, but this still re-reads the feeds ~30×/s forever). Mirror
-        // `keyhole`'s adaptive cadence — snap back to 33 ms on any feed change. Deferred while PAUSED:
-        // the loop does not run in production until the UE wallpaper layer lands (ADR-0029 §A), and
-        // the reads are page-cache-cheap tmpfs hits (matches the `wind.rs` 60 Hz precedent).
-        std::thread::sleep(TICK);
+        // Adaptive idle cadence (ADR-0030, resource-safety review): poll fast while the scene is
+        // moving (a frame was written), back off to a slow poll once it has been stable for a while,
+        // so a settled 24/7 wallpaper helper doesn't wake ~30×/s forever. Any feed change writes a
+        // frame → resets to fast. The reads are page-cache-cheap tmpfs hits, but deep CPU idle isn't.
+        quiet_ticks = if wrote { 0 } else { quiet_ticks.saturating_add(1) };
+        std::thread::sleep(poll_interval(quiet_ticks));
     }
 }
 
@@ -750,6 +782,16 @@ mod tests {
             (a.air - air_before).abs() <= AIR_MAX_SLEW * TICK_DT + 1e-9,
             "air must not jump more than its fast slew ceiling in one tick"
         );
+    }
+
+    #[test]
+    fn poll_cadence_is_fast_while_moving_then_backs_off_when_idle() {
+        // Adaptive idle cadence: fast while the scene is changing, slow once it's been stable a while.
+        assert_eq!(poll_interval(0), TICK, "a frame just wrote → poll fast");
+        assert_eq!(poll_interval(BACKOFF_AFTER_QUIET_TICKS - 1), TICK, "still in the active window → fast");
+        assert_eq!(poll_interval(BACKOFF_AFTER_QUIET_TICKS), IDLE_POLL, "stable long enough → slow idle poll");
+        assert_eq!(poll_interval(u32::MAX), IDLE_POLL, "stays slow while idle (no overflow)");
+        assert!(IDLE_POLL > TICK, "the idle poll must actually be slower than the fast tick");
     }
 
     #[test]
