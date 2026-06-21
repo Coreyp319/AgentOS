@@ -13,7 +13,13 @@
   smoke (clamp/floor/random-token/denied/fail-closed/audit/typed-reply), and a 5-lens adversarial review
   (determinism-safety, resource-safety, security, responsible-AI/privacy, rust-performance — wayland
   swapped out, no surface) whose findings (one Blocker: heartbeat↔TTL coupling; several Lows) were all
-  fixed. Model proposes, code disposes; the human disposes on the Hermes-upstream decision.
+  fixed. **Hermes path UNGATED parent-scoped (Option C, 2026-06-21):** `~/.hermes/config.yaml`
+  `delegation.inherit_mcp_toolsets: false` denies delegated sub-agents the inherited `agentos` toolset, so
+  only the top-level Hermes agent calls the act verbs → one act principal per Hermes process (verified via
+  Hermes' own `_get_inherit_mcp_toolsets()` → False; takes effect on the gateway's next restart). See
+  `docs/design/0021-hermes-act-path-ungating.md` §Implementation. The deeper per-child-independent-lease
+  case (Option A, per-child connection) remains future work if a Hermes workflow ever needs it. Model
+  proposes, code disposes.
 - Date: 2026-06-16
 - Deciders: pending human + determinism-safety-reviewer + resource-safety-reviewer +
   wayland-computeruse-reviewer

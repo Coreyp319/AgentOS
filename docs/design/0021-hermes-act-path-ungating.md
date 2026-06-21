@@ -1,11 +1,54 @@
-# Ungating the Hermes act path — decision memo (ADR-0021 GO-2, the last open leg)
+# Ungating the Hermes act path — decision memo + Option C implemented (ADR-0021 GO-2, last leg)
 
-Status: **decision-ready scoping (2026-06-21) — DECISION IS COREY'S.** No code here and none proposed in
-`~/.hermes` (a vendored upstream, Nous Research / MIT — CLAUDE.md: don't reinvent the orchestrator). This
-memo grounds the three real options in the *actual* Hermes MCP code and recommends a path, so the human can
-decide whether/how to ungate. The agentosd side is already built (ADR-0021, commit `c3fdd3b`, deployed
-live): `AcquireAgent` + the MCP act verbs + the layer-2 `SessionTable` are in place and need **no further
-change** for any option below.
+Status: **Option C IMPLEMENTED 2026-06-21 (Hermes act path UNGATED, parent-scoped).** Corey chose C. The
+change is a one-line config flip in `~/.hermes/config.yaml` (NOT a code edit to the vendored Hermes — it
+lives in the user's config, so it survives Hermes upgrades): under `delegation:`,
+`inherit_mcp_toolsets: true → false`. The agentosd side was already built + deployed (ADR-0021, commit
+`c3fdd3b`); this leg needed **zero agentosd change**. See §Implementation below.
+
+## Implementation (Option C — chosen)
+
+**Change:** `~/.hermes/config.yaml`, `delegation.inherit_mcp_toolsets: false` (was `true`), with an in-file
+comment explaining why. **Mechanism:** `delegate_tool._get_inherit_mcp_toolsets()` now returns `False`, so
+`_build_child_agent` skips `_preserve_parent_mcp_toolsets` — delegated sub-agents do NOT inherit the
+parent's MCP toolsets. Since `agentos` is the **only** MCP server, sub-agents get no `agentos` tools at all
+(perceive or act); the **top-level** Hermes agent is unaffected (it is not built through the delegate
+strip path) and keeps the full `agentos` toolset. ⇒ exactly **one act principal per Hermes process**, so
+no sibling can release/renew another's lease — GO-2 closed for the Hermes path, parent-scoped.
+
+**Why the config flip over a code edit:** Hermes' child-toolset stripping is *toolset*-granular
+(`_strip_blocked_tools` drops a whole toolset only if all its tools are blocked; `DELEGATE_BLOCKED_TOOLS`
+is NOT consumed there), so no lever cleanly strips *only* the two act verbs while keeping perceive — every
+Option-C lever denies the whole `agentos` toolset to children. Given that, the config flip is minimal,
+needs no vendored-code fork (survives `hermes` upgrades), and is trivially reversible. The scoped
+alternative (add `"agentos"` to `_strip_blocked_tools`'s hardcoded set) is a code edit that a Hermes
+upgrade would silently overwrite — worse failure mode.
+
+**Verified (2026-06-21):** PyYAML parses the value as boolean `False`; Hermes' own
+`_get_inherit_mcp_toolsets()` (fresh process reading the edited config) returns `False`.
+
+**Takes effect on the gateway's NEXT restart.** A persistent Hermes gateway is running (it cached
+`CLI_CONFIG` at startup, and its `agentos` MCP child predates the act-verb binary, so the act verbs are
+NOT exposed to Hermes right now). The flip + the new binary's act verbs both activate together when the
+gateway next restarts — no live exposure to children in the meantime, no forced restart needed. (I did not
+restart the gateway: it was serving live TUI sessions.)
+
+**Trade-offs / caveats.** (1) Sub-agents lose `agentos` **perceive** too (`gpu_status`/etc.), not just act
+— acceptable: the parent perceives and passes context, and sub-agents doing independent GPU work is exactly
+the case that wants Option A. (2) The flip is all-or-nothing for MCP inheritance: it denies children **any**
+future MCP server too. Today only `agentos` exists, so no collateral — but if you later add an MCP server
+that sub-agents must use, switch to the scoped `_strip_blocked_tools` patch (Option A-lite) instead.
+(3) **Re-verify after any Hermes upgrade** that `delegation.inherit_mcp_toolsets: false` is still present
+and the key still has its meaning. **Reversibility:** set it back to `true`.
+
+---
+
+(Original decision memo follows — kept for the rationale + the A/B/C tradeoffs.)
+
+Status: **decision-ready scoping (2026-06-21).** This memo grounds the three real options in the *actual*
+Hermes MCP code and recommends a path. The agentosd side is already built (ADR-0021, commit `c3fdd3b`,
+deployed live): `AcquireAgent` + the MCP act verbs + the layer-2 `SessionTable` are in place and need **no
+further change** for any option below.
 
 ## The gate, in one paragraph
 
