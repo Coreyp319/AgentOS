@@ -1,7 +1,9 @@
 # GO-2 spike — binding act tokens to an MCP session identity (ADR-0021 open-Q1)
 
-Status: **design spike** (resolves the one open question gating ADR-0021 GO-2; no code here — the
-agentosd core is being edited concurrently, so this stays design-only).
+Status: **design spike — REVISED 2026-06-21** (ratification panel refuted the original "bus-name binding
+is sufficient" resolution; replaced with a three-layer identity model + a decisive spike. No code here —
+this stays design-only; the agentosd act-phase work is gated on the spike + ADR-0021 §Ratification-pass
+must-fixes).
 Resolves: ADR-0021 §GO-2 + Open-Q1 — "does the MCP server get a distinct bus name per agent session,
 or must it carry a session token through `gpu_request`/`gpu_release` to attribute a token to a
 session behind a shared connection?"
@@ -22,38 +24,57 @@ behind *one* connection.
   connection, it gets its **own unique bus name** → `holder_peer` already attributes tokens to *that
   process* = *that session*.
 
-## Resolution
-**Bus-name binding (holder_peer, B4) is sufficient for v1 — on one invariant: one MCP-server D-Bus
-connection per agent session.** This holds for the Claude-Code stdio transport by construction
-(subprocess-per-session). Concretely:
+## Resolution (REVISED 2026-06-21 — the original "bus-name is enough" premise was refuted)
 
-1. The act-phase MCP server opens **one D-Bus connection per process** and acquires/releases over it.
-   `holder_peer` then binds each act token to that connection's unique name.
-2. `release_token` (lease.rs:352) gains an identity check: release succeeds only if the caller's bus
-   name equals the token's `holder_peer` name — foreign-token release returns the **same failure as an
-   unknown token**, no state change (the ADR-0021 GO-2 pinned test).
-3. This composes with B4's existing peer-disconnect auto-release: if the MCP session dies, its lease
-   frees automatically — same mechanism, now also the release-authz boundary.
+> **⚠ Superseded premise.** This doc originally resolved GO-2 onto a single invariant — "one MCP-server
+> D-Bus connection per agent session" — and dismissed the multiplexed-Hermes case as "a caller that
+> doesn't exist yet." The 2026-06-21 ratification panel **refuted that**: Hermes (installed + enabled on
+> this box) runs ONE shared `agentosd mcp` connection and fans sub-agents out as in-process
+> `ThreadPoolExecutor` threads, so N sub-agents share one bus name and bus-name binding cannot isolate
+> them. Evidence: `~/.hermes/config.yaml:627` (`agentos` enabled) + `:404` (`inherit_mcp_toolsets`),
+> `~/.hermes/hermes-agent/tools/mcp_tool.py:2076` (module-level `_servers`, one child per server name),
+> `~/.hermes/hermes-agent/tools/delegate_tool.py:28,59` (children are threads, not subprocesses). The
+> revised resolution below is the authoritative one; see ADR-0021 §Ratification pass.
 
-## The edge case it does NOT cover (and the deferral)
-A transport that **multiplexes many agents over one long-lived connection** — plausibly a future
-**Hermes** that proxies N agents through a single shared `agentosd mcp`/D-Bus connection — defeats
-bus-name granularity (all N share one `holder_peer` name → agent A could release agent B's token).
+**A three-layer identity model — each layer guards the grain it can actually see.**
 
-Two clean options, both deferred behind the v1 invariant:
-- **(a) Connection-per-agent (preferred, no protocol change).** Require the multiplexer to open one
-  agentosd connection per agent session. Keeps the core unchanged; pushes identity to the transport
-  boundary where it belongs. Hermes already spawns per-agent contexts, so this is natural.
-- **(b) Session-token in the verb (fallback, protocol change).** Carry an opaque `session_id` through
-  `gpu_request`/`gpu_release`; bind tokens to `(bus_name, session_id)`. Only needed if a multiplexer
-  genuinely cannot do (a). Strictly more surface — adopt only if forced.
+1. **Daemon (`holder_peer`, B4 — merged `8c36c26`).** Binds a token to the D-Bus *connection* (unique
+   bus name). `may_release` (lease.rs:463) refuses a foreign-token release; `do_acquire` binds the
+   acquiring bus name (lease.rs:795); the `Release` verb passes `hdr.sender()` (lease.rs:1047). This is
+   correct and kept — it stops a *different* bus client releasing the MCP server's token. It composes
+   with B4 peer-disconnect auto-release (whole-process death frees the lease).
+2. **MCP server (NEW — the fix for the multiplexed case).** The `agentosd mcp` server enforces
+   *per-session* ownership **in-process**: at most one lease token per MCP session, and it refuses any
+   `gpu_release` whose token that session did not acquire, *before* the D-Bus `Release` fires. The
+   per-session key is ephemeral/in-memory/never-persisted/never-on-the-wire (no new identifiable state;
+   not self-assertable by a sibling the way a protocol-carried `session_id` would be).
+3. **Deployment.** Prefer connection-per-agent where the transport allows. The **Claude-Code stdio**
+   path gets it for free (subprocess-per-session → distinct bus name); the **Hermes** path does not and
+   needs layer 2.
+
+## The decisive spike (the closing precondition — was wrongly deferred)
+Layer 2 is only implementable if `agentosd mcp` can *distinguish* Hermes' in-process thread-children as
+separate MCP sessions over the one stdio pipe. **If Hermes surfaces them as ONE `ClientSession`, the
+server is blind too** and the only fix is upstream Hermes (per-child connection/process). Run it
+(≤ half a day): under the installed Hermes (`agentos` enabled, `inherit_mcp_toolsets: true`), have a
+parent delegate two concurrent children that each call an `agentos` tool; instrument the server to log,
+per inbound `tools/call`, whether parent + the two children arrive as distinct MCP sessions or one.
+- **Distinct sessions →** layer 2 is implementable; ship it.
+- **One session →** Hermes act path stays **gated**; ship the Claude-Code path only until upstream
+  Hermes gives each child its own connection.
+
+The carried-`session_id` option (bind `(bus_name, session_id)` in the verb) is **rejected** — a sibling
+behind a shared connection can supply another sibling's id (self-asserted identity behind a shared trust
+boundary, the antipattern `AcquireAgent`-by-verb already avoids). Layer 2 in-process enforcement is the
+substitute.
 
 ## Recommendation
-Ship GO-2 v1 on **bus-name binding + the one-connection-per-session invariant**, documented as a
-**precondition on any act-phase MCP client** (Claude-Code satisfies it for free). Add the foreign-token
-release test. Treat the multiplexed-Hermes case as a **separate, later** decision (option (a) first),
-NOT a v1 blocker. This unblocks GO-2 without the open question stalling it, and without widening the
-verb protocol for a caller that doesn't exist yet.
+Ship the act verbs **scoped to the connection-per-session transport (Claude-Code stdio)** with the
+three-layer model; **gate the Hermes path** behind the spike result. Pin GO-2 with **two** tests, not
+one: the merged D-Bus-grain foreign-token-release test (distinct bus names) **and** a new MCP-server-grain
+test (two sessions, one connection → cross-session `gpu_release` refused) — the latter is the executable
+proof that GO-2 is actually closed for the multiplexed case. Do not describe the act surface as
+"GO-2-safe by construction": that sentence is false for the installed Hermes.
 
 ## Pinned tests (for whoever implements GO-2 in lease.rs)
 - foreign-token release: a release from bus name B against a token held by bus name A → `false`, holder
