@@ -79,18 +79,31 @@ policy**, not a per-call field.
 
 ## The three options
 
-### Option A — per-child MCP connection (full fidelity; heavy)
+### Option A — per-child MCP connection (full fidelity) — **DECLINED as a local fork (2026-06-21)**
 Spawn a **separate `agentos` connection per delegated child** (key `_servers` by `(name, child_id)`, manage
 its lifecycle, tear it down when the child thread ends). Each `agentosd mcp` subprocess opens its own
 session-bus connection → distinct bus name → the daemon's **layer-1 `holder_peer` already isolates them**,
 and a child's connection drop fires B4 auto-release. **agentosd change: none.**
-- **Blast radius: HIGH (Hermes core).** Touches the shared `_servers` registry, the per-server circuit
-  breaker (`:2076`+), the env-filtering + PID/pgid cleanup (`:1482`), and the `_rpc_lock` model — all of
-  which are per-server-NAME today. Multiplies resources: up to 4 concurrent `agentosd mcp` subprocesses +
-  4 D-Bus connections per Hermes process (parent + 3 children).
-- **Pro:** the cleanest identity story, reuses the proven layer-1 mechanism, isolates siblings completely.
-- **Con:** major surgery on a hot, security-sensitive shared path in *someone else's* codebase; resource
-  multiplication; you maintain a fork or upstream it to Nous Research.
+
+**Why DECLINED (user steer 2026-06-21 — "if this is coding our hermes into a pinned version lets avoid it"):**
+two parallel Explore passes over `~/.hermes/hermes-agent/` confirmed there is **no config / plugin /
+context-var seam** for this — it can ONLY be done by editing vendored Hermes code:
+- `_servers` is module-global, keyed strictly by server NAME; no multi-instance support, no runtime
+  add/remove; circuit-breaker + error state (`_server_error_counts`/`_bump_server_error`) are all per-name.
+- `_make_tool_handler(server_name,…)` (`mcp_tool.py:2729`) is a module-level closure capturing `server_name`
+  as a STRING; `registry.dispatch` invokes the identical handler for every agent (parent and child) → the
+  same global `_servers["agentos"]`. There is **no** per-agent / per-call connection selection hook.
+- A per-child connection therefore needs patches to `mcp_tool.py` + `delegate_tool.py` (a new ContextVar,
+  per-child connection spawn/teardown, instance-keyed routing + breaker). Those edits live in vendored
+  upstream code → a `hermes` upgrade silently overwrites them (regressing the security property), i.e. it
+  **pins Hermes**. That is the thing we will not do.
+
+**The only non-pin path (future, gate-by-need):** contribute the minimal **ContextVar** seam (the exploration's
+lowest-risk approach: a `contextvars.ContextVar` set per child in `delegate_tool`, read in `_make_tool_handler`
+to select a child-prefixed `_servers` entry) **upstream to Nous Research** as a Hermes PR — NOT a local fork.
+Pursue ONLY if a concrete need for sub-agent-**independent** acquisition appears. (Note: the lease is
+single-exclusive, so sub-agents can never hold *simultaneous* leases anyway — A's only value over C is letting
+a sub-agent safely own its *own* acquire/release.) **Standing answer for the Hermes path = Option C.**
 
 ### Option B — trusted per-call principal (DOMINATED / not feasible as-is)
 Keep one shared connection; have Hermes stamp each `tools/call` with a per-child principal the agentosd

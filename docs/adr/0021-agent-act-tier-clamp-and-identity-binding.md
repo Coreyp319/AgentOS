@@ -17,9 +17,11 @@
   `delegation.inherit_mcp_toolsets: false` denies delegated sub-agents the inherited `agentos` toolset, so
   only the top-level Hermes agent calls the act verbs → one act principal per Hermes process (verified via
   Hermes' own `_get_inherit_mcp_toolsets()` → False; takes effect on the gateway's next restart). See
-  `docs/design/0021-hermes-act-path-ungating.md` §Implementation. The deeper per-child-independent-lease
-  case (Option A, per-child connection) remains future work if a Hermes workflow ever needs it. Model
-  proposes, code disposes.
+  `docs/design/0021-hermes-act-path-ungating.md` §Implementation. The deeper per-child case (Option A,
+  per-child connection) is **DECLINED as a local fork** — exploration confirmed it can only be done by
+  editing vendored Hermes code (no config/contextvar seam), which would pin Hermes (user steer
+  2026-06-21); the only non-pin path is an upstream PR to Nous Research, pursued gate-by-need if a real
+  sub-agent-independent-acquisition need appears. Option C stands. Model proposes, code disposes.
 - Date: 2026-06-16
 - Deciders: pending human + determinism-safety-reviewer + resource-safety-reviewer +
   wayland-computeruse-reviewer
