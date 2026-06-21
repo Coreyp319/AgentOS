@@ -34,7 +34,26 @@
         "gemma4:latest — 9.6GB, richer suggestions but slow/wedge-prone to evict; it blocked the video step every turn (the bug fixed here)",
         "moondream — 1.7GB, smallest/fastest to evict but weaker structured-JSON beat-gen"
       ],
-      "notes": "Small on purpose: force_evict (ollama stop — the ADR-0018 lever) frees it in ~3s before the heavy i2v lease, and it can coexist with the lighter video models (no eviction needed). Shares qwen2.5vl:3b with B2, so one small model covers both roles. Was gemma4:latest (9.6GB), which evicted slowly and wedged — skipping the dream every turn (ADR-0015 §3)."
+      "notes": "Small on purpose: force_evict (ollama stop — the ADR-0018 lever) frees it in ~3s before the heavy i2v lease, and it can coexist with the lighter video models (no eviction needed). Shares qwen2.5vl:3b with B2. Since 2026-06-21 this role is the FRAME GROUNDER (caption+rating, needs vision) and the fallback beat writer; the beat WRITER itself is split out to 'narrator-beats' (a less-timid model). Was gemma4:latest (9.6GB), which evicted slowly and wedged — skipping the dream every turn (ADR-0015 §3)."
+    },
+    {
+      "id": "narrator-beats",
+      "role": "Story suggestions — beat writer (text)",
+      "purpose": "Writes the 3-4 'what happens next' choices each turn. Split out from 'narrator' so the beat writer can be a less-timid, more imaginative model than the vision grounder. Output is schema-validated and red-line-filtered before it can reach the GPU.",
+      "model": "hermes3:3b",
+      "runtime": "ollama",
+      "size_gb": 2.0,
+      "source": "ollama library: hermes3:3b (Nous Hermes 3, Llama-3.2-3B)",
+      "local": true,
+      "safety_critical": false,
+      "used_by": ["Lucid beat-gen (propose)"],
+      "alternatives": [
+        "qwen2.5vl:3b — the vision grounder; reliable and SEES the frame, but TIMID in the mature lane and thinner on dream-logic. Set this role to qwen2.5vl:3b to fold beat-gen back onto the single vision model (prior behavior).",
+        "hermes4-14b:latest — 15GB, bolder/more explicit still, but slow to evict (the ADR-0015/0018 problem); only on a free GPU.",
+        "dolphin3.0-qwen2.5:3b — uncensored but BROKE the JSON beat contract (0 beats every call); rejected.",
+        "huihui_ai/qwen2.5-abliterate:3b — JSON-reliable but creatively bland and not actually bolder; rejected."
+      ],
+      "notes": "Verified A/B 2026-06-21 (spikes/dreaming/lucid/ab_branch_prompt.py) vs qwen2.5vl:3b: valid JSON every trial, 4/4 distinct, richer dream-logic + more premise-advancing, modestly bolder, and SMALLER (2.0GB vs 3.2GB) so it evicts at least as fast. TEXT-ONLY: it cannot see the frame, so beat-gen reads the caption the 'narrator' vision pass produced (lucid_engine.NARRATOR_MODEL != MODEL drops the image) — the i2v step still continues from the frame pixels, so grounding fidelity is preserved. Revert: set this role's model to qwen2.5vl:3b, or unset/clear LUCID_NARRATOR_MODEL. 'Not timid' here = more willing + creative; still tasteful, not graphically explicit (a small model that keeps the JSON contract cannot reliably do hardcore — that needs hermes4-14b or a JSON-repair layer)."
     },
     {
       "id": "t2i-opening",

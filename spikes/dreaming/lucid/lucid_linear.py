@@ -184,11 +184,15 @@ def propose(context, n=4, rating="sfw", frame_b64=None):
     only when needed, and the held-menu contract means it happens at most once per frame. Beat-gen runs at
     BEAT_TEMP (above the shared 0.6 fidelity lane) for a little more narrative surprise. Still fail-open:
     any exception / a persistently-empty roll returns what we have (possibly []) -> type-your-own."""
-    sys_p, images = E.build_sys(rating, n), ([frame_b64] if frame_b64 else None)
+    sys_p = E.build_sys(rating, n)
+    # A swapped-in beat narrator (E.NARRATOR_MODEL != the vision MODEL) may be text-only — drop the image
+    # and let it work from the caption ground_frame already put in `context`. Default narrator == MODEL, so
+    # the frame is still attached and behaviour is unchanged.
+    images = [frame_b64] if (frame_b64 and E.NARRATOR_MODEL == E.MODEL) else None
     out, seen = [], set()
     for _attempt in range(2):                              # initial roll + one repair roll if short
         try:
-            raw = E._ollama_json(sys_p, context, images=images, temperature=E.BEAT_TEMP)
+            raw = E._ollama_json(sys_p, context, model=E.NARRATOR_MODEL, images=images, temperature=E.BEAT_TEMP)
         except Exception as e:
             log(f"beat-gen failed ({e}) — type your own")
             break

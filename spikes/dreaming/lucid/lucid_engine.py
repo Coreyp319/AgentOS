@@ -66,6 +66,18 @@ MODEL = os.environ.get("LUCID_MODEL") or lucid_models.get("narrator", "qwen2.5vl
 # captioning/decompose path (they need fidelity). Tune live with LUCID_BEAT_TEMP; drop toward 0.75 first
 # if outputs ever wander off the grounded frame, before touching the prompt.
 BEAT_TEMP = float(os.environ.get("LUCID_BEAT_TEMP", "0.78"))
+# Beat-gen NARRATOR model — the model that WRITES the "what happens next" menu (NOT frame grounding, which
+# always stays on MODEL, the vision model). Defaults to MODEL so beat-gen still SEES the frame and nothing
+# changes. Point it at a less-restrictive narrator via LUCID_NARRATOR_MODEL or the registry "narrator-beats"
+# role: qwen2.5vl:3b is TIMID in the mature lane and thinner on dream-logic (verified A/B 2026-06-21). The
+# goal is a SMALL but not-timid model so eviction stays cheap (ADR-0015 §3 / ADR-0018 — a 14B is slower to
+# evict and can delay the video step). When this differs from MODEL the beat-gen call runs TEXT-ONLY (the
+# alt model may not be vision-capable) and works from the caption ground_frame already put in the context.
+# Shipped ON: the registry sets narrator-beats=hermes3:3b (smaller+faster-evicting than the 3.2GB vision
+# model, valid JSON every trial, richer dream-logic, modestly bolder). Clear that role (or set
+# LUCID_NARRATOR_MODEL=qwen2.5vl:3b) to fold beat-gen back onto the single vision model. See
+# [[lucid-beatgen-prompt-redesign]].
+NARRATOR_MODEL = os.environ.get("LUCID_NARRATOR_MODEL") or lucid_models.get("narrator-beats", MODEL)
 
 DEFAULT_W, DEFAULT_H, DEFAULT_LEN = 720, 1280, 33  # ~2s portrait @16fps; matches the
 # workflow's baked WanImageToVideo length and stays under the VRAM-thrash line (ADR-0014 §6)
@@ -392,7 +404,7 @@ def _sanitize(beat):
 
 
 def propose_beats(context, n=4):
-    raw = _ollama_json(SYS_SFW.format(n=n), context, temperature=BEAT_TEMP)
+    raw = _ollama_json(SYS_SFW.format(n=n), context, model=NARRATOR_MODEL, temperature=BEAT_TEMP)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
