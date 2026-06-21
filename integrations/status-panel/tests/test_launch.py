@@ -25,12 +25,35 @@ import gen_launchers as gl  # noqa: E402
 
 class ClassifyOrigin(unittest.TestCase):
     def test_direct_loopback_is_local_and_can_copy_fix(self):
-        o = sp.classify_origin("127.0.0.1", {})
+        o = sp.classify_origin("127.0.0.1", {"Host": "127.0.0.1:9123"})
         self.assertFalse(o["remote"])
         self.assertTrue(o["can_copy_fix"])
 
     def test_ipv6_loopback_is_local(self):
-        self.assertTrue(sp.classify_origin("::1", {})["can_copy_fix"])
+        self.assertTrue(sp.classify_origin("::1", {"Host": "127.0.0.1:9123"})["can_copy_fix"])
+
+    def test_absent_host_fails_closed(self):
+        # A request with NO Host (crafted HTTP/1.0 / raw socket) is ambiguity → no shell affordance,
+        # even from a loopback peer. Real browsers always send Host, so the legit path is unaffected.
+        self.assertFalse(sp.classify_origin("127.0.0.1", {})["can_copy_fix"])
+
+    def test_x_real_ip_or_via_marks_remote(self):
+        # A non-Tailscale proxy (nginx sets X-Real-IP; some set Via) must still read as relayed.
+        for hdr in ({"X-Real-IP": "100.64.0.9"}, {"Via": "1.1 nginx"}):
+            o = sp.classify_origin("127.0.0.1", {**hdr, "Host": "127.0.0.1:9123"})
+            self.assertTrue(o["remote"], hdr)
+            self.assertFalse(o["can_copy_fix"], hdr)
+
+    def test_remote_without_xfh_falls_back_to_host_for_door(self):
+        # A proxy that forwards but omits X-Forwarded-Host must NOT blank every door — the rewrite
+        # host falls back to the Host the phone connected to (channels review finding).
+        o = sp.classify_origin("127.0.0.1", {"X-Forwarded-For": "100.64.0.9",
+                                             "Host": "4090.tailnet.ts.net:9123"})
+        self.assertTrue(o["remote"])
+        self.assertFalse(o["can_copy_fix"])
+        self.assertEqual(o["host"], "4090.tailnet.ts.net:9123")
+        d = sp.door_for({"url": "http://127.0.0.1:8765", "tailnet": True}, o)
+        self.assertEqual(d, {"state": "open", "href": "https://4090.tailnet.ts.net:8765/"})
 
     def test_tailscale_serve_forwarded_is_remote_no_shell(self):
         o = sp.classify_origin("127.0.0.1", {"X-Forwarded-For": "100.64.0.9",
@@ -156,7 +179,7 @@ class BuildLaunch(unittest.TestCase):
     }
 
     def test_local_origin_emits_fix_for_attention_row(self):
-        p = sp.build_launch(self.STATUS, sp.classify_origin("127.0.0.1", {}))
+        p = sp.build_launch(self.STATUS, sp.classify_origin("127.0.0.1", {"Host": "127.0.0.1:9123"}))
         sw = next(s for s in p["services"] if s["id"] == "swaync")
         self.assertIn("fix", sw)
         self.assertIn("systemctl --user reset-failed swaync.service", sw["fix"])
@@ -173,7 +196,7 @@ class BuildLaunch(unittest.TestCase):
         self.assertEqual(lucid["door"]["href"], "https://4090.tailnet.ts.net:8765/")
 
     def test_healthy_row_never_gets_a_fix(self):
-        p = sp.build_launch(self.STATUS, sp.classify_origin("127.0.0.1", {}))
+        p = sp.build_launch(self.STATUS, sp.classify_origin("127.0.0.1", {"Host": "127.0.0.1:9123"}))
         lucid = next(s for s in p["services"] if s["id"] == "lucid")
         self.assertNotIn("fix", lucid)
 

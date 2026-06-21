@@ -295,7 +295,8 @@ _LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
 # all served/funnel traffic. The IDENTITY family is USER-traffic only (absent for tagged devices
 # and for Funnel), so it is advisory: its *presence* confirms remote, but its *absence* proves
 # nothing — never gate trust on an identity header being present (it would mis-trust tagged nodes).
-_PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "forwarded")
+_PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "forwarded",
+                  "x-real-ip", "via", "cf-connecting-ip", "true-client-ip")
 _IDENTITY_HEADERS = ("tailscale-user-login", "tailscale-user-name")
 _FORWARD_HEADERS = _PROXY_HEADERS + _IDENTITY_HEADERS
 _LABEL_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?$")  # one DNS label
@@ -322,11 +323,15 @@ def classify_origin(peer_ip: str, headers: dict) -> dict:
     fwd = [name for name in _FORWARD_HEADERS if name in h]
     peer_local = (peer_ip or "") in _LOOPBACK
     host_hdr = h.get("host", "")
-    # A present-but-non-loopback Host disqualifies; an absent Host does not relax the guard.
-    host_ok = (host_hdr == "") or (_hostname(host_hdr) in _LOOPBACK)
-    remote = bool(fwd) or not peer_local or (host_hdr != "" and not host_ok)
-    can_copy_fix = peer_local and not fwd and host_ok
-    fhost = h.get("x-forwarded-host") or None
+    # Fail CLOSED for the shell affordance: ONLY a present, loopback Host permits copy-fix. An absent
+    # Host is ambiguity (a crafted HTTP/1.0 / raw-socket request can omit it) → it does NOT relax the
+    # guard. Real desktop browsers always send `Host: 127.0.0.1:9123`, so the legit path pays nothing.
+    host_local = host_hdr != "" and _hostname(host_hdr) in _LOOPBACK
+    remote = bool(fwd) or not peer_local or (host_hdr != "" and not host_local)
+    can_copy_fix = peer_local and not fwd and host_local
+    # Sibling-door rewrite host: the proxy's X-Forwarded-Host, else (only when already proven remote)
+    # the Host the phone actually connected to — so a proxy that omits XFH doesn't blank every door.
+    fhost = h.get("x-forwarded-host") or (host_hdr if remote else None)
     why = (f"proxied (headers: {', '.join(fwd) or 'none'}; host {host_hdr or '-'}; peer {peer_ip})"
            if remote else f"direct loopback ({peer_ip})")
     return {"remote": remote, "host": fhost, "can_copy_fix": can_copy_fix, "why": why}

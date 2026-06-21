@@ -131,7 +131,7 @@
   .act { flex:none; font-family:var(--mono); font-size:.74rem; letter-spacing:.02em; white-space:nowrap;
     transition:color .18s ease; }
   a.entry .act { color:var(--inst-blue); }
-  .entry.is-desktop-only .act, .entry.is-monitor .act { color:var(--inst-label); }
+  .entry.is-desktop-only .act, .entry.is-monitor-only .act { color:var(--inst-label); }
   .entry.is-desktop-only .nm { color:color-mix(in srgb,var(--inst-text) 88%, transparent); }
   .desc { font-family:var(--sans); font-size:.78rem; line-height:1.45; color:var(--inst-muted);
     margin-top:3px; max-width:54ch; }
@@ -144,8 +144,8 @@
   .dot { width:9px; height:9px; border-radius:50%; flex:none; background:var(--st-idle);
     box-shadow:0 0 0 4px var(--st-idle-ring); }
   .dot.up { background:var(--st-up); box-shadow:0 0 0 4px var(--st-up-ring); }
-  .dot.ok { background:transparent; box-shadow:inset 0 0 0 2px var(--st-up); opacity:.85; }
-  .dot.idle { background:transparent; box-shadow:inset 0 0 0 2px var(--st-idle); opacity:.85; }
+  .dot.ok { background:transparent; box-shadow:inset 0 0 0 2px var(--st-up); }
+  .dot.idle { background:transparent; box-shadow:inset 0 0 0 2px var(--st-idle); }
   .dot.starting,.dot.stopping { background:var(--st-amber); box-shadow:0 0 0 4px var(--st-amber-ring); }
   .dot.failed { background:var(--st-red);
     box-shadow:0 0 0 4px var(--st-red-ring), 0 0 8px color-mix(in srgb,var(--st-red) 42%,transparent); }
@@ -162,7 +162,7 @@
   /* copy-fix — copy-don't-execute; present in the DOM only when the SERVER allowed it (local only) */
   .row-fix { margin:8px 0 2px calc(var(--gutter)); }
   button.fix { font-family:var(--mono); font-size:.7rem; letter-spacing:.02em; color:var(--st-amber-fg);
-    cursor:pointer; padding:5px 11px; border-radius:7px;
+    cursor:pointer; padding:5px 11px; min-height:24px; border-radius:7px;   /* WCAG 2.5.8 target floor */
     background:color-mix(in srgb,var(--st-amber) 9%,transparent);
     border:1px solid color-mix(in srgb,var(--st-amber) 34%,transparent); transition:background .18s; }
   button.fix:hover { background:color-mix(in srgb,var(--st-amber) 16%,transparent); }
@@ -232,7 +232,10 @@
       else if (!remote) door = { state:"open", href:url };
       else if (!tailnet) door = { state:"desktop-only", href:"" };
       else door = { state:"open", href:"https://4090.tailnet.ts.net:"+(new URL(url).port)+"/" };
-      return { id,name,group,desc,status,kind,door, reach: status==="up"?"reachable":"", scope:"user" };
+      // mirror the real server row's `state` so the demo (?demo=1) renders identical action text.
+      const state = status==="up" ? (kind==="on_demand"?"on-demand":"running")
+                  : status==="idle" ? "on-demand" : status;
+      return { id,name,group,desc,status,state,kind,door, reach: status==="up"?"reachable":"", scope:"user" };
     };
     const services = [
       mk("hermes-dashboard","Hermes web UI","AI core","Config, sessions, kanban board","up","daemon","http://127.0.0.1:9119"),
