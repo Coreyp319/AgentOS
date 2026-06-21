@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<meta name="theme-color" content="#12141c" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/icons/icon-192.png" />
+<title>The Atrium · AgentOS</title>
+<style>
+  /* ════════════════════════════════════════════════════════════════════════════════════════
+     THE ATRIUM — an observatory almanac for the AgentOS service family (ADR-0031).
+
+     Not a dashboard of cards: a typeset *index*. Serif service names on deep instrument glass,
+     a dotted table-of-contents leader running to each door, monospace instrument readouts, a
+     static film-grain atmosphere, one orchestrated load cascade. Calm by contract — a STILL
+     ROOM (no canvas/WebGL/rAF, ~0 GPU); the all-clear is silence. Colour comes from the shared
+     instrument register (integrations/design/instrument-tokens.md), inlined so this is one
+     self-contained, offline-installable document. No new colour constants; the reserved warm
+     (#ff9957) is never spent here.
+     ════════════════════════════════════════════════════════════════════════════════════════ */
+  :root {
+    /* shared instrument glass register */
+    --inst-base:#12141c; --inst-deep:#161a28; --inst-horizon:#1a2238;
+    --inst-text:#e6e9f0; --inst-muted:#8a90a0; --inst-label:#878c9b; /* 4.5:1 on glass (ADR-0031) */
+    --inst-blue:#7aa2ff; --inst-warm:#ff9957; /* warm is RESERVED — never spent here */
+    --brand-warm:#e0884f;
+    --glass:rgba(38,42,54,0.40); --hairline:rgba(255,255,255,0.07); --hairline-hi:rgba(255,255,255,0.13);
+    --st-up:#74d39a; --st-amber:#f2c879; --st-red:#ec7676; --st-idle:#757c8e; --st-unknown:#6f7894;
+    --st-up-fg:color-mix(in srgb,var(--st-up) 60%,var(--inst-text));
+    --st-amber-fg:color-mix(in srgb,var(--st-amber) 64%,var(--inst-text));
+    --st-red-fg:color-mix(in srgb,var(--st-red) 58%,var(--inst-text));
+    --st-up-ring:color-mix(in srgb,var(--st-up) 16%,transparent);
+    --st-amber-ring:color-mix(in srgb,var(--st-amber) 16%,transparent);
+    --st-red-ring:color-mix(in srgb,var(--st-red) 20%,transparent);
+    --st-idle-ring:color-mix(in srgb,var(--st-idle) 15%,transparent);
+
+    /* type — a humanist serif for the content, a true mono for the instrument readouts, a clean
+       system sans for body. Distinctive without a web font (offline/PWA: zero blocking resources). */
+    --serif:"Palatino","Palatino Linotype","Book Antiqua","URW Palladio L","P052","Iowan Old Style","Charter","Noto Serif",Georgia,"Times New Roman",serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","DejaVu Sans Mono",Menlo,monospace;
+    --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"Segoe UI",sans-serif;
+
+    --gutter:22px;                    /* the status-mark column the index hangs from */
+    font-synthesis:none; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  @media (prefers-reduced-transparency: reduce) { :root { --glass:rgba(24,28,40,0.96); } }
+  * { box-sizing:border-box; }
+  html,body { height:100%; }
+  body {
+    margin:0; color:var(--inst-text); font-family:var(--sans);
+    /* layered radial washes + a deep diagonal — atmosphere, not a flat fill. Fixed; never animates. */
+    background:
+      radial-gradient(1100px 640px at 82% -10%, color-mix(in srgb,var(--inst-blue) 11%,transparent), transparent 58%),
+      radial-gradient(900px 560px at 4% 112%, color-mix(in srgb,var(--brand-warm) 8%,transparent), transparent 55%),
+      linear-gradient(162deg,var(--inst-base),var(--inst-deep) 46%,var(--inst-horizon));
+    background-attachment:fixed; min-height:100%;
+  }
+  /* a single static grain plate — the "printed almanac paper" texture. One raster, no animation. */
+  body::before { content:""; position:fixed; inset:0; z-index:0; pointer-events:none; opacity:.55;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E"); }
+
+  .wrap { position:relative; z-index:1; max-width:720px; margin:0 auto; padding:56px 26px 64px; }
+  @media (max-width:560px){ .wrap { padding:36px 18px 48px; } }
+
+  /* ── masthead ─────────────────────────────────────────────────────────────────────── */
+  .masthead { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; flex-wrap:wrap; }
+  .eyebrow { font-family:var(--mono); font-size:.66rem; letter-spacing:.28em; text-transform:uppercase;
+    color:var(--inst-label); display:flex; align-items:center; gap:10px; }
+  .eyebrow .seal { width:13px; height:13px; border-radius:4px; flex:none;
+    background:linear-gradient(150deg,var(--inst-blue),var(--brand-warm));
+    box-shadow:0 0 0 1px rgba(255,255,255,.12) inset; }
+  h1 { font-family:var(--serif); font-weight:500; font-size:2.5rem; line-height:1; letter-spacing:.005em;
+    margin:.32em 0 0; }
+  h1 .the { font-style:italic; font-weight:400; color:var(--inst-muted); font-size:.82em; margin-right:.12em; }
+  .tagline { font-family:var(--serif); font-style:italic; font-size:1rem; color:var(--inst-muted); margin-top:.5em; }
+
+  /* the all-clear-is-silence readout: a quiet mono line that only speaks up when it must */
+  .readout { font-family:var(--mono); font-size:.74rem; letter-spacing:.04em; text-align:right;
+    display:flex; flex-direction:column; align-items:flex-end; gap:5px; padding-bottom:4px; }
+  .readout .verdict { display:inline-flex; align-items:center; gap:8px; font-weight:600; }
+  .readout .verdict .bead { width:7px; height:7px; border-radius:50%; background:var(--st-up);
+    box-shadow:0 0 9px var(--st-up); }
+  .readout.nominal .verdict { color:var(--st-up-fg); }
+  .readout.attention .verdict { color:var(--st-amber-fg); }
+  .readout.attention .verdict .bead { background:var(--st-amber); box-shadow:0 0 9px var(--st-amber); }
+  .readout.degraded .verdict { color:var(--inst-label); }
+  .readout.degraded .verdict .bead { background:var(--st-unknown); box-shadow:none; }
+  .readout .clock { color:var(--inst-label); font-size:.68rem; letter-spacing:.06em; }
+
+  /* the horizon — a hairline that draws itself in on load, like a pen drawn across the page */
+  .rule { height:1px; margin:26px 0 6px; transform-origin:left center;
+    background:linear-gradient(90deg, var(--hairline-hi), var(--hairline) 60%, transparent); }
+  body.reveal .rule { animation:draw .9s cubic-bezier(.2,.7,.2,1) both; }
+  @keyframes draw { from { transform:scaleX(0); opacity:0; } to { transform:scaleX(1); opacity:1; } }
+
+  /* honest "which sense went blind" banner — only shown when actually blind */
+  .blindbar { margin-top:18px; padding:12px 16px; border-radius:9px; font-size:.84rem;
+    background:color-mix(in srgb,var(--st-unknown) 14%,transparent); border:1px solid var(--hairline-hi);
+    color:var(--inst-text); display:none; }
+  body.blind .blindbar { display:block; }
+
+  /* ── the index ────────────────────────────────────────────────────────────────────── */
+  .section { margin-top:34px; }
+  .section > .label { display:flex; align-items:baseline; gap:14px; margin:0 0 8px; }
+  .section > .label .name { font-family:var(--mono); font-size:.68rem; letter-spacing:.24em;
+    text-transform:uppercase; color:var(--inst-label); white-space:nowrap; }
+  .section > .label .ledge { flex:1; height:1px; background:var(--hairline); transform:translateY(-3px); }
+  .section > .label .count { font-family:var(--mono); font-size:.66rem; color:var(--inst-label);
+    letter-spacing:.05em; }
+
+  /* an entry — the table-of-contents line. <a> when it's a live door; <div> otherwise. */
+  .entry { display:flex; gap:0; padding:11px 8px 11px 0; border-radius:10px; text-decoration:none;
+    color:inherit; position:relative; transition:background .18s ease; }
+  a.entry { cursor:pointer; }
+  a.entry:hover { background:rgba(255,255,255,.022); }
+  a.entry:hover .lead { border-color:color-mix(in srgb,var(--inst-blue) 55%,transparent); }
+  a.entry:hover .act { color:color-mix(in srgb,var(--inst-blue) 90%,white); }
+  a.entry:focus-visible { outline:2px solid var(--inst-blue); outline-offset:3px; }
+  a.entry:active { transform:translateY(.5px); }
+
+  .gut { width:var(--gutter); flex:none; display:flex; justify-content:center; padding-top:4px; }
+  .ebody { flex:1; min-width:0; }
+  .eline { display:flex; align-items:baseline; gap:0; }
+  .nm { font-family:var(--serif); font-size:1.06rem; font-weight:500; line-height:1.2; white-space:nowrap;
+    flex:none; max-width:62%; overflow:hidden; text-overflow:ellipsis; }
+  .lead { flex:1; min-width:16px; align-self:stretch; margin:0 12px;
+    border-bottom:1px dotted color-mix(in srgb,var(--inst-label) 60%,transparent);
+    transform:translateY(-4px); transition:border-color .18s ease; }
+  .act { flex:none; font-family:var(--mono); font-size:.74rem; letter-spacing:.02em; white-space:nowrap;
+    transition:color .18s ease; }
+  a.entry .act { color:var(--inst-blue); }
+  .entry.is-desktop-only .act, .entry.is-monitor .act { color:var(--inst-label); }
+  .entry.is-desktop-only .nm { color:color-mix(in srgb,var(--inst-text) 88%, transparent); }
+  .desc { font-family:var(--sans); font-size:.78rem; line-height:1.45; color:var(--inst-muted);
+    margin-top:3px; max-width:54ch; }
+  .statebadge { font-family:var(--mono); font-size:.6rem; font-weight:600; letter-spacing:.08em;
+    text-transform:uppercase; padding:2px 7px; border-radius:999px; border:1px solid var(--hairline-hi);
+    color:var(--inst-muted); margin-right:10px; white-space:nowrap; }
+
+  /* the status mark — refined dot grammar (carries status with a redundant text label elsewhere).
+     FILL = a process present; GLOW = reserved for attention; STROKE separates the hollow trio. */
+  .dot { width:9px; height:9px; border-radius:50%; flex:none; background:var(--st-idle);
+    box-shadow:0 0 0 4px var(--st-idle-ring); }
+  .dot.up { background:var(--st-up); box-shadow:0 0 0 4px var(--st-up-ring); }
+  .dot.ok { background:transparent; box-shadow:inset 0 0 0 2px var(--st-up); opacity:.85; }
+  .dot.idle { background:transparent; box-shadow:inset 0 0 0 2px var(--st-idle); opacity:.85; }
+  .dot.starting,.dot.stopping { background:var(--st-amber); box-shadow:0 0 0 4px var(--st-amber-ring); }
+  .dot.failed { background:var(--st-red);
+    box-shadow:0 0 0 4px var(--st-red-ring), 0 0 8px color-mix(in srgb,var(--st-red) 42%,transparent); }
+  .dot.down,.dot.absent { background:var(--st-idle); box-shadow:0 0 0 4px var(--st-idle-ring); }
+  .dot.unknown { background:transparent; border:1.5px dashed var(--st-unknown); }
+
+  /* S1 (designed, gated): the lease-aware cost line on an on-demand door. Mono, cool-toned, a
+     single honest footnote. Never the reserved warm. Lights up once `agentosd lease` installs. */
+  .cost { font-family:var(--mono); font-size:.68rem; line-height:1.5; letter-spacing:.01em;
+    color:color-mix(in srgb,var(--inst-blue) 62%, var(--inst-muted)); margin:6px 0 0; padding-left:14px;
+    border-left:1px solid color-mix(in srgb,var(--inst-blue) 26%,transparent); }
+  .cost.gated { color:var(--inst-label); }
+
+  /* copy-fix — copy-don't-execute; present in the DOM only when the SERVER allowed it (local only) */
+  .row-fix { margin:8px 0 2px calc(var(--gutter)); }
+  button.fix { font-family:var(--mono); font-size:.7rem; letter-spacing:.02em; color:var(--st-amber-fg);
+    cursor:pointer; padding:5px 11px; border-radius:7px;
+    background:color-mix(in srgb,var(--st-amber) 9%,transparent);
+    border:1px solid color-mix(in srgb,var(--st-amber) 34%,transparent); transition:background .18s; }
+  button.fix:hover { background:color-mix(in srgb,var(--st-amber) 16%,transparent); }
+  button.fix:focus-visible { outline:2px solid var(--inst-blue); outline-offset:2px; }
+
+  footer { margin-top:48px; padding-top:18px; border-top:1px solid var(--hairline);
+    font-family:var(--mono); font-size:.66rem; letter-spacing:.04em; color:var(--inst-label);
+    line-height:1.8; }
+  footer .sep { opacity:.5; margin:0 8px; }
+
+  /* ── one orchestrated load cascade (first render only; reduced-motion safe) ──────────── */
+  body.reveal .in { animation:rise .55s cubic-bezier(.2,.7,.2,1) both;
+    animation-delay:calc(var(--d,0) * 42ms); }
+  @keyframes rise { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:none; } }
+
+  /* ── STALE / BLIND: dim the SIGNAL (marks, leaders), never the text (ADR-0031 gap #1 fix;
+        measured 13.03:1 text vs the old 4.34:1). ─────────────────────────────────────── */
+  body.stale .dot { filter:grayscale(.6) saturate(.5); opacity:.55; box-shadow:none; }
+  body.stale .lead { border-color:color-mix(in srgb,var(--inst-label) 30%,transparent); }
+  body.stale a.entry .act { color:var(--inst-muted); }   /* a door we can't trust right now reads quieter… */
+  /* …but every .nm / .desc stays at full contrast — the readable truth the user still needs. */
+
+  @media (prefers-reduced-motion: reduce) { *, body.reveal .in, body.reveal .rule { animation:none !important; transition:none !important; } }
+  @media (max-width:560px){ h1 { font-size:2.1rem; } .nm { max-width:54%; } .readout { text-align:left; align-items:flex-start; } }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="masthead">
+      <div>
+        <div class="eyebrow"><span class="seal" aria-hidden="true"></span>AgentOS — Service Index</div>
+        <h1><span class="the">the</span>Atrium</h1>
+        <div class="tagline">every local service, one quiet front door.</div>
+      </div>
+      <div id="readout" class="readout degraded" role="status" aria-live="polite">
+        <span class="verdict"><span class="bead" aria-hidden="true"></span><span id="verdict-text">surveying…</span></span>
+        <span class="clock" id="clock">connecting</span>
+      </div>
+    </header>
+
+    <div class="rule" aria-hidden="true"></div>
+    <div class="blindbar" id="blindbar" role="status"></div>
+
+    <main id="index"></main>
+
+    <footer>
+      A read-only index · link-out only, mutates nothing
+      <span class="sep">·</span><span id="origin-note">served locally</span>
+    </footer>
+  </div>
+
+<script>
+  // ── dependency-free renderer. Consumes the SERVER's /launch.json (origin decided server-side);
+  //    falls back to a built-in demo set for ?demo=1 (offline / headless screenshotting). ──
+  const Q = new URLSearchParams(location.search);
+  const DEMO = Q.has("demo");
+  const ESC = { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" };
+  const esc = (v) => String(v==null?"":v).replace(/[&<>"']/g,(c)=>ESC[c]);
+  const safeUrl = (u) => (/^https?:\/\//i.test(u||"") ? u : "");
+
+  function demoData() {
+    const remote = Q.has("remote");
+    const host = "4090.tailnet.ts.net:9123";
+    const mk = (id,name,group,desc,status,kind,url,tailnet=true) => {
+      let door;
+      if (!url) door = { state:"monitor-only", href:"" };
+      else if (!remote) door = { state:"open", href:url };
+      else if (!tailnet) door = { state:"desktop-only", href:"" };
+      else door = { state:"open", href:"https://4090.tailnet.ts.net:"+(new URL(url).port)+"/" };
+      return { id,name,group,desc,status,kind,door, reach: status==="up"?"reachable":"", scope:"user" };
+    };
+    const services = [
+      mk("hermes-dashboard","Hermes web UI","AI core","Config, sessions, kanban board","up","daemon","http://127.0.0.1:9119"),
+      mk("comfyui","ComfyUI","AI core","Dreaming backend — local video & image generation, on demand","idle","on_demand","http://127.0.0.1:8188",false),
+      mk("ollama","Ollama runtime","AI core","Local model server","up","daemon",""),
+      mk("status-panel","Status panel","AgentOS substrate","Boot-health front door","up","daemon","http://127.0.0.1:9123"),
+      mk("lucid","Lucid","Dreaming","Watch a clip, choose what happens next","up","daemon","http://127.0.0.1:8765"),
+      mk("share-hub","AgentOS Share","Dreaming","Phone → box photo ingest — share a photo to start a dream","up","daemon","http://127.0.0.1:8770"),
+      mk("swaync","Notifications","Notifications","swaync — the desktop's nervous system","failed","daemon",""),
+    ];
+    const fail = services.find(s=>s.status==="failed");
+    if (fail && !remote) fail.fix = "systemctl --user reset-failed swaync.service && systemctl --user restart swaync.service";
+    return { groups:["AI core","AgentOS substrate","Dreaming","Notifications"], services,
+             summary:{ total:services.length, healthy:5, attention:1 },
+             generated_at: Date.now()/1000, origin:{ remote, can_copy_fix:!remote, host: remote?host:null } };
+  }
+
+  const STATE_RANK = { failed:0, starting:1, stopping:1, down:2, unknown:3, up:4, idle:5, ok:5, absent:6 };
+  const CALM = new Set(["up","ok","idle"]);   // a status that is NOT an attention cue
+  const S1_NOTE = "Opening reads the GPU coordinator first — the cost lights up here once the lease daemon is installed.";
+
+  function actionLabel(s) {
+    if (s.door.state === "open")
+      return s.kind === "on_demand" ? "ready when you are  ↗" : "open  ↗";
+    if (s.door.state === "desktop-only")
+      // dormant ≠ down: a calm desktop-only service reads "on your desktop"; a non-calm one
+      // surfaces its state so a phone glance can't mistake a crash for a peaceful sleep.
+      return CALM.has(s.status) ? "on your desktop"
+                                : `${(s.state || s.status || "").toLowerCase()} · on your desktop`;
+    return (s.state || "").toLowerCase();      // monitor-only: the live state, no action
+  }
+
+  function entryEl(s, di) {
+    const cls = "entry in is-" + s.door.state;
+    const dot = `<span class="gut"><span class="dot ${esc(s.status)}" aria-hidden="true"></span></span>`;
+    // WCAG 1.4.1: never carry health by colour (the dot) alone — for a non-calm open door, show
+    // the state word as text too.
+    // A door that is systemd-"up" but whose port doesn't answer (reach unreachable) must NOT read as
+    // confident-green on the phone, where the "copy fix" tell is absent: surface "not answering" as
+    // TEXT so the green dot is never the only — and a lying — signal (ADR-0026 "honest when blind").
+    const unreachable = s.reach === "unreachable";
+    const badge = (s.door.state === "open" && (!CALM.has(s.status) || unreachable))
+      ? `<span class="statebadge">${esc(unreachable && CALM.has(s.status) ? "not answering" : (s.state || s.status))}</span>` : "";
+    const eline = `<div class="eline"><span class="nm">${esc(s.name)}</span>`
+      + `<span class="lead" aria-hidden="true"></span>${badge}<span class="act">${esc(actionLabel(s))}</span></div>`;
+    const desc = s.desc ? `<div class="desc">${esc(s.desc)}</div>` : "";
+    const cost = s.kind === "on_demand" ? `<p class="cost gated">${esc(S1_NOTE)}</p>` : "";
+    const body = `<div class="ebody">${eline}${desc}${cost}</div>`;
+
+    // The accessible name carries name + state + desc + action (+ the S1 note), so SR users get
+    // what sighted users get — not a truncated label.
+    const aria = `${s.name}: ${s.state || s.status}. ${s.desc || ""} ${actionLabel(s)}`
+      + (s.kind === "on_demand" ? " " + S1_NOTE : "");
+    const style = `style="--d:${Math.min(di,16)}"`;
+
+    let html;
+    if (s.door.state === "open") {
+      const href = safeUrl(s.door.href);
+      html = `<a class="${cls}" ${style} data-id="${esc(s.id)}" href="${esc(href)}" target="_blank" rel="noopener" aria-label="${esc(aria)}">${dot}${body}</a>`;
+    } else {
+      html = `<div class="${cls}" ${style} data-id="${esc(s.id)}" role="group" aria-label="${esc(aria)}">${dot}${body}</div>`;
+    }
+    // copy-fix is a SIBLING of the door (an <a> can't contain a <button>) so it works for OPEN
+    // (split-brain "up but unreachable") doors too. Present only when the server allowed it.
+    const fix = s.fix
+      ? `<div class="row-fix in" ${style}><button class="fix" type="button" data-cmd="${esc(s.fix)}">copy fix</button></div>` : "";
+    return `<div class="cell" data-cell="${esc(s.id)}">${html}${fix}</div>`;
+  }
+
+  let revealed = false;
+  function render(data) {
+    const reveal = !revealed; revealed = true;
+    document.body.classList.toggle("reveal", reveal);   // cascade runs on the FIRST render only
+    const byGroup = {};
+    for (const s of data.services) (byGroup[s.group] ||= []).push(s);
+    const order = data.groups && data.groups.length ? data.groups : Object.keys(byGroup);
+    let html = "", di = 0;
+    for (const g of order) {
+      const list = (byGroup[g] || []).slice().sort((a,b)=>STATE_RANK[a.status]-STATE_RANK[b.status]);
+      if (!list.length) continue;
+      html += `<section class="section"><div class="label in" style="--d:${Math.min(di++,16)}">`
+        + `<span class="name">${esc(g)}</span><span class="ledge"></span>`
+        + `<span class="count">${list.length}</span></div>`
+        + list.map((s)=>entryEl(s, di++)).join("") + `</section>`;
+    }
+    document.getElementById("index").innerHTML = html ||
+      `<section class="section"><div class="entry"><span class="gut"></span><div class="ebody"><div class="desc">No services in the catalog.</div></div></div></section>`;
+  }
+
+  // re-render only when the meaningful state changed, and restore focus to the same door id —
+  // an autonomous poll must never yank focus or reflow under the user (WCAG 2.4.3).
+  let lastSig = "";
+  const sigOf = (d) => (d.services||[]).map(s=>`${s.id}:${s.status}:${s.reach}:${s.door&&s.door.state}:${s.fix?1:0}`).join("|") + "|" + (d.services||[]).length;
+  function applyData(data) {
+    const sig = sigOf(data);
+    if (sig === lastSig) return;
+    const active = document.activeElement;
+    const cell = active && active.closest ? active.closest("[data-cell]") : null;
+    const focusedId = cell ? cell.dataset.cell : null;
+    const wasFix = !!(active && active.classList && active.classList.contains("fix"));
+    render(data);
+    lastSig = sig;
+    if (focusedId) {
+      const sel = `[data-cell="${(window.CSS && CSS.escape) ? CSS.escape(focusedId) : focusedId}"]`;
+      const c = document.getElementById("index").querySelector(sel);
+      const tgt = c && (wasFix ? c.querySelector("button.fix") : c.querySelector("a.entry, .entry"));
+      if (tgt && tgt.focus) tgt.focus();
+    }
+  }
+
+  const pad = (n) => String(n).padStart(2,"0");
+  function setReadout(mode, verdict, clock) {
+    const r = document.getElementById("readout"); r.className = "readout " + mode;
+    document.getElementById("verdict-text").textContent = verdict;
+    if (clock != null) document.getElementById("clock").textContent = clock;
+  }
+  function setBlind(msg){ const b=document.getElementById("blindbar"); if (b.textContent!==msg) b.textContent=msg; }
+
+  function paint(data, blind, blindMsg) {
+    const att = (data.summary && data.summary.attention) || 0;
+    const total = (data.summary && data.summary.total) || 0;
+    const now = new Date();
+    const clock = blind ? "last seen — retrying" : `synced ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    if (blind)        setReadout("degraded", "showing last view", clock);
+    else if (att>0)   setReadout("attention", `${att} need${att===1?"s":""} attention`, clock);
+    else              setReadout("nominal", `all clear · ${total} services`, clock);   // the all-clear is silence
+    document.body.classList.toggle("blind", !!blind);
+    if (blind) setBlind(blindMsg);
+    document.getElementById("origin-note").textContent = data.origin && data.origin.remote
+      ? "over your tailnet · desktop-only services shown but not linked"
+      : "served locally on 127.0.0.1";
+  }
+
+  // copy-fix is copy-don't-execute; the command only exists in the DOM when the server allowed it.
+  document.getElementById("index").addEventListener("click", async (e) => {
+    const b = e.target.closest("button.fix"); if (!b) return;
+    try { await navigator.clipboard.writeText(b.dataset.cmd); const o=b.textContent; b.textContent="copied — run it"; setTimeout(()=>b.textContent=o,1800); }
+    catch { const o=b.textContent; b.textContent="copy failed"; setTimeout(()=>b.textContent=o,1800); }
+  });
+
+  async function tick() {
+    if (DEMO) {
+      const d = demoData();
+      applyData(d); paint(d, false);
+      if (Q.has("forcestale")) { document.body.classList.add("stale"); paint(d, true, "Data is stale — the index hasn't refreshed."); }
+      return;
+    }
+    try {
+      const r = await fetch("/launch.json", { cache:"no-store" });
+      const data = await r.json();
+      applyData(data);
+      const age = data.generated_at ? Math.max(0, Date.now()/1000 - data.generated_at) : 0;
+      const stale = age > 12;                       // STALE = reachable but old (≠ blind/offline)
+      document.body.classList.toggle("stale", stale);
+      document.body.classList.remove("blind");
+      paint(data, stale, "Data is stale — the index hasn't refreshed in a while.");
+    } catch (e) {
+      // BLIND = network failed. The SW serves the cached shell so we can name *which sense went
+      // blind* — the box may be fine. Kept distinct from stale: declare blind, don't dim-as-stale.
+      document.body.classList.remove("stale");
+      document.body.classList.add("blind");
+      setReadout("degraded", "can't reach the box", "last seen — retrying");
+      setBlind("Offline — the tailnet path is quiet. Your box may be perfectly fine; this view just can't reach it right now.");
+    }
+  }
+
+  tick();
+  if (!DEMO) {
+    setInterval(tick, 5000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+    if ("serviceWorker" in navigator && location.protocol !== "file:") {
+      navigator.serviceWorker.register("/sw.js").catch(()=>{});
+    }
+  }
+</script>
+</body>
+</html>

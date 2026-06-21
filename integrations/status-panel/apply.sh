@@ -14,8 +14,14 @@ command -v python3 >/dev/null || { echo "✗ python3 not found" >&2; exit 1; }
 mkdir -p "$UNIT_DIR" "$AUTOSTART_DIR"
 install -m644 "$HERE/$UNIT" "$UNIT_DIR/$UNIT"
 
-# The panel is the login landing page; retire the dashboard-only opener if present.
-rm -f "$AUTOSTART_DIR/hermes-dashboard-open.desktop"
+# The panel is the login landing page; retire the dashboard-only opener if present — but BACK IT UP
+# first (once) so restore.sh can recreate it. Reversible, not a silent one-way migration.
+OLD_OPENER="$AUTOSTART_DIR/hermes-dashboard-open.desktop"
+if [ -f "$OLD_OPENER" ] && [ ! -e "$OLD_OPENER.agentos-bak" ]; then
+  mv "$OLD_OPENER" "$OLD_OPENER.agentos-bak"
+else
+  rm -f "$OLD_OPENER"
+fi
 
 # Ambient-first (ADR-0026, surface-labor contract): the all-clear is silence. The opener
 # waits for the panel to serve, gives the stack a settle window, then opens the browser
@@ -32,10 +38,19 @@ X-KDE-autostart-after=panel
 NoDisplay=false
 EOF
 
+# Desktop launch surface (ADR-0031): emit one KRunner `.desktop` launcher per service door, so
+# typing a service name (or "agentos") in KRunner opens it. Best-effort — never fail the install.
+if python3 "$HERE/gen_launchers.py" --install; then
+  :
+else
+  echo "! could not write KRunner launchers (non-fatal)" >&2
+fi
+
 systemctl --user daemon-reload
 if systemctl --user enable --now "$UNIT"; then
   echo "✓ AgentOS status panel installed + started → http://127.0.0.1:${PORT}"
   echo "  opens at next login only if something needs attention; else open it from the tray"
+  echo "  phone: install the Atrium PWA at http://127.0.0.1:${PORT}/atrium (over your tailnet)"
   echo "  logs: journalctl --user -u $UNIT -f"
 else
   echo "! could not enable the user service; start it by hand:" >&2

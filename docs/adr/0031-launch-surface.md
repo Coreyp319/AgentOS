@@ -1,7 +1,12 @@
 # ADR-0031: The launch surface — a fourth surface-labor verb (KRunner + a launch-view PWA)
 
-- Status: Proposed — spike landed (`spikes/atrium/`, measured 2026-06-20); remaining gate is the
-  live `tailscale serve` origin + the lease-daemon install for S1. Catalog-drift data fix (§6) shipped.
+- Status: Accepted — v1 **folded into production** (`integrations/status-panel/`, 2026-06-20): the
+  launch view (`launch.html` at `/atrium` and `/?view=launch`), the PWA shell (manifest + service
+  worker + icons), origin-aware doors + the server-emitted loopback signal (gap #4), the 1.5s status
+  cache, and the KRunner `.desktop` launchers all ship and are tested (63 status-panel tests green).
+  Remaining gates are **verification, not build**: the live `tailscale serve` PWA install on the box,
+  and the S1 lease-aware door (gated on `agentosd lease` being installed). The spike (`spikes/atrium/`)
+  and the §6 catalog/a11y fixes shipped earlier (commits `abcc011`, `30a07b3`, `3cbceb8`).
 - Date: 2026-06-20
 - Relates to: ADR-0026 (boot stack + status panel — this EXTENDS its renderer with a launch
   verb and inherits its five rules verbatim; it does NOT mutate `/` into a hub and does NOT
@@ -80,12 +85,66 @@ were written to resist.
   already passed at 4.84:1). The launch view also ships the gap-#1 stale-state fix (text 13.03:1;
   the old treatment measured 4.34:1, confirming that cap was real too).
 
+## Implementation update (2026-06-20) — folded into production
+The proven spike bits now live in `integrations/status-panel/`, served by the **existing**
+status-panel daemon (no new port, no new process — the unit runs `status_panel.py` in place):
+- **Launch view** `launch.html` at `/atrium` and `/?view=launch`; `/` stays the diagnose panel
+  (never mutated into a hub). An "observatory almanac" treatment (serif index, dotted leaders,
+  still-room atmosphere) renders the same `/launch.json` contract.
+- **Origin-aware doors + server loopback signal (gaps #2/#3/#4)** ported into `status_panel.py`
+  (`classify_origin` / `door_for` / `build_launch`): on a remote origin a loopback door is rewritten
+  to the tailnet host, an un-served door (ComfyUI :8188, `tailnet:false`) renders desktop-only, and
+  the "Copy fix" shell one-liner is emitted **only** to a provably-local request. **Same fix applied
+  to the existing `panel.html`** — its copy-fix + "bring stack up" affordances are now gated on the
+  server's `can_copy_fix`, and its footer/open-links are origin-honest (it no longer client-reads
+  `location.host`), because the status panel itself (:9123) is tailnet-served.
+- **1.5s TTL status cache** (`cached_status()`, behind a lock) backs both `/status.json` and
+  `/launch.json` so a wedged unit can't fan out into N stuck request threads.
+- **PWA shell**: `manifest.webmanifest` (start_url `/atrium`), `sw.js` (caches the launch shell only,
+  never live state, never intercepts `/`), `icons/` (regenerable via `make_icons.py` — no new art).
+- **Desktop launch verb**: `gen_launchers.py` emits one KRunner `.desktop` per door; `apply.sh`
+  installs them, `restore.sh` removes them (reversible). Daemon now **refuses a non-loopback bind**
+  unless `AGENTOS_STATUS_ALLOW_NONLOOPBACK=1` (`tailscale serve` is the only sanctioned exposure).
+- **Tests**: `tests/test_launch.py` ports the spike's origin/security invariants + adds route,
+  cache, launcher-generation, and host-validation tests (67 status-panel tests total, green).
+
+### Adversarial review pass (2026-06-20) — fixed inline
+Five parallel reviewers (security / reversibility / resource-safety / a11y / channels). No
+CRITICAL/HIGH security holes — the core invariant (a shell one-liner never reaches a remote
+client) was confirmed fail-closed. Fixed inline: (a) **resource-safety [High]** — the status cache
+now serves-stale-while-refreshing (the slow `build_status()` runs OUTSIDE the lock) so a wedged
+`systemctl` can't park every request thread; (b) **a11y [High]** — `panel.html`'s stale-state now
+dims the *signal*, not the *text* (the gap-#1 fix the launch view already had — closes the cap at
+the old `panel.html:159`); (c) **a11y [Blocker]** — the "desktop only" / "fix on desktop" cue got
+its own dashed-cool treatment + aria-label (was visually identical to the "system" badge); (d)
+**channels [High]** — origin headers split into universal proxy-headers vs advisory identity-headers
+(never trust an identity header's *presence/absence* — tagged devices & Funnel carry none); (e)
+**security** — `/icons/..` now 404s cleanly (was an uncaught `IsADirectoryError`), host rewrite
+validates DNS labels + port range, `why`/peer-IP stripped from client payloads; (f)
+**reversibility** — `.desktop` launchers written atomically and pruned/removed **only** if they
+carry our `X-AgentOS-Launch` marker (never delete a user's same-named file); (g) **channels [Low]**
+— the panel poll now backs off with jitter on failure instead of a fixed-rate retry storm.
+
 ## Open / gating (remaining)
-- **Production fold-in must add a status cache:** `build_status()` shells out + probes; under a
-  wedged unit a naive route could hang. The spike demonstrates the fix (a 1.5s TTL snapshot
-  behind a lock in `atrium_server.py`); the production route must inherit it.
 - **Live `tailscale serve` origin:** confirm PWA install + service-worker scope under the actual
   HTTPS cert/reverse-proxy on the box (the static checks pass; the live origin is unverified).
+- **`serve`, never `funnel` (channels [High], documented constraint):** the trust model assumes
+  "remote == authenticated tailnet device." `agentosd-remote.sh` uses `tailscale serve --https`
+  (tailnet-only); it must never be swapped for `funnel`, which would expose the service map + doors
+  publicly while the panel still reads "over your tailnet." (Header-based Funnel auto-detection is
+  unreliable — tagged tailnet devices also carry no identity headers — so this stays a deployment
+  constraint + the loopback bind guard, not a runtime degrade.)
+- **Runtime served-port coupling (channels [Medium], future hardening):** `door_for` trusts the
+  catalog's `tailnet:false` flags to mark un-served ports desktop-only; the `CatalogDriftGuard` test
+  keeps `services.json` ⊕ `agentosd-remote.sh` honest, but only at CI time. A shared served-ports
+  artifact both the serve script and `status_panel.py` consume at runtime would make "never a dead
+  phone door" a runtime invariant, not a dev-box test. Acceptable for v1 given the test.
+- **`launch.html` a11y (advisory, owned by the design thread):** the new "observatory almanac"
+  view is contract-compatible and largely strong (reduced-motion reaches the cascade, decorative
+  spans hidden, monitor-only renders as a non-focusable div). Open advisory items for that thread:
+  the gated S1 cost note in the accessible name reads as a kept promise; `--inst-label` should be
+  spot-measured over the lighter radial-wash corners (not just flat glass); focus restoration when
+  a door flips `<a>`→`<div>` (open↔desktop-only) lands on `<body>`.
 - **S1 (lease-aware door):** the affordance is designed + laid out, gated on `agentosd lease`
   (`org.agentos.Coordinator1`) being installed (built-not-installed) to supply the real verdict.
 - The reserved `acting` state is never emitted; any "launch during actuation" affordance is

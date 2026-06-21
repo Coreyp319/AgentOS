@@ -154,9 +154,16 @@
   .pill.attention .bead { background: var(--st-amber); box-shadow: 0 0 10px var(--st-amber); }
   .pill.degraded { color: #c2c7d2; border-color: var(--card-line-hi); }
   .pill.degraded .bead { background: var(--st-unknown); box-shadow: none; }
-  /* When the data is stale or the server is unreachable, dim the (possibly wrong) list so
-     the panel never looks confidently live while it's actually blind. */
-  body.stale main { opacity: .5; filter: saturate(.6); transition: opacity .3s, filter .3s; }
+  /* When the data is stale or the server is unreachable, signal "blind" by dimming the SIGNAL
+     (dots, row accents, glass, badges) — NEVER the text. The old `opacity:.5` on all of <main>
+     dropped body text to 4.3:1 (WCAG AA fail; measured in ADR-0031's spike); the launch view
+     fixed it the same way. The name/desc/state stay at full contrast — that's the readable truth
+     the user most needs when the panel has gone blind. */
+  body.stale .dot { filter: grayscale(.6) saturate(.5); opacity: .6; box-shadow: none !important; }
+  body.stale .row.attention, body.stale .row.warn { box-shadow: none; }
+  body.stale .card { background: color-mix(in srgb, var(--card-bg, var(--card-line)) 60%, transparent); }
+  body.stale .badge { opacity: .6; }
+  body.stale .open, body.stale .why-btn, body.stale .fix { opacity: .75; transition: opacity .3s; }
   .updated { font-size: var(--fs-2xs); color: var(--faint); display: flex; align-items: center; gap: var(--sp-2); }
   .updated .live { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); opacity: .9; }
   body.refreshing .updated .live { animation: ping .9s ease-out; }
@@ -238,6 +245,10 @@
            border-radius: var(--radius-pill); border: 1px solid var(--card-line-hi); color: var(--muted); white-space: nowrap; }
   .badge.reach { color: var(--st-up-fg); border-color: var(--st-up-line); }
   .badge.unreach { color: var(--st-red-fg); border-color: var(--st-red-line); }
+  /* "desktop only" / "fix on desktop" — an INFORMATIONAL (not-a-door) cue on a remote origin.
+     A dashed cool border distinguishes it by treatment (not just text/position) from the solid
+     neutral "system" scope badge. */
+  .badge.offsite { color: var(--blue); border-style: dashed; border-color: var(--blue-line, var(--card-line-hi)); }
   a.open {
     color: var(--blue); text-decoration: none; font-size: var(--fs-sm); font-weight: var(--fw-medium);
     padding: 5px var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--blue-line);
@@ -293,7 +304,7 @@
 
     <footer>
       Live view of <code>systemctl</code> + port reachability · refreshes every few seconds<br />
-      AgentOS substrate over Hermes · served locally on <code id="origin">127.0.0.1</code>
+      AgentOS substrate over Hermes · <span id="origin">served locally on <code>127.0.0.1</code></span>
     </footer>
   </div>
 
@@ -311,6 +322,24 @@
     s.status === "failed" ||
     (s.status === "down" && (s.kind || "daemon") === "daemon") ||
     ((s.status === "up" || s.status === "starting") && s.reach === "unreachable");
+
+  // The origin is decided by the SERVER (ADR-0031 gap #4), never by reading location.host (a
+  // reverse proxy rewrites that). Default to local so a payload without the field stays usable;
+  // the daemon is loopback-bound, and a real remote origin always arrives stamped remote.
+  let origin = { remote: false, can_copy_fix: true, host: null };
+  const hostBase = (h) => (h && /^[A-Za-z0-9.\-]+(:\d{1,5})?$/.test(h) ? h.replace(/:[0-9]+$/, "") : "");
+  // A door the panel can actually follow on THIS origin — never a dead loopback link on the phone.
+  // Local: the loopback url as-is. Remote: rewrite to the tailnet host, or "" for an un-served
+  // (tailnet:false) / un-rewritable door (which renders a quiet "desktop only" instead).
+  function doorHref(s) {
+    const u = safeUrl(s.url); if (!u) return "";
+    if (!origin.remote) return u;
+    if (s.tailnet === false) return "";
+    const base = hostBase(origin.host); if (!base) return "";
+    let port = ""; try { port = new URL(u).port; } catch (_) { return ""; }
+    const suffix = (!port || port === "443") ? "" : ":" + port;
+    return "https://" + base + suffix + "/";
+  }
 
   function relTime(ts) {
     // ts is systemd's ActiveEnterTimestamp string; Date.parse handles most locales.
@@ -338,17 +367,24 @@
     if (s.reach === "reachable")        badge = `<span class="badge reach">reachable</span>`;
     else if (s.reach === "unreachable") badge = `<span class="badge unreach">no response</span>`;
 
-    const url = safeUrl(s.url);
-    const open = url
-      ? `<a class="open" href="${esc(url)}" target="_blank" rel="noopener" aria-label="Open ${esc(s.name)} (opens in a new tab)">Open ↗</a>`
-      : "";
+    // Origin-aware door (ADR-0031): an Open link only when it actually resolves on this origin;
+    // a url-bearing service that isn't tailnet-reachable reads "desktop only", never a dead link.
+    const href = doorHref(s);
+    const open = href
+      ? `<a class="open" href="${esc(href)}" target="_blank" rel="noopener" aria-label="Open ${esc(s.name)} (opens in a new tab)">Open ↗</a>`
+      : (s.url && origin.remote ? `<span class="badge offsite" aria-label="${esc(s.name)} is reachable on the desktop only">desktop only</span>` : "");
 
-    // On an attention row: "Why?" tails the journal inline, "Copy fix" copies the exact
-    // systemctl reset+restart. The server never mutates anything — the human disposes.
+    // On an attention row: "Why?" tails the journal inline (read-only, fine remotely). "Copy fix"
+    // copies a systemctl one-liner — offered ONLY when the SERVER says the origin is provably
+    // local (gap #4): a shell affordance must never reach the phone. The human disposes. When it's
+    // suppressed remotely, an in-row cue explains the absence in place (not only in the footer).
     const why = attention
       ? `<button class="why-btn" data-id="${esc(s.id)}" aria-expanded="false">Why?</button>` : "";
     const fix = attention && s.unit
-      ? `<button class="fix" data-unit="${esc(s.unit)}" data-scope="${esc(s.scope)}">Copy fix</button>` : "";
+      ? (origin.can_copy_fix
+          ? `<button class="fix" data-unit="${esc(s.unit)}" data-scope="${esc(s.scope)}">Copy fix</button>`
+          : `<span class="badge offsite" aria-label="Recovery for ${esc(s.name)} is available on the desktop">fix on desktop</span>`)
+      : "";
 
     const aria = `${s.name}: ${stateText}` + (s.reach ? `, ${s.reach === "reachable" ? "reachable" : "no response"}` : "");
     return `<div class="${cls}" role="listitem" aria-label="${esc(aria)}">
@@ -392,7 +428,8 @@
     const att = (data && data.summary && data.summary.attention) || 0;
     const total = (data && data.summary && data.summary.total) || 0;
     document.body.classList.toggle("has-attention", att > 0 && !stale);
-    document.getElementById("bring-up").hidden = !(att > 0);
+    // The "bring stack up" one-liner is a shell affordance — local origin only (gap #4).
+    document.getElementById("bring-up").hidden = !(att > 0 && origin.can_copy_fix);
     if (stale)            setPill("degraded", "data is stale");
     else if (data && data.error) setPill("degraded", "status error");
     else if (att > 0)     setPill("attention", `${att} need${att === 1 ? "s" : ""} attention`);
@@ -404,6 +441,9 @@
     try {
       const r = await fetch("/status.json", { cache: "no-store" });
       const data = await r.json();
+      pollDelay = POLL_MIN;                       // reached the box: reset any backoff
+      if (data.origin) origin = data.origin;     // server-decided trust (gap #4); set before render
+      setOriginNote();
       // Detect the recovery moment: ids that needed attention last tick and are now healthy.
       const services = data.services || [];
       const curAttn = new Set(services.filter(isAttention).map((s) => s.id));
@@ -432,6 +472,7 @@
         : "updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     } catch (e) {
       // The status server itself is unreachable — never keep showing a calm green pill.
+      pollDelay = Math.min(POLL_MAX, Math.round(pollDelay * 1.8));   // back off; don't hammer
       document.body.classList.add("stale");
       setPill("degraded", "status unavailable");
       document.getElementById("updated").textContent = "status server unreachable — retrying…";
@@ -486,10 +527,33 @@
     catch { flash(e.currentTarget, "copy failed"); }
   });
 
-  document.getElementById("origin").textContent = location.host || "127.0.0.1";
-  tick();
-  setInterval(tick, 4000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+  // Honest origin line, from the server's verdict (not location.host, which a proxy rewrites).
+  // Guarded so an unchanging origin isn't rewritten every 4s tick (no churn; origin is static
+  // per session in practice). The aria-live pill carries the at-a-glance state.
+  let lastOriginNote = "";
+  function setOriginNote() {
+    const el = document.getElementById("origin");
+    if (!el) return;
+    const html = origin.remote
+      ? `over your tailnet (<code>${esc(hostBase(origin.host) || "your tailnet")}</code>) · recovery is desktop-only`
+      : `served locally on <code>127.0.0.1</code>`;
+    if (html !== lastOriginNote) { el.innerHTML = html; lastOriginNote = html; }
+  }
+  // Self-scheduling poll with backoff+jitter: 4s steady, but on failure (a flaky tailnet path,
+  // a sleeping box) back off exponentially to ~60s instead of hammering at a fixed rate, and add
+  // jitter so multiple phones don't synchronize. Resets to 4s on the next success / on refocus.
+  const POLL_MIN = 4000, POLL_MAX = 60000;
+  let pollDelay = POLL_MIN, pollTimer = null;
+  function reschedule() {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(runTick, Math.round(pollDelay * (0.85 + Math.random() * 0.3)));
+  }
+  async function runTick() { await tick(); reschedule(); }
+  setOriginNote();
+  runTick();
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) { pollDelay = POLL_MIN; runTick(); }   // refocus: fresh read, reset backoff
+  });
 </script>
 
 <!-- Living aurora backdrop — WebGL Flow (spikes/ambient-backdrop): one steady, non-reactive
