@@ -468,6 +468,22 @@ fn may_release(holder_peer: Option<&(u64, String)>, token: u64, requester: Optio
     }
 }
 
+/// GO-2 identity gate for `Renew` (ADR-0021 ratification must-fix #1): may `requester` renew `token`?
+/// Renew shares the `release` identity predicate — a *bound* (cooperative) lease's TTL may be extended
+/// ONLY by its acquiring peer; without this, a peer that guessed the monotonic token could pin or
+/// indefinitely extend another holder's lease (defeating the B5 stuck-holder backstop). It additionally
+/// requires `token` to be the *live* holder. An unbound (owned `Spawn`) holder stays token-only, so the
+/// `busctl`-per-call dream client still renews across fresh connections. Pure + tested.
+fn may_renew(
+    holder_peer: Option<&(u64, String)>,
+    holder_token: u64,
+    holder_live: bool,
+    token: u64,
+    requester: Option<&str>,
+) -> bool {
+    may_release(holder_peer, token, requester) && holder_live && holder_token == token
+}
+
 /// Release `token` — shared by the `Release` method (peer-identity-checked: `requester = Some(name)`)
 /// and the authoritative supervisor paths (`requester = None`). True iff it was the holder AND the
 /// requester was allowed (GO-2). Group-SIGKILLs + reaps an owned child, clears narration +
@@ -1048,12 +1064,23 @@ impl Coordinator {
         release_token(&self.inner, self.mirror.as_deref(), token, caller.as_deref()).await
     }
 
-    /// Heartbeat the lease (ADR-0013 B5): extend the holder's TTL. True iff `token` holds. A
-    /// long-running holder (a Wan 14B dream, a long inference) calls this periodically; absent a
-    /// `Renew`, the supervisor auto-expires the lease so a stuck holder can't wedge the lane.
-    async fn renew(&self, token: u64) -> bool {
+    /// Heartbeat the lease (ADR-0013 B5): extend the holder's TTL. True iff `token` holds AND the
+    /// caller identity is allowed to renew it (GO-2). A long-running holder (a Wan 14B dream, a long
+    /// inference) calls this periodically; absent a `Renew`, the supervisor auto-expires the lease so a
+    /// stuck holder can't wedge the lane.
+    async fn renew(&self, #[zbus(header)] hdr: zbus::message::Header<'_>, token: u64) -> bool {
+        // GO-2 (ADR-0021 ratification must-fix #1): renew is identity-bound exactly like release — a
+        // bound cooperative lease may only be renewed by the bus name that acquired it, so one agent
+        // can't extend (or pin) another's TTL via the guessable monotonic token. Shares `may_release`.
+        let caller = hdr.sender().map(|s| s.to_string());
         let mut inner = self.inner.lock().await;
-        if inner.lease.holder_token() == token && inner.lease.holder_tier().is_some() {
+        if may_renew(
+            inner.holder_peer.as_ref(),
+            inner.lease.holder_token(),
+            inner.lease.holder_tier().is_some(),
+            token,
+            caller.as_deref(),
+        ) {
             inner.holder_deadline = Some(Instant::now() + lease_ttl());
             true
         } else {
@@ -1325,6 +1352,21 @@ mod tests {
         // A token that isn't the bound one falls through to the token guard (release() then fails it),
         // so a foreign release reads as "unknown token" — identical failure, no state change.
         assert!(may_release(Some(&bound), 999, Some(":1.99")));
+    }
+
+    #[test]
+    fn go2_renew_is_identity_bound_like_release() {
+        // ADR-0021 GO-2 ratification must-fix #1: renew must be identity-bound exactly like release,
+        // or a peer that guessed the monotonic token could pin/extend another holder's lease and defeat
+        // the B5 stuck-holder backstop. (holder_token=7, holder_live=true unless noted.)
+        let bound = (7u64, ":1.42".to_string()); // token 7 held by bus name :1.42
+        assert!(may_renew(Some(&bound), 7, true, 7, Some(":1.42")), "the acquiring peer renews its own live lease");
+        assert!(!may_renew(Some(&bound), 7, true, 7, Some(":1.99")), "a foreign peer cannot renew it (the hole this fixes)");
+        assert!(!may_renew(Some(&bound), 7, true, 8, Some(":1.42")), "even the right peer can't renew a non-holder token");
+        assert!(!may_renew(Some(&bound), 7, false, 7, Some(":1.42")), "no live holder (tier gone) → nothing to renew");
+        // An unbound (owned Spawn) holder stays token-only, so the busctl-per-call dream client renews
+        // across fresh connections (different bus name each call) — no regression.
+        assert!(may_renew(None, 5, true, 5, Some(":1.99")), "an unbound owned holder stays token-only");
     }
 
     #[test]
