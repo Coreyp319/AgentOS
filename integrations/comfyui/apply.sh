@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
-# Install ComfyUI as a --user service so the dreaming backend is up at boot on 127.0.0.1:8188.
-# Reversible via restore.sh. Does not touch ComfyUI itself — only adds the systemd unit.
+# Install the ComfyUI --user unit, but leave it DISABLED on purpose.
+#
+# ADR-0015 / the lease design (ADR-0006/0010): the agentosd VRAM coordinator OWNS ComfyUI's
+# lifecycle. The dreaming path (lucid_web / create_from_image, via lucid_linear.lease_spawn)
+# asks agentosd to *Spawn* a coordinator-owned ComfyUI under a batch lease, so a preempt can
+# SIGKILL it and reclaim VRAM. An always-on comfyui.service breaks that two ways:
+#   1. it holds :8188, so start-comfyui.sh's port-race guard refuses the coordinator-owned
+#      Spawn (exit 3) and every dream fails OPEN — requests never reach ComfyUI; and
+#   2. it squats VRAM idle, tightening the admission knife-edge.
+# So this unit is installed for MANUAL standalone ComfyUI work only (UI iteration with NO dream
+# running) and is NOT enabled or started. Start it by hand when you want a standalone server.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -16,12 +25,12 @@ fi
 
 mkdir -p "$UNIT_DIR"
 install -m644 "$HERE/$UNIT" "$UNIT_DIR/$UNIT"
-
 systemctl --user daemon-reload
-if systemctl --user enable --now "$UNIT"; then
-  echo "✓ ComfyUI installed + started → http://127.0.0.1:8188 (UI + HTTP API)"
-  echo "  logs: journalctl --user -u $UNIT -f"
-else
-  echo "! could not enable the user service; start it by hand:" >&2
-  echo "    systemctl --user enable --now $UNIT" >&2
-fi
+
+# Self-heal: a prior apply (commit c97a611 enabled+started it) leaves an always-on instance that
+# breaks the coordinator-owned dream spawn. Undo it idempotently — disabled is the correct state.
+systemctl --user disable --now "$UNIT" 2>/dev/null || true
+
+echo "✓ ComfyUI unit installed but DISABLED — the coordinator owns ComfyUI under the lease (ADR-0015)."
+echo "  Dreams spawn ComfyUI on demand; there is nothing to start at boot."
+echo "  For MANUAL standalone ComfyUI (no dream running): systemctl --user start comfyui.service"
