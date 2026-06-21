@@ -7,6 +7,7 @@ injected, so nothing here touches the real system. Run with:
     python3 -m unittest discover -s integrations/status-panel/tests
     # or:  python3 integrations/status-panel/tests/test_status_panel.py
 """
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -170,7 +171,7 @@ class BuildStatus(unittest.TestCase):
         self.assertIn("generated_at", data)
         self.assertEqual(data["groups"], ["AI core", "Desktop QoL"])
         # Data contract: every key the panel.html consumer reads must be present on each row.
-        REQUIRED = {"id", "name", "group", "desc", "url", "scope", "kind", "reach", "status", "state"}
+        REQUIRED = {"id", "name", "group", "desc", "url", "tailnet", "scope", "kind", "reach", "status", "state"}
         for row in data["services"]:
             self.assertTrue(REQUIRED.issubset(row), f"missing keys: {REQUIRED - set(row)}")
         # reachability probed for the daemon with a health URL; the up daemon is reachable.
@@ -191,6 +192,80 @@ class BuildStatus(unittest.TestCase):
         bad = next(s for s in data["services"] if s["id"] == "bad")
         self.assertEqual(bad["state"], "catalog error")
         self.assertNotIn("error", data)
+
+
+class CatalogDriftGuard(unittest.TestCase):
+    """The drift guard the launch-surface council asked for (ADR-0031 gap #3): the launchable
+    catalog (services.json) and the tailnet-served set (agentosd-remote.sh) must AGREE, so a
+    phone/remote renderer never paints a *dead door* — a url-bearing service it can't actually
+    reach. Three real drift points were found and fixed; this test keeps them fixed.
+
+    Invariant: a service with a `url` is a *door*. On a remote (tailnet) origin a door is only
+    live if its port is `tailscale serve`-exposed. So every url-bearing service must EITHER have
+    its port in the served set OR be flagged `tailnet:false` (rendered desktop-only / monitor-only).
+
+    Assumption: agentosd-remote.sh is the *declared* exposure (the single source of intent); this
+    checks the catalog against that declaration, not the live `tailscale serve` runtime state.
+    """
+    REMOTE_SH = Path(__file__).resolve().parent.parent.parent / "agentosd-remote.sh"
+
+    @staticmethod
+    def _served_ports(text: str) -> set:
+        # Parse `PORTS=(8765 9123 …)` from agentosd-remote.sh — the single source of what's exposed.
+        import re
+        m = re.search(r"PORTS=\(([^)]*)\)", text)
+        return set(int(n) for n in re.findall(r"\d+", m.group(1))) if m else set()
+
+    @staticmethod
+    def _port_of(url: str):
+        from urllib.parse import urlsplit
+        try:
+            return urlsplit(url).port
+        except ValueError:
+            return None
+
+    def setUp(self):
+        self.catalog = json.loads(sp.CATALOG_PATH.read_text())
+        self.served = self._served_ports(self.REMOTE_SH.read_text())
+
+    def test_remote_script_is_parseable(self):
+        self.assertTrue(self.served, "could not parse PORTS=(…) from agentosd-remote.sh")
+
+    def test_no_dead_phone_doors(self):
+        # The core invariant. Each failure names the exact service so the fix is obvious.
+        for svc in self.catalog["services"]:
+            url = svc.get("url")
+            if not url:
+                continue  # no url ⇒ not a door (monitor-only); nothing to expose
+            port = self._port_of(url)
+            served = port in self.served
+            tailnet = svc.get("tailnet", True)
+            if tailnet:
+                self.assertTrue(
+                    served,
+                    f"DEAD PHONE DOOR: '{svc['id']}' has url {url} (port {port}) but that port is "
+                    f"not in agentosd-remote.sh PORTS {sorted(self.served)}. Either add the port to "
+                    f"agentosd-remote.sh or set \"tailnet\": false on this service.",
+                )
+            else:
+                # tailnet:false is only meaningful for a genuinely un-served door; if the port IS
+                # served, the flag is stale and would wrongly hide a working remote door.
+                self.assertFalse(
+                    served,
+                    f"STALE tailnet:false — '{svc['id']}' port {port} IS served; drop the flag.",
+                )
+
+    def test_known_three_drift_points_resolved(self):
+        by_id = {s["id"]: s for s in self.catalog["services"]}
+        # (a) Share hub (:8770) — was tailnet-served but absent from the catalog.
+        self.assertIn("share-hub", by_id, "share-hub missing from services.json")
+        self.assertEqual(self._port_of(by_id["share-hub"]["url"]), 8770)
+        # (b) Status panel's own port (:9123) — served, but had no self-entry with a url.
+        self.assertIn("status-panel", by_id, "status-panel self-entry missing")
+        self.assertEqual(self._port_of(by_id["status-panel"]["url"]), 9123)
+        # (c) ComfyUI (:8188) — has a url but is deliberately not served ⇒ must be tailnet:false.
+        self.assertFalse(by_id["comfyui"].get("tailnet", True),
+                         "ComfyUI must be tailnet:false (it has a url but isn't tailnet-served)")
 
 
 if __name__ == "__main__":

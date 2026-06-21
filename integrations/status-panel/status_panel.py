@@ -237,6 +237,10 @@ def build_status(catalog=None, run=_run, reach=_reachable) -> dict:
                 "group": svc.get("group", "Other"),
                 "desc": svc.get("desc", ""),
                 "url": svc.get("url", ""),
+                # tailnet: is this service's url a real door over `tailscale serve`? Default True;
+                # set false in services.json for url-bearing services deliberately not exposed
+                # (ComfyUI :8188) so a remote/phone renderer shows them monitor-only, never a dead door.
+                "tailnet": svc.get("tailnet", True),
                 "scope": svc.get("scope", "user"),
                 "kind": svc.get("kind", "daemon"),
                 "reach": reach_state,
