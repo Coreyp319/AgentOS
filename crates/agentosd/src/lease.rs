@@ -121,6 +121,36 @@ fn lease_ttl() -> Duration {
     Duration::from_secs(s)
 }
 
+/// TTL for an AGENT-class cooperative lease (ADR-0021 ratification must-fix #3) — far shorter than the
+/// 90-min `lease_ttl` dream backstop. An autonomous agent's liveness is less trustworthy than Hermes',
+/// and behind a shared MCP connection B4 cannot see one sub-agent die (the spike, ADR-0021), so a
+/// silent agent that abandoned its token would otherwise wedge the *batch* lane for 90 min (never the
+/// desktop — the GO-1 clamp guarantees that). A ~90s TTL + the MCP server's `Renew` heartbeat reclaims
+/// it within ~one TTL of the session going quiet. The MCP heartbeat DERIVES its cadence from this value
+/// (`mcp::heartbeat_interval` = ttl/4) so the "tick faster than the TTL" coupling holds by construction
+/// — not two env vars in two processes that can silently disagree (review: resource-safety Blocker).
+/// `pub(crate)` for exactly that derivation. Tunable for tests/ops via `AGENTOSD_AGENT_LEASE_TTL_SECS`.
+pub(crate) fn agent_lease_ttl() -> Duration {
+    let s = std::env::var("AGENTOSD_AGENT_LEASE_TTL_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(90);
+    Duration::from_secs(s)
+}
+
+/// The TTL to apply for a holder of the given trust class (ADR-0021 #3). Stored at acquire as
+/// `holder_ttl` so `Renew` re-applies the SAME (short) agent TTL — never silently promoting an agent
+/// lease to the 90-min default on its first heartbeat.
+fn ttl_for(class: CallerClass) -> Duration {
+    match class {
+        CallerClass::Agent => agent_lease_ttl(),
+        CallerClass::Trusted => lease_ttl(),
+    }
+}
+
+/// Backoff hint (ms) surfaced to an agent on a `busy_retry` outcome. There is NO wait-queue (ADR-0001
+/// scope: a loser retries, it holds no place), so this is a courtesy backoff so the agent doesn't
+/// hot-loop — NOT a place-in-line or a release ETA. The C7 `cooling` outcome carries the *precise*
+/// remaining dwell instead (the agent knows exactly when it may re-acquire).
+const AGENT_BUSY_RETRY_HINT_MS: u64 = 2000;
+
 /// Anti-strobe dwell (ADR-0013 C7): a just-preempted tier can't re-acquire for this long, so
 /// bursty interactive load can't drive spawn→preempt→spawn churn (ComfyUI relaunch is costly).
 /// Tunable via `AGENTOSD_PREEMPT_DWELL_SECS`.
@@ -190,8 +220,107 @@ pub enum AcquireResult {
     Denied,
 }
 
-/// The single exclusive lease (ADR-0010 §1). Tokens are monotonic so a stale `Release`
-/// from a preempted holder can't free a successor's lease.
+/// Stable, machine-mappable outcome of an admission attempt (ADR-0021 ratification must-fix #2). The
+/// daemon emits a CODE (never free-text prose) so the MCP act layer maps codes, never strings — the
+/// pre-ratification act-verb branch parsed prose (`outcome.starts_with("denied")`), which the panel
+/// flagged as fragile. The trusted D-Bus verbs still surface the human prose (`AcquireOutcome::msg`)
+/// for `lease_client.py` + logs — only the agent verb (`AcquireAgent`) reads the typed code.
+///
+/// `unavailable` is NOT in this set: the daemon never returns it — it is the MCP layer's fail-CLOSED
+/// posture when the daemon is unreachable/timed-out (ADR-0021 #4), emitted in `mcp.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutcomeCode {
+    /// Lease granted — `token` is non-zero.
+    Granted,
+    /// Held by an equal-or-higher tier → retry (NO wait-queue; the loser holds no place). Carries
+    /// `AGENT_BUSY_RETRY_HINT_MS` as a courtesy backoff.
+    BusyRetry,
+    /// Predict-before-load refused — `short_mib` is the deficit.
+    Denied,
+    /// C7 anti-strobe: a just-preempted tier is in its cooldown → retry after `retry_after_ms` (the
+    /// precise remaining dwell). The MCP layer FOLDS this into the agent-visible `busy_retry`
+    /// (design 0020 surfaces only granted|busy_retry|denied to the agent), retryable — never a bare failure.
+    Cooling,
+    /// The request was malformed (bad tier name, empty/non-executable spawn argv, spawn failure).
+    Error,
+}
+
+impl OutcomeCode {
+    /// The stable wire string the MCP layer matches on (never prose).
+    fn as_str(self) -> &'static str {
+        match self {
+            OutcomeCode::Granted => "granted",
+            OutcomeCode::BusyRetry => "busy_retry",
+            OutcomeCode::Denied => "denied",
+            OutcomeCode::Cooling => "cooling",
+            OutcomeCode::Error => "error",
+        }
+    }
+}
+
+/// The typed verdict `do_acquire` returns. Each D-Bus verb shapes it for its OWN wire contract:
+///   * the trusted verbs (`Acquire`/`Spawn`/`AdoptScope`) → `(granted, token, prose)` — the EXACT
+///     existing shape, so `lease_client.py` + the `busctl` smoke tests are byte-for-byte unaffected;
+///   * the agent verb (`AcquireAgent`) → `(granted, token, code, tier_effective, short_mib,
+///     retry_after_ms)` — typed, numeric, prose-free (ADR-0021 #2).
+#[derive(Debug, Clone)]
+struct AcquireOutcome {
+    code: OutcomeCode,
+    /// 0 unless granted.
+    token: u64,
+    /// The CLAMPED tier the request was evaluated at (GO-1) — `""` only when the tier name was
+    /// unparseable. Surfaced to the agent so the clamp is honest (asked `interactive`, got `batch`).
+    tier_effective: String,
+    /// Human prose for the trusted verbs' wire `msg` + the daemon log. NEVER parsed by the agent path.
+    msg: String,
+    /// Deficit in MiB when `Denied` (else 0).
+    short_mib: u64,
+    /// Backoff hint (ms) when `BusyRetry`/`Cooling` (else 0).
+    retry_after_ms: u64,
+}
+
+impl AcquireOutcome {
+    fn is_granted(&self) -> bool {
+        matches!(self.code, OutcomeCode::Granted)
+    }
+
+    /// Trusted-verb wire shape (UNCHANGED): `(granted, token, prose)`.
+    fn into_trusted_reply(self) -> (bool, u64, String) {
+        (self.is_granted(), self.token, self.msg)
+    }
+
+    /// Agent-verb wire shape: `(granted, token, code, tier_effective, short_mib, retry_after_ms)`.
+    /// `short_mib`/`retry_after_ms` saturate into `u32` for the D-Bus `u` fields.
+    fn into_agent_reply(self) -> (bool, u64, String, String, u32, u32) {
+        (
+            self.is_granted(),
+            self.token,
+            self.code.as_str().to_string(),
+            self.tier_effective,
+            self.short_mib.min(u32::MAX as u64) as u32,
+            self.retry_after_ms.min(u32::MAX as u64) as u32,
+        )
+    }
+}
+
+/// How a fresh lease install mints its holder token (ADR-0021 ratification must-fix #5). The random
+/// value is generated in the impure shell (`do_acquire`), keeping `LeaseState` pure + deterministically
+/// testable — the pure core just installs whatever token it is handed.
+#[derive(Debug, Clone, Copy)]
+enum TokenKind {
+    /// Monotonic sequential — the trusted Hermes/human/CLI path (and every existing caller). Keeps the
+    /// stale-release guard's simple invariant and the predictable token values the `busctl` smoke tests
+    /// and pure unit tests assert.
+    Sequential,
+    /// A caller-supplied unguessable random token — the agent act path, so a sibling behind a shared
+    /// MCP connection can't ENUMERATE a live token. Defence-in-depth ONLY: authorization rests on
+    /// `holder_peer` identity binding (+ the MCP layer-2 session table), never on the token being secret.
+    Random(u64),
+}
+
+/// The single exclusive lease (ADR-0010 §1). Trusted tokens are monotonic so a stale `Release`
+/// from a preempted holder can't free a successor's lease; agent tokens are random (#5) — both
+/// guarantee a fresh holder's token differs from the evicted one.
 #[derive(Debug)]
 pub struct LeaseState {
     holder: Option<Held>,
@@ -209,20 +338,27 @@ impl LeaseState {
     /// must always yield — and the new holder is installed with its own `est`; the caller
     /// re-checks fit against post-eviction free VRAM (H1) and acts on the verdict.
     pub fn acquire(&mut self, tier: Tier, admission: &Admission) -> AcquireResult {
+        self.acquire_with(tier, admission, TokenKind::Sequential)
+    }
+
+    /// `acquire`, choosing how the granted token is minted (ADR-0021 #5). The trusted path uses
+    /// `Sequential`; the agent path passes `Random(_)` so a shared-connection sibling can't enumerate
+    /// a live token. Same arbitration + admission core regardless — only the token VALUE differs.
+    fn acquire_with(&mut self, tier: Tier, admission: &Admission, tk: TokenKind) -> AcquireResult {
         let est = admission.est_mib();
         match arbitrate(self.holder.map(|h| Holder { tier: h.tier }), tier) {
             LeaseDecision::Queue => AcquireResult::Queued,
             LeaseDecision::Preempt => {
                 // arbitrate returns Preempt only when a holder exists.
                 let Some(victim) = self.holder else { return AcquireResult::Queued };
-                let token = self.install(tier, est);
+                let token = self.install(tier, est, tk);
                 AcquireResult::Preempted { token, victim: victim.token }
             }
             LeaseDecision::Grant => {
                 if !admission.granted() {
                     return AcquireResult::Denied;
                 }
-                let token = self.install(tier, est);
+                let token = self.install(tier, est, tk);
                 AcquireResult::Granted { token }
             }
         }
@@ -251,10 +387,19 @@ impl LeaseState {
         self.holder.map(|h| h.est_mib)
     }
 
-    /// Issue a fresh token and install `tier` (admitted for `est_mib`) as the sole holder.
-    fn install(&mut self, tier: Tier, est_mib: u64) -> u64 {
-        let token = self.next_token;
-        self.next_token += 1;
+    /// Install `tier` (admitted for `est_mib`) as the sole holder with a fresh token minted per `tk`
+    /// (ADR-0021 #5): monotonic sequential for trusted callers, or the supplied unguessable random
+    /// value for the agent path. (A random token never advances `next_token`; a later sequential token
+    /// colliding with a live random one is ~1/2^64 and harmless — the holder is overwritten atomically.)
+    fn install(&mut self, tier: Tier, est_mib: u64, tk: TokenKind) -> u64 {
+        let token = match tk {
+            TokenKind::Sequential => {
+                let t = self.next_token;
+                self.next_token += 1;
+                t
+            }
+            TokenKind::Random(t) => t,
+        };
         self.holder = Some(Held { tier, token, est_mib });
         token
     }
@@ -318,6 +463,10 @@ struct Inner {
     holder_peer: Option<(u64, String)>,
     /// When the current holder's lease expires absent a `Renew` (ADR-0013 B5). `None` = no holder.
     holder_deadline: Option<Instant>,
+    /// The TTL the current holder was admitted with (ADR-0021 #3) — stored so `Renew` re-applies the
+    /// SAME (per-class) interval rather than silently promoting an agent's short lease to the 90-min
+    /// default on its first heartbeat. `None` = no holder (falls back to `lease_ttl`).
+    holder_ttl: Option<Duration>,
     /// A just-preempted tier and when its anti-strobe cooldown ends (ADR-0013 C7).
     cooldown: Option<(Tier, Instant)>,
     /// When the last ADR-0018 §2 graceful warm-pool reclaim was *attempted* (marked at attempt
@@ -334,6 +483,7 @@ impl Inner {
             last_preempt: String::new(),
             holder_peer: None,
             holder_deadline: None,
+            holder_ttl: None,
             cooldown: None,
             last_warm_reclaim: None,
         }
@@ -484,6 +634,18 @@ fn may_renew(
     may_release(holder_peer, token, requester) && holder_live && holder_token == token
 }
 
+/// An unguessable lease token for the agent act path (ADR-0021 ratification must-fix #5). Stdlib-only
+/// entropy — no new dependency: a fresh `RandomState`'s SipHash keys are OS-seeded, so a fresh hasher's
+/// initial state is a hard-to-predict `u64`. This is a NON-cryptographic obfuscation that raises the
+/// cost of a shared-connection sibling ENUMERATING a live token; it is defence-in-depth, not the
+/// authorization boundary (that is `holder_peer` identity binding + the MCP layer-2 session table —
+/// release/renew never trust the token's secrecy alone). `.max(1)` keeps it non-zero (0 is the
+/// "no holder" / "not granted" sentinel in `holder_token`/the wire contract), remapping only the lone 0.
+fn random_agent_token() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new().build_hasher().finish().max(1)
+}
+
 /// Release `token` — shared by the `Release` method (peer-identity-checked: `requester = Some(name)`)
 /// and the authoritative supervisor paths (`requester = None`). True iff it was the holder AND the
 /// requester was allowed (GO-2). Group-SIGKILLs + reaps an owned child, clears narration +
@@ -513,6 +675,7 @@ async fn release_token(
                 g.holder_peer = None;
             }
             g.holder_deadline = None; // B5: no holder → no deadline
+            g.holder_ttl = None; // ADR-0021 #3: no holder → no remembered TTL
             if g.lease.holder_tier().is_none() {
                 g.last_preempt.clear();
             }
@@ -554,9 +717,11 @@ struct Coordinator {
 }
 
 impl Coordinator {
-    /// Shared path for `Acquire` (cooperative), `Spawn` (owned child) and `AdoptScope` (owned flatpak
-    /// lane scope). The lock is held across the decision AND the spawn/evict so the lease and the holder
-    /// it controls never disagree. The destructive reclaim itself runs OFF the lock (review C5).
+    /// Shared path for `Acquire`/`AcquireAgent` (cooperative), `Spawn` (owned child) and `AdoptScope`
+    /// (owned flatpak lane scope). The lock is held across the decision AND the spawn/evict so the lease
+    /// and the holder it controls never disagree. The destructive reclaim itself runs OFF the lock
+    /// (review C5). Returns a TYPED `AcquireOutcome` (ADR-0021 #2): the trusted verbs shape it back to
+    /// their `(granted, token, prose)` wire, the agent verb to the typed `code`/numeric channel.
     async fn do_acquire(
         &self,
         caller: Option<String>,
@@ -564,12 +729,21 @@ impl Coordinator {
         tier_name: String,
         estimate_mib: u32,
         kind: AcquireKind,
-    ) -> (bool, u64, String) {
+    ) -> AcquireOutcome {
         use std::fmt::Write as _;
 
         let requested = match Tier::from_arg(&tier_name) {
             Ok(t) => t,
-            Err(e) => return (false, 0, format!("error: {e}")),
+            Err(e) => {
+                return AcquireOutcome {
+                    code: OutcomeCode::Error,
+                    token: 0,
+                    tier_effective: String::new(), // unparseable — no effective tier to report
+                    msg: format!("error: {e}"),
+                    short_mib: 0,
+                    retry_after_ms: 0,
+                }
+            }
         };
         // ADR-0021 GO-1: clamp the requested tier to the caller class HERE, in core, before any
         // admission or arbitration — an agent can never hold a tier that preempts the desktop, on
@@ -580,14 +754,46 @@ impl Coordinator {
         let est = estimate_mib as u64;
         let headroom = headroom_for(est);
 
+        // GO-2 (review: security Low) — an Agent lease's ENTIRE release/renew authority rests on
+        // `holder_peer` being bound to the acquiring connection. On a real session bus `hdr.sender()` is
+        // always present (the bus stamps the unique name), but if it were ever absent the lease would
+        // install UNBOUND and `may_release` would fall through to the token-only path — any local peer
+        // could then release it. The trusted `Spawn`/`busctl`-per-call path is fine unbound (its liveness
+        // is the child's), but an agent MUST be identity-bound — so refuse the grant rather than install
+        // an unbindable agent lease. Fail CLOSED.
+        if matches!(class, CallerClass::Agent) && caller.is_none() {
+            return AcquireOutcome {
+                code: OutcomeCode::Error,
+                token: 0,
+                tier_effective: tier.as_str().to_string(),
+                msg: "error: agent lease cannot be identity-bound (no D-Bus sender) — refused".into(),
+                short_mib: 0,
+                retry_after_ms: 0,
+            };
+        }
+
         // H3: pre-flight the binary BEFORE we lock/evict, so a bad argv can't destroy an
         // incumbent. (PATH-relative names pass through; resolved at spawn time.)
         if let AcquireKind::Spawn(args) = &kind {
             if args.is_empty() {
-                return (false, 0, "spawn: empty argv".into());
+                return AcquireOutcome {
+                    code: OutcomeCode::Error,
+                    token: 0,
+                    tier_effective: tier.as_str().to_string(),
+                    msg: "spawn: empty argv".into(),
+                    short_mib: 0,
+                    retry_after_ms: 0,
+                };
             }
             if !looks_executable(&args[0]) {
-                return (false, 0, format!("spawn: `{}` is not an executable file", args[0]));
+                return AcquireOutcome {
+                    code: OutcomeCode::Error,
+                    token: 0,
+                    tier_effective: tier.as_str().to_string(),
+                    msg: format!("spawn: `{}` is not an executable file", args[0]),
+                    short_mib: 0,
+                    retry_after_ms: 0,
+                };
             }
         }
 
@@ -656,15 +862,25 @@ impl Coordinator {
         let prev_tier = inner.lease.holder_tier();
 
         // C7: a just-preempted tier must wait out its dwell before re-acquiring (anti-strobe).
-        if cooling_down(inner.cooldown, tier, Instant::now()) {
-            return (
-                false,
-                0,
-                format!(
+        let now = Instant::now();
+        if cooling_down(inner.cooldown, tier, now) {
+            // The agent gets the PRECISE remaining dwell as `retry_after_ms` (it knows exactly when it
+            // may re-acquire); the MCP layer folds `cooling` into the agent-visible `busy_retry` (#2).
+            let retry_after_ms = inner
+                .cooldown
+                .map(|(_, until)| until.saturating_duration_since(now).as_millis() as u64)
+                .unwrap_or(0);
+            return AcquireOutcome {
+                code: OutcomeCode::Cooling,
+                token: 0,
+                tier_effective: tier.as_str().to_string(),
+                msg: format!(
                     "cooling down: {} was preempted recently — retry shortly (anti-strobe, ADR-0013 C7)",
                     tier.as_str()
                 ),
-            );
+                short_mib: 0,
+                retry_after_ms,
+            };
         }
 
         // Fresh-grant admissibility, with fail-open per tier (ADR-0003): on an unreadable
@@ -685,35 +901,65 @@ impl Coordinator {
             }
         };
 
+        // ADR-0021 #5: an Agent-class grant gets an unguessable RANDOM token (a shared-connection
+        // sibling can't enumerate it); trusted callers keep the monotonic sequential token (the public
+        // `acquire`) the busctl smoke tests + dream client expect. The clamp/admit/arbitrate core is
+        // identical regardless — only the minted token value differs.
+        let result = match class {
+            CallerClass::Agent => {
+                inner.lease.acquire_with(tier, &admission, TokenKind::Random(random_agent_token()))
+            }
+            CallerClass::Trusted => inner.lease.acquire(tier, &admission),
+        };
+
         // preempted = Some((victim_token, fit_verdict)); fit verdict completes the decision (H1).
-        let (token, preempted) = match inner.lease.acquire(tier, &admission) {
+        let (token, preempted) = match result {
             AcquireResult::Queued => {
-                return (
-                    false,
-                    0,
-                    format!(
+                // NO wait-queue (ADR-0001): the loser retries, it holds no place → `busy_retry`, never
+                // the word "queued" on the agent path (ADR-0021 #2 / GO-2 outcome words). The trusted
+                // verbs still get the descriptive prose below for the keyhole/log.
+                return AcquireOutcome {
+                    code: OutcomeCode::BusyRetry,
+                    token: 0,
+                    tier_effective: tier.as_str().to_string(),
+                    msg: format!(
                         "queued: lease held by {} (token {})",
                         inner.lease.holder_tier().map_or("?", Tier::as_str),
                         inner.lease.holder_token()
                     ),
-                );
+                    short_mib: 0,
+                    retry_after_ms: AGENT_BUSY_RETRY_HINT_MS,
+                };
             }
             AcquireResult::Denied => {
-                let msg = match free_opt {
-                    None => format!(
-                        "declined: VRAM unreadable — {} batch fails closed (won't start blind); \
-                         interactive would fail open",
-                        tier.as_str()
+                let (msg, short_mib) = match free_opt {
+                    None => (
+                        format!(
+                            "declined: VRAM unreadable — {} batch fails closed (won't start blind); \
+                             interactive would fail open",
+                            tier.as_str()
+                        ),
+                        0,
                     ),
                     Some(free) => {
                         let short = match admit(free, est, headroom) {
                             Admission::Deny { short_mib, .. } => short_mib,
                             _ => 0,
                         };
-                        format!("denied: short {short}M (free {free}M vs est {est}M + headroom {headroom}M)")
+                        (
+                            format!("denied: short {short}M (free {free}M vs est {est}M + headroom {headroom}M)"),
+                            short,
+                        )
                     }
                 };
-                return (false, 0, msg);
+                return AcquireOutcome {
+                    code: OutcomeCode::Denied,
+                    token: 0,
+                    tier_effective: tier.as_str().to_string(),
+                    msg,
+                    short_mib,
+                    retry_after_ms: 0,
+                };
             }
             AcquireResult::Granted { token } => (token, None),
             AcquireResult::Preempted { token, victim } => {
@@ -792,7 +1038,14 @@ impl Coordinator {
                     }
                     // Lease rolled back → publish "no contention" (off-lock; inner is dropped).
                     write_lease_mirror(self.mirror.as_deref(), &Lease::default());
-                    return (false, 0, format!("spawn failed: {e}"));
+                    return AcquireOutcome {
+                        code: OutcomeCode::Error,
+                        token: 0,
+                        tier_effective: tier.as_str().to_string(),
+                        msg: format!("spawn failed: {e}"),
+                        short_mib: 0,
+                        retry_after_ms: 0,
+                    };
                 }
             },
             AcquireKind::AdoptScope { handle, dir, lane_pid } => {
@@ -809,7 +1062,12 @@ impl Coordinator {
         // may disconnect between Spawn and Release. The supervisor SKIPS the B4 disconnect-release for any
         // owned holder (Spawn or Scope), so a fire-and-forget launcher exiting can't drop a live lane.
         inner.holder_peer = if bind_peer { caller.map(|c| (token, c)) } else { None };
-        inner.holder_deadline = Some(Instant::now() + lease_ttl()); // B5: start the TTL clock
+        // B5 TTL clock — per trust class (ADR-0021 #3): an Agent lease gets the short ~90s backstop
+        // (+ the MCP server heartbeat), a Trusted lease the 90-min dream default. Stored so `Renew`
+        // re-applies the SAME interval (never promotes an agent lease to the long default).
+        let ttl = ttl_for(class);
+        inner.holder_ttl = Some(ttl);
+        inner.holder_deadline = Some(Instant::now() + ttl);
 
         let mirror_snap = lease_snapshot(&inner);
         drop(inner);
@@ -878,7 +1136,24 @@ impl Coordinator {
                  successor must offload/shrink (ADR-0004)"
             );
         }
-        (true, token, msg)
+        // Audit (ADR-0021 ratification — responsible-AI lens): an autonomous agent just took a real
+        // action on the GPU. Record the OPERATION only — tier, est, token — never the agent's task or
+        // prompt (ops-only; no behavioural capture). Trusted callers are not audited here (Hermes/human).
+        if matches!(class, CallerClass::Agent) {
+            println!(
+                "coordd: AGENT acquired {} token {token} (est {est}M, ttl {}s) — audit",
+                tier.as_str(),
+                ttl.as_secs()
+            );
+        }
+        AcquireOutcome {
+            code: OutcomeCode::Granted,
+            token,
+            tier_effective: tier.as_str().to_string(),
+            msg,
+            short_mib: 0,
+            retry_after_ms: 0,
+        }
     }
 
     /// Reap an evicted/released child, then prove reclaim. The SIGKILL (to the group) has
@@ -977,8 +1252,35 @@ impl Coordinator {
     ) -> (bool, u64, String) {
         let caller = hdr.sender().map(|s| s.to_string());
         // The session-bus D-Bus verbs are the trusted Hermes/human/CLI path (ADR-0021): tier passes
-        // through. The future agent-facing `act` verbs are the first `CallerClass::Agent` callers.
-        self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, AcquireKind::Cooperative).await
+        // through. `AcquireAgent` (below) is the first `CallerClass::Agent` caller.
+        self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, AcquireKind::Cooperative)
+            .await
+            .into_trusted_reply()
+    }
+
+    /// Agent-class cooperative lease — the ADR-0020 `act` surface, reached via `agentosd mcp`'s
+    /// `gpu_request` (ADR-0021 GO-1 + GO-2, both met; ratification must-fixes folded in). Identical to
+    /// `Acquire` EXCEPT:
+    ///   * the class is `Agent` **by virtue of this distinct verb**, not a spoofable parameter — so the
+    ///     GO-1 clamp (tier → {BestEffort, Batch}, never `Interactive`) fires in `do_acquire`'s core
+    ///     before `arbitrate`, and an autonomous agent can NEVER preempt the desktop or a live human;
+    ///   * cooperative only (`AcquireKind::Cooperative`) — an agent never gets owned `Spawn`/`AdoptScope`
+    ///     (no caller binary, no cross-principal kill primitive);
+    ///   * the reply is the TYPED channel `(granted, token, code, tier_effective, short_mib,
+    ///     retry_after_ms)` (#2), the token is RANDOM (#5), and the lease gets the short agent TTL (#3).
+    /// `holder_peer` binds the token to the caller's connection, so only that connection may `Release`
+    /// it (GO-2 layer 1); the MCP server adds per-session isolation (layer 2). `code` ∈
+    /// granted|busy_retry|denied|cooling|error.
+    async fn acquire_agent(
+        &self,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        tier: String,
+        estimate_mib: u32,
+    ) -> (bool, u64, String, String, u32, u32) {
+        let caller = hdr.sender().map(|s| s.to_string());
+        self.do_acquire(caller, CallerClass::Agent, tier, estimate_mib, AcquireKind::Cooperative)
+            .await
+            .into_agent_reply()
     }
 
     /// Owned lease via a daemon-owned launch *profile* (ADR-0013 A2 — no caller-supplied
@@ -998,7 +1300,9 @@ impl Coordinator {
         };
         argv.extend(params);
         let caller = hdr.sender().map(|s| s.to_string());
-        self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, AcquireKind::Spawn(argv)).await
+        self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, AcquireKind::Spawn(argv))
+            .await
+            .into_trusted_reply()
     }
 
     /// Adopt an externally-launched flatpak Blender **lane** (ADR-0022 Phase 1): register its systemd
@@ -1048,6 +1352,7 @@ impl Coordinator {
             AcquireKind::AdoptScope { handle, dir, lane_pid },
         )
         .await
+        .into_trusted_reply()
     }
 
     /// Release the lease (true iff `token` is the current holder's). If that holder is an
@@ -1081,7 +1386,16 @@ impl Coordinator {
             token,
             caller.as_deref(),
         ) {
-            inner.holder_deadline = Some(Instant::now() + lease_ttl());
+            // Re-apply the holder's OWN (per-class) TTL — never silently promote a short agent lease
+            // to the 90-min dream default on its first heartbeat (ADR-0021 #3). The invariant `holder
+            // exists ⟺ holder_ttl is Some` holds by construction (`do_acquire` sets it; the release
+            // paths clear it), so the fallback is unreachable for a live holder — pinned by debug_assert.
+            // We keep `lease_ttl` (not the shorter agent TTL) for the fallback so a hypothetical
+            // None-but-live holder defaults to the SAFE-for-trusted long TTL rather than wrongly expiring
+            // a legitimate dream; the assert ensures we'd catch the impossible case in tests (review nit).
+            debug_assert!(inner.holder_ttl.is_some(), "live holder must have a recorded TTL (do_acquire sets it)");
+            let ttl = inner.holder_ttl.unwrap_or_else(lease_ttl);
+            inner.holder_deadline = Some(Instant::now() + ttl);
             true
         } else {
             false
@@ -1142,6 +1456,11 @@ async fn supervise(inner: Arc<Mutex<Inner>>, mirror: Option<PathBuf>, conn: zbus
                 if g.holder_peer.as_ref().is_some_and(|(t, _)| t == token) {
                     g.holder_peer = None;
                 }
+                // Clear the TTL state alongside the release, symmetric with `release_token` (review nit):
+                // a freed lease carries no deadline/TTL. Inert today (B5 only fires when a holder token is
+                // live) but keeps the two release paths consistent.
+                g.holder_deadline = None;
+                g.holder_ttl = None;
                 if g.lease.holder_tier().is_none() {
                     g.last_preempt.clear();
                 }
@@ -1225,6 +1544,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     println!("  spawn (owned) : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} Spawn susas batch 2000 sleep 1 600");
     println!("  eevee (owned) : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} Spawn susas batch {EEVEE_RENDER_EST_MIB} eevee-render 2 --out /run/user/$UID/agentos/blender  (ADR-0023; light lane)");
     println!("  acquire (coop): busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} Acquire su interactive 5000");
+    println!("  acquire (agent): busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} AcquireAgent su interactive 3000  (ADR-0020/0021 act — clamps to batch; → btssuu)");
     println!("  adopt (lane)  : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} AdoptScope suu batch 3000 <lane_pid>  (ADR-0022)");
     println!("  status        : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} Status");
     println!("  release       : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} Release t <token>");
@@ -1495,6 +1815,112 @@ mod tests {
             admit(free, eevee_est, headroom_for(eevee_est)).granted(),
             "the conservative EEVEE estimate must be admittable against the same headroom"
         );
+    }
+
+    #[test]
+    fn acquire_outcome_typed_channels_pin_both_wire_shapes() {
+        // ADR-0021 #2: the TRUSTED verbs keep their (granted, token, prose) wire — byte-for-byte, so
+        // lease_client.py is unaffected — while AcquireAgent surfaces a TYPED, prose-free channel.
+        let granted = AcquireOutcome {
+            code: OutcomeCode::Granted,
+            token: 5,
+            tier_effective: "batch".into(),
+            msg: "granted batch token 5 (free 9000M)".into(),
+            short_mib: 0,
+            retry_after_ms: 0,
+        };
+        assert_eq!(
+            granted.clone().into_trusted_reply(),
+            (true, 5, "granted batch token 5 (free 9000M)".to_string())
+        );
+        assert_eq!(
+            granted.into_agent_reply(),
+            (true, 5, "granted".to_string(), "batch".to_string(), 0, 0)
+        );
+
+        // A denial carries the numeric deficit, never a prose string the agent must parse.
+        let denied = AcquireOutcome {
+            code: OutcomeCode::Denied,
+            token: 0,
+            tier_effective: "batch".into(),
+            msg: "denied: short 2000M (...)".into(),
+            short_mib: 2000,
+            retry_after_ms: 0,
+        };
+        assert_eq!(denied.into_agent_reply(), (false, 0, "denied".to_string(), "batch".to_string(), 2000, 0));
+
+        // C7 cooldown is a DISTINCT daemon code carrying the precise remaining dwell as retry_after_ms;
+        // the MCP layer folds it to the agent-visible `busy_retry` (never a bare failure).
+        let cooling = AcquireOutcome {
+            code: OutcomeCode::Cooling,
+            token: 0,
+            tier_effective: "batch".into(),
+            msg: "cooling down: ...".into(),
+            short_mib: 0,
+            retry_after_ms: 5000,
+        };
+        assert_eq!(cooling.into_agent_reply(), (false, 0, "cooling".to_string(), "batch".to_string(), 0, 5000));
+
+        // The forbidden word "queued" is never an outcome CODE — a held lease is `busy_retry` (the prose
+        // may still say "queued" for the trusted log, but the agent only ever sees the code).
+        assert_eq!(OutcomeCode::BusyRetry.as_str(), "busy_retry");
+        assert_ne!(OutcomeCode::BusyRetry.as_str(), "queued");
+    }
+
+    #[test]
+    fn ttl_for_agent_is_far_shorter_than_the_trusted_default() {
+        // ADR-0021 #3: an Agent cooperative lease gets a ~90s TTL (+ the MCP server's Renew heartbeat),
+        // NOT the 90-min dream default — so an abandoned agent lease behind a shared MCP connection
+        // (where B4 can't see one sub-agent die) can't wedge the batch lane. (Defaults; both env-tunable;
+        // this assumes the AGENTOSD_*_TTL_SECS overrides are unset, as in CI/local.)
+        assert!(ttl_for(CallerClass::Agent) < ttl_for(CallerClass::Trusted));
+        assert!(ttl_for(CallerClass::Agent) <= Duration::from_secs(120));
+        assert_eq!(ttl_for(CallerClass::Trusted), lease_ttl());
+        assert_eq!(ttl_for(CallerClass::Agent), agent_lease_ttl());
+    }
+
+    #[test]
+    fn agent_tokens_are_random_and_nonzero_not_sequential() {
+        // ADR-0021 #5: agent act tokens are unguessable random (defence-in-depth behind layer-2
+        // identity) — a shared-connection sibling can't enumerate a live one. Trusted callers keep the
+        // predictable monotonic token. Non-zero (0 == no-holder sentinel) + actually varying.
+        let toks: Vec<u64> = (0..8).map(|_| random_agent_token()).collect();
+        assert!(toks.iter().all(|&t| t != 0), "agent tokens must be non-zero (0 = not-granted sentinel)");
+        assert!(
+            toks.iter().collect::<std::collections::HashSet<_>>().len() > 1,
+            "random tokens must vary, not be a constant"
+        );
+        // The pure core installs whatever token kind it is handed: Sequential mints monotonic (so the
+        // existing token-value tests + smoke tests hold), Random uses the supplied value verbatim.
+        let mut seq = LeaseState::new();
+        assert_eq!(seq.acquire(Tier::Batch, &fits()), AcquireResult::Granted { token: 1 });
+        let mut rnd = LeaseState::new();
+        assert_eq!(
+            rnd.acquire_with(Tier::Batch, &fits(), TokenKind::Random(0xDEAD_BEEF)),
+            AcquireResult::Granted { token: 0xDEAD_BEEF }
+        );
+        // A stale release of the evicted token still fails after a random-token preempt (the guard is
+        // token-equality, not monotonicity — so random is safe).
+        rnd.acquire_with(Tier::Interactive, &fits(), TokenKind::Random(0x1234));
+        assert!(!rnd.release(0xDEAD_BEEF), "evicted random token can't free its successor");
+        assert!(rnd.release(0x1234));
+    }
+
+    #[test]
+    fn go2_holder_peer_never_leaks_into_the_keyhole_mirror() {
+        // ADR-0021 #7: the bound peer name is release/renew-authz state ONLY — it must never reach the
+        // keyhole's lease mirror (or any wire/log except the B4 disconnect line). Freeze it: a holder
+        // with a bound peer snapshots a Lease carrying tier/holder/preempt but NOT the peer's bus name.
+        // (The producer-side twin of mcp.rs's consumer-side holder-identity no-leak pin.)
+        let mut inner = Inner::new();
+        inner.lease.acquire(Tier::Batch, &fits());
+        let token = inner.lease.holder_token();
+        inner.holder_peer = Some((token, ":1.4242-secret-peer".to_string()));
+        let snap = lease_snapshot(&inner);
+        let blob = serde_json::to_string(&snap).unwrap();
+        assert!(!blob.contains(":1.4242-secret-peer"), "holder_peer must never appear in the mirror");
+        assert!(!blob.contains("4242"), "no fragment of the bound peer name leaks");
+        assert_eq!(snap.tier, "batch"); // the tier IS published (legible + non-identifying) — that's fine
     }
 
     #[test]

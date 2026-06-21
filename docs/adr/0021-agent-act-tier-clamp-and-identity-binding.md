@@ -1,14 +1,19 @@
 # ADR-0021: Agent act-phase GO conditions — tier clamp in core + identity-bound tokens
 
-- Status: **Proposed — design ratified-with-changes (2026-06-21 reviewer panel).** GO-1 (tier clamp in
-  core) is **merged** (`fbcc6a8`) + pinned by test. GO-2's **connection-grain** mechanism is **merged**
-  (`8c36c26`), but the session-identity invariant it rested on — "one `agentosd mcp` process = one
-  agent = one bus name" — is **REFUTED for the installed Hermes path** (Hermes runs one shared
-  `agentosd mcp` connection and fans sub-agents out as in-process threads, so they collapse to one bus
-  name and GO-2's binding cannot isolate them; verified against `~/.hermes`). GO-2 is therefore
-  **reframed** (a three-layer identity model, §Ratification pass) and **NOT closed**: act-verb
-  implementation is gated on a session-granularity spike + the must-fix list below. Model proposes,
-  code disposes; the human disposes on this.
+- Status: **Accepted — act verbs BUILT (Claude-Code-stdio-scoped), 2026-06-21.** GO-1 (tier clamp in
+  core) merged (`fbcc6a8`) + pinned. GO-2's connection-grain mechanism merged (`8c36c26`); its
+  session-identity invariant was REFUTED for the installed Hermes path (shared connection +
+  thread-fan-out) and **reframed** into the three-layer model (§Ratification pass). The **act verbs**
+  (`AcquireAgent` + the MCP `gpu_request`/`gpu_release`) and **all ten ratification must-fixes are now
+  implemented** (see §Ratification → must-fix list; each marked DONE), scoped to the **Claude-Code stdio
+  transport** (subprocess-per-session → distinct bus name → layer-1 `holder_peer` suffices). The
+  **Hermes act path stays GATED** on an upstream Hermes change (per-child MCP connection / trusted
+  per-child principal) — the spike showed both isolation layers are blind to its shared-connection
+  thread-children. Built + verified: 162 `agentosd` tests, clippy clean both ways, live isolated-bus
+  smoke (clamp/floor/random-token/denied/fail-closed/audit/typed-reply), and a 5-lens adversarial review
+  (determinism-safety, resource-safety, security, responsible-AI/privacy, rust-performance — wayland
+  swapped out, no surface) whose findings (one Blocker: heartbeat↔TTL coupling; several Lows) were all
+  fixed. Model proposes, code disposes; the human disposes on the Hermes-upstream decision.
 - Date: 2026-06-16
 - Deciders: pending human + determinism-safety-reviewer + resource-safety-reviewer +
   wayland-computeruse-reviewer
@@ -171,6 +176,43 @@ deferred) and a net-new identity collection (privacy) — they earn a separate A
 privacy review. Also clamp the agent **floor**: agent class ∈ {`BestEffort`, `Batch`} only — *not*
 `Yielding` (reserved for the owned UE-wallpaper profile).
 
+### Implementation status (2026-06-21 build — Claude-Code-scoped; all ten DONE)
+
+The act verbs are built on `feat/adr-0023-creative-environment-pipeline`. `AcquireAgent` is a distinct
+D-Bus verb (class-by-verb, not a spoofable param) → `do_acquire(CallerClass::Agent, Cooperative)`; the
+MCP server (`mcp.rs`) gained its first session-bus connection and the `gpu_request`/`gpu_release` tools.
+Per-item resolution of the must-fix list below:
+
+1. **`Renew` identity-bound** — DONE earlier (`b8f0cd1`, `may_renew`); unchanged.
+2. **Typed outcome channel** — DONE. `OutcomeCode {Granted,BusyRetry,Denied,Cooling,Error}` + `AcquireOutcome`
+   (`lease.rs`); trusted verbs keep `(bool,u64,prose)` via `into_trusted_reply` (no `lease_client.py`
+   change); `AcquireAgent` returns the typed `(granted,token,code,tier_effective,short_mib,retry_after_ms)`
+   via `into_agent_reply`. `mcp.rs::request_json` maps the CODE, never prose; `cooling` folds to the
+   agent-visible `busy_retry`; the word "queued" is never an outcome code.
+3. **Per-class agent TTL (~90s) + heartbeat** — DONE. `agent_lease_ttl()` (default 90s) + `ttl_for(class)`
+   stored as `holder_ttl`, re-applied by `Renew`. The MCP server runs a `Renew` heartbeat whose cadence is
+   DERIVED from `agent_lease_ttl` (`= TTL/4`, override clamped to `[5s,TTL/3]`) so the "tick faster than the
+   TTL" coupling holds **by construction** across the two processes (the review-panel Blocker fix).
+4. **Act fails CLOSED** — DONE. Every MCP→D-Bus call is `tokio::time::timeout`-bounded (3s); a down/timed-out
+   coordinator, a bus error, or an internally-inconsistent reply all map to `{status:"unavailable"}`, never a
+   grant. Verified live (no daemon → `unavailable`).
+5. **Unguessable act tokens** — DONE. `random_agent_token()` (stdlib `RandomState`, non-crypto
+   defence-in-depth — authz rests on `holder_peer`/layer-2, NOT token secrecy) for agent leases; trusted
+   leases keep the monotonic sequential token. `TokenKind` keeps `LeaseState` pure.
+6. **Server-grain session-isolation test** — DONE. `mcp.rs::SessionTable` (per-session token ownership,
+   layer 2) refuses a cross-session `gpu_release` before the D-Bus `Release` fires; pinned by
+   `session_table_refuses_cross_session_release`.
+7. **`holder_peer` no-leak (producer side)** — DONE. Pinned by `go2_holder_peer_never_leaks_into_the_keyhole_mirror`.
+8. **Cooperative-agent VRAM not reclaimable** — STATED in code + surfaced to the agent in the granted `note`
+   (preempt + can't-reclaim → release/offload promptly), not just buried in prose.
+9. **A1 re-frame** — recorded in the docs (design 0020 §). The `Trusted` verbs' same-uid DoS path is bounded
+   by ADR-0013 A1 (deferred closer); `AcquireAgent` is strictly more restrictive.
+10. **Future `gpu_why` correlation id** — recorded as a constraint (out of scope): narrate only the calling
+    agent's own contentions, never name another holder.
+
+Agent **floor** (Open-Q2) is also built: `clamp_agent` → `{BestEffort, Batch}` (`Yielding` raised, not held).
+A security-Low fix refuses an agent acquire that cannot be identity-bound (absent D-Bus sender → fail closed).
+
 ### Must-fix before the act verbs are implemented (ratified)
 
 1. **Identity-bind `Renew`.** `renew` (`lease.rs:1054`) checks only the (sequential, guessable) token —
@@ -227,6 +269,12 @@ wayland-computeruse-reviewer + a small spike before GO-2 closes.
 **Reversibility.** Both changes are additive to the core (a clamp transform; a peer-binding check
 already present for owned jobs, extended to acquired tokens). Removing the act verbs is deleting the
 MCP config line; the clamp and binding are inert without an agent caller. No state migration.
+
+**Audit (responsible-AI lens).** An agent acquire emits ONE ops-only daemon log line — tier, token, est,
+TTL — never the agent's task, prompt, or model. It is journald-only (no separate file), so its retention
+is the unit's journald policy; it carries operation scalars, not a behavioural trail, and cannot grow
+into one without a code change. No new identifiable state is persisted or put on the wire: the layer-2
+`SessionTable` key, the random token, `holder_peer`, and `holder_ttl` are all ephemeral/in-memory.
 
 ## Open questions
 

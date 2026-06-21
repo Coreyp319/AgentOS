@@ -88,13 +88,16 @@ impl Tier {
         self.min(ceiling)
     }
 
-    /// The agent-class ceiling: clamp to `Batch` (ADR-0021 GO-1 default). An autonomous agent
-    /// may never self-assert `Interactive` — the only tier that PREEMPTS — so a clamped request
-    /// can seize the GPU from neither the desktop nor a live human request. `Interactive` stays
-    /// reserved for the trusted human-facing path. (A per-profile ceiling is a later refinement,
-    /// ADR-0021 open-Q2.)
+    /// The agent-class band: an autonomous agent may hold a tier in `{BestEffort, Batch}` only
+    /// (ADR-0021 GO-1 ceiling + Open-Q2 floor). The ceiling `Batch` is never `Interactive` — the only
+    /// tier that PREEMPTS — so a clamped request can seize the GPU from neither the desktop nor a live
+    /// human request. The floor `BestEffort` is never `Yielding`, which is reserved for the *owned*
+    /// UE-wallpaper profile (it yields by proactive throttle, not the SIGKILL a cooperative agent lease
+    /// can't drive); an agent asking `yielding` is raised to `best-effort`, not parked below it. Done
+    /// with `Ord::clamp(min, max)` (BestEffort < Batch, so the bounds are well-ordered). A per-profile
+    /// ceiling — needing an authenticated principal + its own privacy review — is a later ADR (Open-Q2).
     pub fn clamp_agent(self) -> Tier {
-        self.clamp_to(Tier::Batch)
+        self.clamp(Tier::BestEffort, Tier::Batch)
     }
 }
 
@@ -106,10 +109,9 @@ impl Tier {
 pub enum CallerClass {
     /// Trusted human-facing / Hermes / CLI path — its requested tier passes through unchanged.
     Trusted,
-    /// An autonomous agent (the ADR-0020 MCP `act` verbs) — clamped to the agent ceiling.
-    /// Not yet constructed in non-test code: the first `Agent` caller is the `act` verb, gated on
-    /// GO-2 (identity). The clamp it drives is implemented + tested now (GO-1), so allow until then.
-    #[allow(dead_code)]
+    /// An autonomous agent (the ADR-0020 MCP `act` verbs) — clamped to the agent band
+    /// {BestEffort, Batch}. Constructed in production by the `AcquireAgent` D-Bus verb
+    /// (`lease::Coordinator::acquire_agent`), reached from `agentosd mcp`'s `gpu_request` (ADR-0021).
     Agent,
 }
 
@@ -529,10 +531,12 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_requesting_yielding_stays_yielding() {
-        // clamp_agent caps at Batch; Yielding is already below it, so min() leaves it untouched —
-        // an agent can run the (harmless, most-preemptable) wallpaper tier without being raised.
-        assert_eq!(CallerClass::Agent.clamp(Tier::Yielding), Tier::Yielding);
+    fn an_agent_requesting_yielding_is_floored_to_best_effort() {
+        // ADR-0021 Open-Q2 (the floor): `Yielding` is reserved for the OWNED UE-wallpaper profile
+        // (it yields by proactive throttle, not the SIGKILL a cooperative agent lease can't drive),
+        // so an agent asking for it is raised to `BestEffort` — never parked below it. Agent ∈
+        // {BestEffort, Batch}.
+        assert_eq!(CallerClass::Agent.clamp(Tier::Yielding), Tier::BestEffort);
     }
 
     // --- yield_decision(): proactive throttle-not-kill vs the kill backstop (ADR-0029 D3/D4) ---
@@ -607,10 +611,12 @@ mod tests {
     // --- CallerClass tier clamp (ADR-0021 GO-1): the core transform, not a shell check ---
 
     #[test]
-    fn agent_class_clamps_interactive_to_batch_and_leaves_lower_tiers() {
-        assert_eq!(CallerClass::Agent.clamp(Tier::Interactive), Tier::Batch);
+    fn agent_class_clamps_to_the_best_effort_batch_band() {
+        // ADR-0021 GO-1 ceiling + Open-Q2 floor: an agent class ∈ {BestEffort, Batch}.
+        assert_eq!(CallerClass::Agent.clamp(Tier::Interactive), Tier::Batch); // ceiling: never preempts
         assert_eq!(CallerClass::Agent.clamp(Tier::Batch), Tier::Batch);
         assert_eq!(CallerClass::Agent.clamp(Tier::BestEffort), Tier::BestEffort);
+        assert_eq!(CallerClass::Agent.clamp(Tier::Yielding), Tier::BestEffort); // floor: never the wallpaper tier
     }
 
     #[test]

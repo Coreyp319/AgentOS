@@ -1,12 +1,14 @@
 # Act-verbs implementation spec (ADR-0020 §1 "act", gated by ADR-0021)
 
-Status: **design ratified-with-changes (2026-06-21) — NOT yet implementation-ready.** The
-`AcquireAgent`-class-by-verb decision below is ratified. But the 2026-06-21 panel refuted the
-session-identity invariant this doc assumed (see the ⚠ note under "The MCP side") and added a must-fix
-list (ADR-0021 §Ratification pass) that gates implementation. GO-1 (`fbcc6a8`) and GO-2's
-connection-grain mechanism (`8c36c26`) are merged; GO-2's *session-grain* isolation is the gated piece.
-Closes the original gap — **how a caller is classed `Agent` at the D-Bus boundary** — and now carries the
-ratification corrections inline.
+Status: **BUILT (2026-06-21) — Claude-Code-stdio-scoped; Hermes path GATED.** The
+`AcquireAgent`-class-by-verb design below is implemented, with all ten ADR-0021 ratification must-fixes
+folded in (typed outcome codes, ~90s agent TTL + a TTL-derived `Renew` heartbeat, random agent tokens,
+the MCP `SessionTable` layer-2 guard, fail-closed act, `holder_peer` no-leak, the agent floor). GO-2's
+*session-grain* isolation is enforced in-process (layer 2) but, per the spike, cannot see Hermes'
+shared-connection thread-children — so act is enabled for the Claude-Code stdio transport (one bus name =
+layer-1 suffices) and the Hermes path is gated on an upstream Hermes change. Verified: 162 tests, clippy
+clean both ways, live isolated-bus smoke, 5-lens adversarial review (findings fixed). See ADR-0021
+§Ratification → Implementation status for the per-item map.
 
 ## The gap GO-1/GO-2 left open
 - GO-1 put the tier clamp in `do_acquire(caller, class, …)`, applied before `arbitrate`. **But the
