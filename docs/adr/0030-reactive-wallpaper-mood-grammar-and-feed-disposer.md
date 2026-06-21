@@ -87,6 +87,27 @@ file-feed split** — mood never rides the safety channel, and the disposer + it
 collapse to RC-unified only if the file-poller proves costly *and* the params-only lockdown verifies.
 Routed to `design-technologist` (the reader) + `security-reviewer` (the lockdown).
 
+**D1 reconciliation — UPDATE 2026-06-21 (the security half of the fork's gate is now design-cleared).**
+The `[VERIFY-LIVE]` condition above ("the RC params-only lockdown proves clean on UE 5.8") is
+**resolved at the design level, source-grounded** by this session's security review (full spec:
+ADR-0029 §B "RE-GROUNDED 2026-06-21"): UE 5.8 already ships a **default-deny function allowlist**
+(`bAllowAnyRemoteFunctionCall=false` + `bAllowConsoleCommandRemoteExecution=false`, both default), so
+`ExecuteConsoleCommand` is absent by COOKED CONFIG and an MPC mood setter (`SetScalarParameterValue`)
+can be the *only* reactive verb allowlisted — RC **can** carry mood without being an arbitrary
+code-exec surface. So the gate's **security** condition no longer blocks RC-unified. What still favors
+the **file-feed split (D1's standing recommendation, UNCHANGED)** is the *other* half of the condition —
+whether the UE-side file-poller is genuinely costly/feasible — which is the **`design-technologist`**
+question and remains open (a cooked `-game` build cannot read the file without a net-new Blueprint/native
+reader; the SPEC's Candidate-B reader-actor is the only file-side path, and `PythonScriptPlugin` is
+editor-only). **Net: choose mood transport on the *reader-cost* axis now, not the security axis.** Two
+cautions the review adds for *either* path: (a) even the MOOD sink must use the narrow allowlisted
+setter — **never** generic `ExecuteConsoleCommand`, and **never** the `/remote/object/property`
+exposed-preset route (it bypasses the function allowlist → wider/weaker surface); (b) per the
+resource-safety ruling (ADR-0029 §B), IF mood rides RC the pusher is INDEPENDENT of the throttle
+lane/coexistence (safe to build ahead of it) but MUST ship the lock-free, time-bounded, single-in-flight,
+relaunch-resetting contract recorded there, as a **second sink** that never shares the throttle's
+send-path. `MotionSpeed` stays governor-driven only.
+
 **D2 — The reactive consumer is ONE pure, clamped, validated, FAIL-TO-CALM disposer (`derive_scene`),
 modeled on `wind.rs`/`feed.rs`.** It: clamps every input to its declared domain; maps `!isfinite →
 neutral` (the `wind.rs::on_gust` discipline — a NaN reads as calm, never a hold); **slew-rate-limits**

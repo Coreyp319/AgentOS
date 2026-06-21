@@ -209,6 +209,125 @@ motion in build. This proves **UE-runs-live-on-Wayland** — but not the wallpap
       pinned by a governor test). Until the UE-side narrow endpoint exists, the throttle channel cannot
       ship securely — the governor decision is computed + logged but **never actuated** (see the BUILT
       bullet above).
+
+      **RE-GROUNDED 2026-06-21 (design-security + resource-safety review — both read the LIVE UE 5.8
+      source on this box; advisory, no wire code written, per the chosen "close the gate first"
+      sequencing).** Two corrections to the design above, then the buildable lockdown + the
+      resource-safety ordering ruling.
+
+      *Correction 1 — the lockdown is the engine's NATIVE default-deny allowlist, not a net-new
+      `ApplyRung` UFUNCTION-as-the-primary (the §B text above over-built it; and "disable the generic
+      endpoint" is not achievable — the `call`/`property` routes register unconditionally).* Verified in
+      `WebRemoteControlInternalUtils.cpp:551-606` + `RemoteControlSettings.h:350-377`:
+      `/remote/object/call` is already gated by `bAllowAnyRemoteFunctionCall=false` (default — a call
+      resolves ONLY if its `(class,function)` is in `CustomAllowedRemoteFunctionCalls`), and
+      `ExecuteConsoleCommand` is *separately* refused unless `bAllowConsoleCommandRemoteExecution=true`
+      (default false), with Python-over-console independently blocked. So the code-exec primitive is
+      closed by COOKED CONFIG (engine-enforced), not by what agentosd sends and not by Blueprint/C++.
+      Required cooked posture, pinned in `DefaultRemoteControl.ini` + proven in the `-game` build:
+      `bAllowAnyRemoteFunctionCall=false`, `bAllowConsoleCommandRemoteExecution=false`,
+      `bEnableRemotePythonExecution=false`, `bRestrictServerAccess=true` (+ a non-`*` `AllowedOrigin`);
+      and `CustomAllowedRemoteFunctionCalls` = EXACTLY `{KismetMaterialLibrary::SetScalarParameterValue
+      (+SetVectorParameterValue), UAgentOSThrottle::ApplyRung}` — `ExecuteConsoleCommand` is NOT on it.
+
+      *Correction 2 — "loopback is a trust boundary" is FALSE here; strike it.* Verified
+      (`RemoteControlDefaultPreprocessors.cpp:249-282`, `WebRemoteControlInternalUtils.cpp:676-689`):
+      UE's passphrase/Origin auth `Passthrough()`s for any `127.0.0.1`/`localhost` peer, so it never
+      challenges us — nor any other local process / DNS-rebound browser. The ONLY inbound control is the
+      allowlist above (which IS peer-agnostic, so it *does* bite local callers). The §B line "validate
+      `Host`/`Origin`, reject non-loopback `Host` (DNS-rebind defense)" survives ONLY as an agentosd
+      *client* self-check (refuse any non-`127.0.0.1` target), NOT as an inbound defense (UE is the
+      server and does not do it). **Accepted residual, recorded honestly:** any local process can drive
+      the bounded reactive MPC scalars and the rung index; RC grants no isolation between local callers
+      on loopback. ACCEPTED because the allowlist caps blast radius to bounded wallpaper params + a
+      clamped rung, the lane holds no secret, and `scene.rs` is structurally barred from the
+      lease/SIGKILL path (`Copy`, no `lease::Inner`).
+
+      *The two lanes, per the lockdown.* **Throttle (governor):** the ladder is console-only cvars
+      (`sg.*`/`r.*`/`t.MaxFPS`), so with console-exec disabled the ONE justified net-new engine function
+      is `UAgentOSThrottle::ApplyRung(int32 idx)`, idx∈{0,1,2}→fixed `Full|Reduced|Floor` cvar set mapped
+      via `IConsoleManager` INSIDE C++ (strings never on the wire), idx clamped engine-side;
+      `governor::is_allowed_in_rung` becomes the client-side defense-in-depth (`Rung→idx`). NEVER flip
+      `bAllowConsoleCommandRemoteExecution=true` to "make the ladder work" — that reopens the whole hole.
+      Restore-to-Full is `ApplyRung(0)`; never a `SetCvar(name,val)` convenience (un-throttling during
+      another tenant's gen is the one availability attack this channel enables). **Reactive (scene
+      pusher):** `SetScalarParameterValue`/`SetVectorParameterValue` via the allowlist — NOT a `SetMood`
+      UFUNCTION, and NOT the `/remote/object/property` exposed-MPC-preset fallback (the property route
+      bypasses the function allowlist → wider/weaker surface). `ParameterName` from a fixed Rust enum of
+      the six names (never feed-derived); each scalar clamped client-side AND saturated engine-side in the
+      material graph (the wire is unauthenticated, so any local caller could send NaN/1e9).
+      `WorldContextObject:null` resolution is the one `[VERIFY-LIVE]`; the fallback is a thin allowlisted
+      `UAgentOSReactive::SetMood(...)` that grabs the world itself — still never the property/preset
+      route. **Build-time residual:** the snag→fog-density lever is an engine property with no MPC scalar
+      and no global cvar under the lockdown — resolve at cook as an MPC-driven fog *material* parameter or
+      a third allowlisted setter, never generic console.
+
+      *Bind + least-privilege (the network is doing real authz work, per Correction 2).* The HTTP
+      listener binds via the GLOBAL `[HTTPServer.Listeners] DefaultBindAddress` (NOT an RC property) — pin
+      `127.0.0.1`; keep `bAutoStartWebSocketServer=False` (its bind defaults `0.0.0.0`); drop inbound
+      `:30010`/`:30020` on non-loopback ifaces via nftables/firewalld (kernel-enforced, survives config
+      drift); and STOP the RC server (`WebControl.StopServer`) whenever the shader floor — not UE — is the
+      live wallpaper (exposure window shrinks to "UE is the active surface" only). The generic
+      `call`/`property` routes are rendered INERT (allowlist + no exposed preset + bind + firewall), not
+      absent.
+
+      *Post-cook release gates (prove the lockdown, don't assume it).* In the `-game` build: (a) a raw
+      `ExecuteConsoleCommand` PUT returns the "console commands … not enabled" rejection; (b) a
+      non-allowlisted function (e.g. `KismetSystemLibrary::QuitGame`) returns "not allowed by remote
+      control settings" (tripwire vs. a silent `bAllowAnyRemoteFunctionCall` regression — that flag opens
+      *every* UFUNCTION); (c) `ss -ltnp` shows `:30010`/`:30020` bound to `127.0.0.1` only. Any failure
+      fails the release.
+
+      *Resource-safety ORDERING ruling (the load-bearing one).* Today `lease.rs:806-808 perform_reclaim`
+      SIGKILLs every evicted owned victim UNCONDITIONALLY; the governor `ThrottleAndCoexist`-vs-`Kill`
+      decision is computed only to LOG (`:816-837`). Therefore: **(1)** the throttle RC channel must NOT
+      ship before the lease-side coexistence model — doing so manufactures a split-brain (UE *appears* to
+      yield over RC while the lease SIGKILLs it anyway; or, if the lease later trusts an UNCONFIRMED
+      throttle and skips the kill but the PUT silently failed, it admits a gen against VRAM never freed →
+      the substrate causes the OOM, the cardinal sin). **Coexistence lands WITH the throttle, never
+      before/after,** as **confirm-then-admit**: send rung → re-read NVML for the floor footprint within a
+      bounded deadline → count `ue_full − ue_floor` as reclaimed ONLY when measured → else fall through to
+      the existing SIGKILL→shader-floor backstop. One reclaim per event, chosen by measured outcome.
+      **(2)** The reactive MOOD/MPC pusher is INDEPENDENT and unblocked now (never frees VRAM, never gates
+      admission, a failed PUT is purely cosmetic) — it MAY be built ahead of coexistence, but MUST ship
+      with the inherited safety contract: it owns only a `Copy` snapshot of `scene.rs`'s disposed scalars
+      + an HTTP client + the literal-`127.0.0.1` target (no field/import/path to `lease::Inner`); it never
+      holds a cell across the PUT `.await` (snapshot-by-value `SceneScalars: Copy`, drop, then await — so
+      lock-across-await can't compile); per-PUT `timeout` ≈ tick period, single in-flight PUT over a
+      latest-value cell (`watch`/`ArcSwap`, never an unbounded `mpsc`/retry), best-effort drop, UE holds
+      last-good (blast radius of a hung `:30010` = one dropped frame); on a detected relaunch it resets the
+      epsilon `last_sent` baseline to a sentinel so it force-re-converges UE from idle defaults (the
+      relaunch signal arrives one-way, never by reaching into the lease lane); it consumes
+      `scene-params.json` (the disposed frame), NOT a re-derivation of the feeds. It ships with a
+      `pusher_takes_no_inner_lock` + `pusher_is_silent_at_rest` tripwire pair (the `wind.rs:379-392` /
+      `scene.rs:980-989` analogue). **(3)** Two sinks, never one send-path: the mood sink (scalar setter,
+      cosmetic) and the throttle sink (`ApplyRung`, integer, security-critical, gated on coexistence)
+      share no transport, no allowlist entry beyond their own function, and no helper; `MotionSpeed` (the
+      one scalar both lanes' concepts touch) stays governor-driven only — a mood push can never override a
+      throttle.
+
+      *Revised §B GO/NO-GO.* GO once: the four config flags are cooked + the three post-cook gates pass;
+      the throttle `ApplyRung` UFUNCTION exists + is `[VERIFY-LIVE]`-confirmed AND coexistence/confirm-
+      then-admit lands WITH it; the reactive wire is the allowlisted scalar setter (no preset/property);
+      bind is loopback + firewalled + server-off-when-unused; and the two honesty edits above are in.
+      NO-GO if any of: console-exec enabled to drive the ladder; the MPC driven via
+      `/remote/object/property` preset; `bAllowAnyRemoteFunctionCall=true`; `:30010` bound to anything but
+      loopback; or the throttle channel shipped without coexistence. Full findings: the security (F1–F10)
+      + resource-safety review outputs of this session.
+
+      **VERIFIED ON THE LIVE ENGINE 2026-06-21 — the §B lockdown ENFORCES (no longer just design analysis).**
+      The lockdown config was authored on `~/UnrealProjects/AgentOSBlank` (RemoteControl plugin — precompiled,
+      NO source build; `Config/DefaultRemoteControl.ini` default-deny allowlist of exactly
+      `KismetMaterialLibrary::SetScalarParameterValue`/`SetVectorParameterValue`; console-exec/python-over-RC
+      off; `DefaultEngine.ini [HTTPServer.Listeners] DefaultBindAddress=127.0.0.1`) and proven against a live
+      offscreen `-game` run (`spikes/ue-probe/verify_rc_lockdown.sh`, all 5 gates GO): `ExecuteConsoleCommand`
+      → **rejected 400** ("…is not allowed by remote control settings"), non-allowlisted `QuitGame` → **rejected
+      400**, allowlisted `SetScalarParameterValue` → **accepted 200**, `:30010` **loopback-bound**, `:30020`
+      **absent**. So the §B `[VERIFY-LIVE]` (does a params-only RC lockdown prove clean on UE 5.8?) is answered
+      **YES**. The reactive MPC (`MPC_AgentOS_Reactive`, 8 scalars == `rc.rs` `AXES`) was authored the same
+      session. The only §B-adjacent item still gated on the box is the production **cooked** package (the cook
+      toolchain `RulesError`/receipt issue) — the GATE itself no longer depends on it (the verify used `-game`
+      from the editor binary, identical config + RC code path). Throttle actuation remains gated on coexistence.
     - **(C) `capture_shot` offscreen self-verify is OVEREXPOSED** (SceneCapture2D self-auto-exposes,
       not yet exposure-matched to the `-game` runtime truth); and **motion auto-play in `-game` is
       pending live confirmation.** These are spike-verification gaps, not design decisions.
