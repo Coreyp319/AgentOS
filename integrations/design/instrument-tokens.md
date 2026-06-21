@@ -23,7 +23,7 @@ Consumers:
 | `--inst-horizon` | `#1a2238` | top-of-gradient "horizon" |
 | `--inst-text` | `#e6e9f0` | primary text |
 | `--inst-muted` | `#8a90a0` | secondary text |
-| `--inst-label` | `#7a8090` | quiet labels / captions (clears WCAG 4.5:1 on the glass) |
+| `--inst-label` | `#878c9b` | quiet labels / captions (measured 4.5:1 on the glass — was `#7a8090`/3.86:1, lifted per ADR-0019 G7 + ADR-0031) |
 | `--inst-blue` | `#7aa2ff` | cool accent, links, "acting" |
 | `--inst-warm` | `#ff9957` | **RESERVED** — the "needs you" dawn-glow cue. Do not spend on decoration. |
 | `--brand-warm` | `#e0884f` | lower-saturation copper for brand decoration, so the reserved hue stays exclusive |
@@ -83,7 +83,7 @@ that would lose contrast on a light surface are darkened (a same-family copper f
 | `deep` | `#161a28` | `#e6eaf3` | mid background |
 | `text` | `#e6e9f0` | `#1a1f2c` | primary text |
 | `muted` | `#b4bac8` | `#3c4356` | secondary text |
-| `label` | `#7a8090` | `#5a6173` | quiet labels |
+| `label` | `#878c9b` | `#5a6173` | quiet labels (dark lifted to ≥4.5:1; was `#7a8090`/3.86:1) |
 | `dim` | `#8a90a0` | `#5a6173` | unknown / snag / idle (light nudged to ≥4.5:1) |
 | `hairline` | `#262a36` | `#cfd5e2` | 1px separators |
 | `tintHover` | `#1c2230` | `#dde2ee` | row hover |

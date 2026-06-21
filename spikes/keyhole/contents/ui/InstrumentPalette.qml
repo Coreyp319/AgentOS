@@ -24,7 +24,7 @@ QtObject {
     readonly property color deep:      dark ? "#161A28" : "#E6EAF3"   // mid background
     readonly property color text:      dark ? "#E6E9F0" : "#1A1F2C"   // primary text
     readonly property color muted:     dark ? "#B4BAC8" : "#3C4356"   // secondary text
-    readonly property color label:     dark ? "#7A8090" : "#5A6173"   // quiet labels (≥4.5:1 on register)
+    readonly property color label:     dark ? "#878C9B" : "#5A6173"   // quiet labels (≥4.5:1; dark was #7A8090/3.86:1, ADR-0031)
     readonly property color dim:       dark ? "#8A90A0" : "#5A6173"   // unknown / snag / idle (light nudged ≥4.5:1)
     readonly property color hairline:  dark ? "#262A36" : "#CFD5E2"   // 1px separators
     readonly property color tintHover: dark ? "#1C2230" : "#DDE2EE"   // row hover
