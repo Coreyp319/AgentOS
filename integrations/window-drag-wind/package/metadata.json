@@ -1,0 +1,17 @@
+{
+  "KPackageStructure": "KWin/Script",
+  "KPlugin": {
+    "Id": "agentos-window-drag-wind",
+    "Name": "AgentOS — window-drag → wind",
+    "Description": "Reads window-MOVE geometry deltas and emits a drag vector (direction + speed) to the AgentOS wind sink over the session bus. Geometry only — never window titles, identity, or content. Reversible; fail-open.",
+    "Authors": [
+      { "Name": "AgentOS design-technologist" }
+    ],
+    "Category": "Window Management",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "EnabledByDefault": false
+  },
+  "X-Plasma-API": "javascript",
+  "X-Plasma-MainScript": "code/main.js"
+}

@@ -1,5 +1,11 @@
 # Spike: window-drag → wind producer
 
+> **Promoted.** The shipped producer now lives in `integrations/window-drag-wind/`
+> (driver-managed, `id: window-drag-wind`); the sink (`wind_sink_sketch.rs`) shipped as
+> `crates/agentosd/src/wind.rs`. This directory is kept as the **feasibility record + the
+> canonical "Honest unknowns" list** (the live KWin→D-Bus drag round-trip). Edit the shipped
+> package under `integrations/window-drag-wind/package/`, not here.
+
 Prototype for **Design 0023-window-drag-wind-producer** (open questions 5 & 6 of
 `docs/design/0023-creative-environment-pipeline.md`). A KWin 6 / Plasma 6 Wayland script that
 turns the direction + speed of a window MOVE into a wind vector for the reactive scene shader.
