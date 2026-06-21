@@ -44,6 +44,8 @@ import lucid_safety as S   # noqa: E402
 import lucid_t2i as T2I    # noqa: E402  (text-to-opening seed source — ADR-0015)
 import lucid_hub as H      # noqa: E402  (ADR-0019: the held/needs-review board + retry/dismiss/approve)
 import lucid_stash as SH   # noqa: E402  (ADR-0028: the encrypted, passphrase-locked private stash)
+import lucid_stitch as STCH  # noqa: E402  (download the whole dream as one stitched MP4)
+import lucid_priv_drain as PD  # noqa: E402  (ADR-0019 §5 / ADR-0036 D9: in-session drainer for the EPHEMERAL private queue)
 
 HOST = os.environ.get("LUCID_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LUCID_WEB_PORT", "8765"))
@@ -75,7 +77,7 @@ _MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": 
          ".json": "application/json", ".woff2": "font/woff2", ".woff": "font/woff",
          ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
          ".webp": "image/webp", ".mp4": "video/mp4", ".webm": "video/webm", ".ico": "image/x-icon",
-         ".map": "application/json"}
+         ".webmanifest": "application/manifest+json", ".map": "application/json"}
 # Per-process CSRF token: embedded in the page, required as a header on every state-changing POST.
 # A cross-origin page can't read it (same-origin policy), so it closes the missing-Origin CSRF gap.
 CSRF = secrets.token_hex(16)
@@ -104,6 +106,23 @@ _DOWNLOAD_SEM = threading.BoundedSemaphore(1)
 # Serialize SAM2 segmentations (ADR-0032): a rapid re-tap must not stack concurrent segment graphs against
 # one stale free-VRAM snapshot (the admission TOCTOU) — a second concurrent /api/segment fails open to a point.
 _SEG_SEM = threading.BoundedSemaphore(1)
+# Serialize per-choice "potential path" previews (ADR-0023): ONE still render at a time, riding the WARM lease,
+# so the dwell-speculation never stacks two ~17 GB Wan admissions or co-resides with the real beat. A dedicated
+# epoch supersedes a stale node's queue the instant a new dwell (or a pick/start/burn) arrives; the active flag
+# spares an in-flight preview from the idle reaper. ALL fail-open — a preview that never arrives is the accepted
+# resting state (the card stays on the seed still).
+_PREVIEW_SEM = threading.BoundedSemaphore(1)
+PREVIEW_LOCK = threading.Lock()
+PREVIEW_EPOCH = 0
+PREVIEW_ACTIVE = False
+PREVIEW_MAX = int(os.environ.get("LUCID_PREVIEW_MAX", "4"))            # at most N previews per dwell (top-first)
+PREVIEW_HEADROOM_MIB = int(os.environ.get("LUCID_PREVIEW_HEADROOM_MIB", "1500"))
+# Privacy gate (ADR-0023 amendment, responsible-ai-privacy-skeptic consult 2026-06-21): the per-choice preview
+# generator renders glimpses of paths the user may NOT take, on a box they live next to. So it is OFF by default
+# (the user opts in via a client-side toggle — `previewsEnabled()` — which gates whether the page ever fires the
+# trigger), NEVER runs for a private/incognito dream (server-enforced below, regardless of the toggle), and this
+# env var is the server-side kill-switch (LUCID_PREVIEWS=0 disables the endpoint outright).
+PREVIEWS_ENABLED = os.environ.get("LUCID_PREVIEWS", "1") != "0"
 MAX_BODY = 30 * 1024 * 1024     # hard request-body ceiling (before reading)
 MAX_IMG = 20 * 1024 * 1024      # decoded-image-bytes ceiling
 MAX_PIXELS = 24_000_000         # ~6000x4000 — reject decompression bombs
@@ -132,6 +151,15 @@ CURRENT_TOKEN = None           # the held batch-lease token, or None when no lea
 TOKEN_DEADLINE = None          # time.monotonic() after which an IDLE session's lease is reaped
 LEASE_LOCK = threading.Lock()
 IDLE_SECS = int(os.environ.get("LUCID_LEASE_IDLE_SECS", "600"))  # release a walked-away session's GPU
+# A cold lease admission (predict-before-load) can be REFUSED by a few MB when the live UE wallpaper
+# (ADR-0023) sits right at the VRAM knife edge — free VRAM ticks back up within seconds. That refusal
+# is TRANSIENT, not a hard "no": surfacing it as a bare "skipped" forced the user to re-submit (the
+# "first prompt resets, second renders" bug). So retry the cold spawn a bounded number of times before
+# failing open. Only the FIRST beat of a session (or the first after the idle-reap) cold-spawns; once
+# warm the held token is reused with no re-admission, so this loop is paid once, not per beat. Module-
+# level (not just env) so a test can patch them to 0 for a fast, deterministic retry assertion.
+ADMIT_RETRIES = int(os.environ.get("LUCID_ADMIT_RETRIES", "6"))      # extra cold-spawn attempts on refusal
+ADMIT_BACKOFF = float(os.environ.get("LUCID_ADMIT_BACKOFF", "2.0"))  # seconds between attempts
 
 
 def _epoch_current(epoch):
@@ -152,6 +180,23 @@ def _supersede_turn():
         TURN.update(phase="idle", label=None, error=None, started=None)
 
 
+def _skip_reason():
+    """An honest one-line reason a turn failed open at the LEASE stage, for the 'skipped' banner
+    (audit 2.1) — so the surface never promises "try again in a moment" when the cause is structural.
+    Reads lease_spawn's LAST_REFUSAL. None when there's nothing honest to add (a superseded turn — its
+    banner is discarded anyway; a genuine preempt — the calm generic banner fits). The coordinator
+    already attempts an `ollama stop` reclaim BEFORE it denies, so a SURVIVING admission shortfall means
+    a NON-reclaimable holder (the live wallpaper + another app/game) is using the card — say that."""
+    r = getattr(L, "LAST_REFUSAL", None)
+    if not r:
+        return None
+    if r.get("kind") == "unreachable":
+        return ("Graphics turn-taking (the GPU coordinator) isn't responding, so the dream couldn't "
+                "start. Your desktop is untouched.")
+    return ("The graphics card is full — another app (a game or a heavy app) or the live wallpaper is "
+            "using it. Close it or wait for it to finish, then try again.")
+
+
 def _run_turn(prompt, label, epoch=None, length=None, parent_id=None, session=None):
     """Worker: drive ONE leased turn, then record an honest outcome (never a silent no-op).
     Warm-keep: ensure the session's batch lease (spawn ComfyUI once, reuse after) and hand it to
@@ -165,14 +210,16 @@ def _run_turn(prompt, label, epoch=None, length=None, parent_id=None, session=No
         if epoch is not None and not _epoch_current(epoch):  # superseded before we even spawned — skip
             return
         if _ensure_lease(epoch) is None:  # coordinator down / GPU busy / ComfyUI cold / superseded — fail open
-            phase, err = "skipped", None
+            phase, err = "skipped", _skip_reason()   # SAY WHY (audit 2.1) — not a silent/misleading skip
         else:
             is_current = (lambda: _epoch_current(epoch)) if epoch is not None else None
             node = L.step(session, prompt, label, external_lease=True, is_current=is_current,
-                          length=length, parent_id=parent_id)
+                          length=length, parent_id=parent_id, raise_errors=True)
             phase, err = ("done" if node else "skipped"), None
     except SystemExit as e:        # red-line gate refused the prompt (B3)
         phase, err = "refused", str(e)
+    except L.GenerationError as e:  # a SUBSTANTIVE ComfyUI failure (OOM/backend-down/bad-graph/timeout) —
+        phase, err = "error", e.user_msg   # surface it honestly, not as a calm "skipped" (audit 1.1/2/5/6)
     except Exception as e:         # noqa: BLE001  — fail open, but SAY SO
         phase, err = "error", str(e)
     with LEASE_LOCK:               # beat done — restart the idle countdown from now, but only while this
@@ -183,6 +230,36 @@ def _run_turn(prompt, label, epoch=None, length=None, parent_id=None, session=No
     with TURN_LOCK:
         if epoch is not None and TURN["epoch"] != epoch:
             return                 # superseded mid-beat — don't clobber the fresh state
+        TURN.update(phase=phase, error=err, started=None)
+
+
+def _run_hero(node_id, epoch=None, session=None):
+    """Worker: re-render an existing beat at HERO quality under the warm lease (ADR-0033). Mirrors
+    _run_turn's lease + epoch discipline — ensure the session's batch lease, hand it to rerender_hero as
+    EXTERNAL (no per-call Spawn/Release), and gate every mutation on `epoch` so a start/delete/burn
+    mid-render discards the result. The draft clip is untouched; on success node['hero_clip'] is set."""
+    global TOKEN_DEADLINE
+    session = session or cur_session()
+    try:
+        if epoch is not None and not _epoch_current(epoch):    # superseded before we spawned — skip
+            return
+        if _ensure_lease(epoch) is None:   # coordinator down / GPU busy / ComfyUI cold / superseded — fail open
+            phase, err = "skipped", _skip_reason()   # SAY WHY (audit 2.1)
+        else:
+            is_current = (lambda: _epoch_current(epoch)) if epoch is not None else None
+            node = L.rerender_hero(session, node_id, external_lease=True, is_current=is_current,
+                                   raise_errors=True)
+            phase, err = ("done" if node else "skipped"), None
+    except L.GenerationError as e:  # a SUBSTANTIVE failure — surface honestly, not a calm "skipped"
+        phase, err = "error", e.user_msg
+    except Exception as e:         # noqa: BLE001 — fail open, but SAY SO
+        phase, err = "error", str(e)
+    with LEASE_LOCK:               # render done — restart the idle countdown only while this turn owns the session
+        if CURRENT_TOKEN and (epoch is None or TURN["epoch"] == epoch):
+            TOKEN_DEADLINE = time.monotonic() + IDLE_SECS
+    with TURN_LOCK:
+        if epoch is not None and TURN["epoch"] != epoch:
+            return                 # superseded mid-render — don't clobber the fresh state
         TURN.update(phase=phase, error=err, started=None)
 
 
@@ -234,8 +311,9 @@ def _ensure_lease(epoch=None):
     """Warm-keep: hold ONE batch lease across the session's ComfyUI ops (text-opening + i2v beats).
     Reuse the held lease if ComfyUI still answers; otherwise (none, or stale because a preempt
     SIGKILLed ComfyUI and the daemon auto-released) Spawn+own a fresh ComfyUI and wait until it's
-    ready. Returns the token, or None = FAIL OPEN (coordinator down / admission refused / ComfyUI
-    never came up) — the caller skips the turn, never forces VRAM. Serialized by LEASE_LOCK so two
+    ready. A knife-edge admission refusal is retried (ADMIT_RETRIES/ADMIT_BACKOFF) before giving up.
+    Returns the token, or None = FAIL OPEN (coordinator down / admission refused even after retries /
+    ComfyUI never came up) — the caller skips the turn, never forces VRAM. Serialized by LEASE_LOCK so two
     requests can't double-spawn; the cold-start wait_ready is held under the lock on purpose (a
     second caller then reuses the one ComfyUI rather than racing a second Spawn).
 
@@ -257,9 +335,22 @@ def _ensure_lease(epoch=None):
         if CURRENT_TOKEN:                                   # stale token (ComfyUI gone) — clear it
             L.lease_release(CURRENT_TOKEN)                  # harmless no-op if already auto-released
             CURRENT_TOKEN, TOKEN_DEADLINE = None, None
-        token = L.lease_spawn("batch")                      # admission: predict-before-load (fail open)
-        if token is None:
-            return None
+        # Cold spawn. A coordinator admission REFUSAL (lease_spawn -> None while the daemon is up — the
+        # GPU is momentarily a few MB short because the UE wallpaper sits at the knife edge) is TRANSIENT:
+        # retry a bounded number of times, letting free VRAM recover, before failing open. The readiness
+        # gate already ensured the coordinator was up at request time, so a None here is overwhelmingly a
+        # margin refusal, not a dead daemon; a genuinely-down daemon just costs the (bounded) retry window
+        # before the honest skip. Re-check _superseded() each pass so a start/burn/delete aborts promptly.
+        token = None
+        for attempt in range(ADMIT_RETRIES + 1):
+            if _superseded():
+                return None
+            token = L.lease_spawn("batch")                  # admission: predict-before-load (fail open)
+            if token is not None:
+                break
+            if attempt >= ADMIT_RETRIES:                    # transient-refusal budget exhausted — honest skip
+                return None
+            time.sleep(ADMIT_BACKOFF)                       # let the knife-edge free VRAM recover, re-admit
         if _superseded() or not L.wait_ready():             # superseded during admission, OR spawned but
             L.lease_release(token)                          # never bound :8188 — release + fail open
             return None
@@ -274,6 +365,7 @@ def _release_lease():
     """Release any held ComfyUI lease (-> coordinator SIGKILLs ComfyUI, VRAM reclaimed). Idempotent;
     called on a fresh /api/start, burn/delete, idle-reap, and shutdown. A no-op if nothing is held."""
     global CURRENT_TOKEN, TOKEN_DEADLINE
+    _cancel_previews()   # the lease is going away — abandon any in-flight preview queue (ADR-0023, before LEASE_LOCK)
     with LEASE_LOCK:
         if CURRENT_TOKEN:
             L.lease_release(CURRENT_TOKEN)
@@ -298,12 +390,74 @@ def _lease_reaper():
         time.sleep(30)
         with TURN_LOCK:
             dreaming = TURN["phase"] == "dreaming"
+        with PREVIEW_LOCK:
+            previewing = PREVIEW_ACTIVE   # a preview render is in flight — reaping would SIGKILL it (ADR-0023)
         with LEASE_LOCK:
-            if (CURRENT_TOKEN and not dreaming and TOKEN_DEADLINE
+            if (CURRENT_TOKEN and not dreaming and not previewing and TOKEN_DEADLINE
                     and time.monotonic() > TOKEN_DEADLINE):
                 print(f"[lucid] idle {IDLE_SECS}s — releasing ComfyUI lease {CURRENT_TOKEN}", flush=True)
                 L.lease_release(CURRENT_TOKEN)
                 CURRENT_TOKEN, TOKEN_DEADLINE = None, None
+
+
+# ---------------- ADR-0023: per-choice "potential path" preview worker ----------------
+def _cancel_previews():
+    """Supersede any in-flight preview worker (a new dwell/node, a pick, a start/delete/burn, or a lease
+    teardown). The worker re-checks the epoch before and after each render and abandons its queue on a bump, so
+    a stale node's previews never delay the real beat. The bump is the immediate cancel; the warm-lease +
+    TURN-phase guards in the worker already stop it when a beat starts or the lease is reclaimed."""
+    global PREVIEW_EPOCH
+    with PREVIEW_LOCK:
+        PREVIEW_EPOCH += 1
+
+
+def _preview_current(epoch):
+    with PREVIEW_LOCK:
+        return PREVIEW_EPOCH == epoch
+
+
+def _run_previews(node_id, beats, epoch, session):
+    """Daemon worker: render one still PREVIEW per beat SERIALLY under the WARM lease, top-first, so each choice
+    card fills in with its OWN "potential path" instead of the shared seed still. The real beat ALWAYS wins:
+    before every render we re-check the cancel epoch, refuse while a beat/hero is in flight, ride the warm lease
+    ONLY (never Spawn just to preview), bail if ComfyUI is busy, and gate on free-VRAM headroom — every guard
+    fail-open (skip the beat, leave the seed still). The frontend's /api/beats poll surfaces each preview as it
+    lands (progressive fill-in)."""
+    global TOKEN_DEADLINE, PREVIEW_ACTIVE
+    if not PREVIEWS_ENABLED or L.ST.is_private(session):   # belt-and-suspenders privacy gate (consult 2026-06-21)
+        return
+    if not _PREVIEW_SEM.acquire(blocking=False):     # a prior run is active; the epoch bump already redirected it
+        return
+    try:
+        for b in beats[:PREVIEW_MAX]:
+            if not _preview_current(epoch):           # a newer dwell / a pick / a teardown superseded us
+                return
+            with TURN_LOCK:                           # the real beat (or a hero finalize) owns the GPU — defer
+                if TURN["phase"] == "dreaming":
+                    return
+            with LEASE_LOCK:                          # ride the warm lease ONLY — never spawn just to preview
+                warm = CURRENT_TOKEN is not None
+            if not warm:
+                return
+            if L.E._comfy_busy():                     # a render is queued/running — don't stack behind it
+                return
+            free = L.E._comfy_free_mib()              # cold/None or below the floor -> skip (fail-open)
+            if free is None or free < PREVIEW_HEADROOM_MIB:
+                return
+            with PREVIEW_LOCK:
+                PREVIEW_ACTIVE = True
+            try:
+                L.generate_beat_preview(session, node_id, b, external_lease=True)
+            except Exception:
+                pass                                  # fail-open: this card simply stays on the seed still
+            finally:
+                with PREVIEW_LOCK:
+                    PREVIEW_ACTIVE = False
+                with LEASE_LOCK:                      # a preview just used the lease — it isn't idle; push the deadline
+                    if CURRENT_TOKEN:
+                        TOKEN_DEADLINE = time.monotonic() + IDLE_SECS
+    finally:
+        _PREVIEW_SEM.release()
 
 
 def chain_or_none(session=None):
@@ -311,6 +465,14 @@ def chain_or_none(session=None):
         return L.load_chain(session or cur_session())
     except Exception:
         return None
+
+
+def _download_filename(chain, sess):
+    """A safe, friendly download name from the dream's library label (or session id). Slugged to
+    [A-Za-z0-9._-] so it drops into Content-Disposition with no quoting / header-injection risk."""
+    raw = (chain.get("name") or sess or "dream").strip()
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-_.") or "dream"
+    return slug[:60] + ".mp4"
 
 
 def _synthetic_opening():
@@ -377,9 +539,14 @@ def beats(node_id=None):
         return []
     with TURN_LOCK:
         rolling = TURN["phase"] != "dreaming"   # in-flight: serve what's held, never roll a new menu
+    sess = cur_session()
     try:
         with BEATS_LOCK:                        # one roll per node even under concurrent reads
-            return L.beats_for_node(cur_session(), node_id, roll=rolling)
+            raw = L.beats_for_node(sess, node_id, roll=rolling)
+        # ADR-0023: tag each beat with its content-address `key` + the `preview` ref (a per-choice "potential
+        # path" still, if the dwell worker has rendered it yet — else null). Pure read; the seed still is the
+        # default until a preview lands. Decoration is best-effort — never let it drop the (text) menu.
+        return L.decorate_beats(sess, node_id, raw)
     except Exception:
         return []
 
@@ -572,10 +739,10 @@ function build(s){const r=s.readiness,t=s.turn;let h='';
   h+=chainCard(s.chain.nodes);
   if(!s.private)h+=libraryCard();   // private dreams use Burn (above); persistent get Delete + retention
   h+=`<div class=card><b>What happens next?</b>`;
-  if(t.phase==='skipped')h+=`<div class=banner>That beat was skipped — the graphics card was needed `
-   +`elsewhere, so the dream fails open and your desktop is untouched. Choose again when you're ready.</div>`;
-  else if(t.phase==='error')h+=`<div class="banner bad">That clip didn't come through — your desktop `
-   +`is untouched. Try again.</div>`;
+  if(t.phase==='skipped')h+=`<div class=banner>${t.error?E(t.error)
+    :'That beat was skipped — the graphics card was busy. Your desktop is untouched.'} Nothing was lost.</div>`;
+  else if(t.phase==='error')h+=`<div class="banner bad">${t.error?E(t.error)
+    :"That clip didn't come through."} Your desktop is untouched.</div>`;
   else if(t.phase==='refused')h+=`<div class=banner>That direction isn't something Lucid can make. `
    +`Try a different turn.</div>`;
   if(r.can_dream){
@@ -594,8 +761,8 @@ function build(s){const r=s.readiness,t=s.turn;let h='';
 
 function announce(s){const t=s.turn;let m='';
  if(t.phase==='dreaming')m='Dreaming this beat — a few minutes.';
- else if(t.phase==='skipped')m='That beat was skipped; your desktop is untouched.';
- else if(t.phase==='error')m='That clip did not come through.';
+ else if(t.phase==='skipped')m=t.error||'That beat was skipped; your desktop is untouched.';
+ else if(t.phase==='error')m=t.error||'That clip did not come through.';
  else if(!s.readiness.can_dream)m='Cannot dream right now.';
  else if(s.chain)m='Ready — '+s.chain.nodes.length+' frame(s) so far.';
  else m='Ready to start a dream.';
@@ -747,10 +914,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_media(self, kind):
         """Serve a chain node's clip (mp4) or anchor frame (png). `id` indexes the server-held chain,
-        so the path is never user-supplied — no traversal surface; loopback-only."""
+        so the path is never user-supplied — no traversal surface; loopback-only.
+
+        ADR-0023: /api/frame ALSO serves a per-choice "potential path" PREVIEW via `?preview=<ref>` — a still
+        the dwell worker rendered for a gutter beat. The ref is UNTRUSTED, so it is validated to be EXACTLY a
+        name THIS session minted (L._valid_preview_ref: `<session>_bp_<id>_<hex>.png`, optional sealed subdir,
+        must exist) before it ever reaches the filesystem — same no-traversal discipline as the segmask ref."""
         from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        if kind == "frame" and q.get("preview", [""])[0]:
+            ref = L._valid_preview_ref(cur_session(), q.get("preview", [""])[0])
+            if not ref:
+                return self._send(404, "no such preview", "text/plain")
+            p = os.path.join(L.E.INPUT_DIR, ref)
+            if not os.path.isfile(p):
+                return self._send(404, "not found", "text/plain")
+            with open(p, "rb") as f:
+                data = f.read()
+            return self._send_raw(200, data, _MIME.get(os.path.splitext(p)[1].lower(),
+                                                        "application/octet-stream"), cache=False)
         try:
-            nid = int(parse_qs(urlparse(self.path).query).get("id", [""])[0])
+            nid = int(q.get("id", [""])[0])
         except ValueError:
             return self._send(400, "bad id", "text/plain")
         chain = chain_or_none()
@@ -758,7 +942,10 @@ class Handler(BaseHTTPRequestHandler):
         if node is None:
             return self._send(404, "no such frame", "text/plain")
         if kind == "clip":
-            p = node.get("clip")
+            # ADR-0033: play the finalized HERO re-render when present (the same shot in HD), falling back to
+            # the draft. The client's `?v=` cache-buster is the node's hero/clip ref, so a finalize refetches.
+            hero = node.get("hero_clip")
+            p = hero if (hero and os.path.isfile(hero)) else node.get("clip")
         else:
             of = node.get("out_frame")
             p = os.path.join(L.E.INPUT_DIR, of) if of else None
@@ -793,6 +980,61 @@ class Handler(BaseHTTPRequestHandler):
             data = f.read()
         self._send_raw(200, data, _MIME.get(os.path.splitext(p)[1].lower(), "application/octet-stream"),
                        cache=False)
+
+    def _send_file(self, path, ctype, download_name):
+        """Stream a finished file as an attachment, chunked (never loads the whole MP4 into RAM —
+        a stitched dream can be tens of MB). `download_name` is an ASCII slug, so it's safe to drop
+        verbatim into Content-Disposition (no CRLF, no quote-escaping needed)."""
+        size = os.path.getsize(path)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(262144)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+
+    def _serve_download(self):
+        """Stitch a dream's clips into one MP4 and stream it as a download. `session` (optional)
+        selects any saved library dream; absent = the current dream (which MAY be private — its
+        bytes are then stitched in a tmpfs workdir so no private byte touches shared disk, and a
+        crash leftover is swept by lucid_store.clear_download_scratch). The clip set comes only from
+        the server-held chain (no user path reaches ffmpeg). Like the sibling media GETs (/api/clip,
+        /api/frame) this carries no CSRF/Origin check — same-origin policy keeps a cross-origin page
+        from reading the bytes, and serialization (below) bounds the only real cost (an ffmpeg spawn).
+        Works even when ComfyUI/Ollama are down — it just reads clips off disk."""
+        import shutil
+        from urllib.parse import urlparse, parse_qs
+        sess = parse_qs(urlparse(self.path).query).get("session", [""])[0] or cur_session()
+        if not L.ST.valid_session(sess):
+            return self._send(400, "bad session", "text/plain")
+        chain = chain_or_none(sess)
+        if chain is None:
+            return self._send(404, "no such dream", "text/plain")
+        private = L.ST.is_private(sess) or bool(chain.get("private"))
+        paths = STCH.clip_spine(chain)
+        if not paths:
+            return self._send(404, "nothing to download yet — this dream has no clips", "text/plain")
+        if not STCH.have_ffmpeg():
+            return self._send(503, "video stitching unavailable (ffmpeg not found)", "text/plain")
+        if not _DOWNLOAD_SEM.acquire(blocking=False):   # one stitch at a time — never oversubscribe cores
+            return self._send(503, "a download is already being prepared — try again in a moment", "text/plain")
+        workdir = L.ST.make_download_workdir(private)   # tmpfs (sealed) for private; OS temp otherwise
+        out = os.path.join(workdir, "dream.mp4")
+        try:
+            STCH.stitch(paths, out)
+            self._send_file(out, "video/mp4", _download_filename(chain, sess))
+        except STCH.StitchError as e:
+            return self._send(500, f"could not stitch the dream: {e}", "text/plain")
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+            _DOWNLOAD_SEM.release()
 
     def _json200(self, obj):
         return self._send(200, json.dumps(obj), "application/json")
@@ -911,6 +1153,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_media("clip")
         if path == "/api/frame":
             return self._serve_media("frame")
+        if path == "/api/download":   # stitch this dream's clips into one MP4 (attachment download)
+            return self._serve_download()
         if path == "/api/queue":   # ADR-0019: the durable held + needs-review board (read-only)
             return self._send(200, json.dumps(H.board()), "application/json")
         if path == "/api/library":   # ADR-0028: the saved (non-private) dream library
@@ -930,8 +1174,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
-        if path not in ("/api/dream", "/api/burn", "/api/start", "/api/delete", "/api/engine",
-                        "/api/note", "/api/note/delete", "/api/segment",
+        if path not in ("/api/dream", "/api/hero", "/api/burn", "/api/start", "/api/delete", "/api/engine",
+                        "/api/note", "/api/note/delete", "/api/segment", "/api/beat-previews",
                         "/api/queue/retry", "/api/queue/dismiss", "/api/queue/approve",
                         # ADR-0028: save & reopen + the encrypted private stash
                         "/api/open", "/api/rename", "/api/stash/init", "/api/stash/unlock",
@@ -981,6 +1225,12 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError) as e:
                 return self._send(200, json.dumps({"error": str(e)}), "application/json")
             return self._send(200, json.dumps({"ok": True, "note": note}), "application/json")
+        if path == "/api/refine":   # ADR-0023: sharpen the viewer's OWN rough next-beat idea at a juncture.
+            # Model PROPOSES the rewrite; the deterministic red-line gate DISPOSES (on both the rough input
+            # and the refined output). Tiny + synchronous: an Ollama text/vision call only — NO lease, NO
+            # turn (never supersedes a dream), NO chain write — so it's safe during the dwell, fails honest,
+            # and needs no can_dream gate (it only needs the narrator; an unreachable one returns a reason).
+            return self._json200(L.refine_beat(cur_session(), req.get("text", ""), req.get("node")))
         if path == "/api/segment":   # ADR-0032: tap -> SAM2 object mask (warm-only, headroom-gated, fail-open)
             # Extract the tapped frame into a SEALED input location, segment under the WARM lease (segment_at
             # gates on free VRAM; cold/contended -> None), validate the mask, and return it INLINE as a
@@ -994,7 +1244,10 @@ class Handler(BaseHTTPRequestHandler):
                 if TURN["phase"] == "dreaming":
                     return self._send(200, json.dumps({"ok": False, "reason": "GPU busy — saved as a point"}),
                                       "application/json")
-            if not _SEG_SEM.acquire(blocking=False):
+            # BLOCKING with a timeout (not instant-fail): a tap WAITS for a prior segment (~seconds) and then
+            # proceeds — only a genuinely-stuck segmenter (>20s) downgrades to a point. segment_at itself bails
+            # fast when ComfyUI is busy, so the lock is never held long.
+            if not _SEG_SEM.acquire(timeout=20):
                 return self._send(200, json.dumps({"ok": False, "reason": "segmenter busy — saved as a point"}),
                                   "application/json")
             try:
@@ -1007,18 +1260,26 @@ class Handler(BaseHTTPRequestHandler):
                 chain = L.load_chain(sess)
                 node = next((nn for nn in chain.get("nodes", []) if nn.get("id") == node_id), None)
                 clip = node.get("clip") if node else None
-                if not clip:
-                    return self._send(200, json.dumps({"ok": False, "reason": "no clip to tag"}), "application/json")
                 private = L.ST.is_private(sess) or bool(chain.get("private"))
-                fr_name, fr_abs = L.ST.frame_ref(sess, private, f"{sess}_segframe.png")
                 wk_name, wk_abs = L.ST.frame_ref(sess, private, f"{sess}_segmask_work.png")
-                res = None
-                if L.E.extract_frame_at(clip, t, fr_name, out_path=fr_abs):
-                    res = L.E.segment_at(fr_name, x, y, wk_abs)
-                try:
-                    os.remove(fr_abs)                   # transient frame is single-use (private footprint ~0)
-                except OSError:
-                    pass
+                # Resolve the frame to segment: a CLIP node -> extract the tapped moment (transient, deleted);
+                # a clip-LESS node (the opening still, tappable via idx===0) -> its stored out_frame directly
+                # (already an INPUT_DIR-relative still — segment it in place, never delete the kept frame).
+                seg_name, transient = None, None
+                if clip:
+                    fr_name, fr_abs = L.ST.frame_ref(sess, private, f"{sess}_segframe.png")
+                    if L.E.extract_frame_at(clip, t, fr_name, out_path=fr_abs):
+                        seg_name, transient = fr_name, fr_abs
+                elif node and node.get("out_frame"):
+                    seg_name = node["out_frame"]
+                if not seg_name:
+                    return self._send(200, json.dumps({"ok": False, "reason": "no frame to tag"}), "application/json")
+                res = L.E.segment_at(seg_name, x, y, wk_abs)
+                if transient:
+                    try:
+                        os.remove(transient)            # the extracted clip frame is single-use
+                    except OSError:
+                        pass
                 if not res:                             # cold / contended / empty / degenerate -> save a point
                     return self._send(200, json.dumps({"ok": False, "reason": "segmenter unavailable"}),
                                       "application/json")
@@ -1029,11 +1290,45 @@ class Handler(BaseHTTPRequestHandler):
                 h = hashlib.blake2b(data, digest_size=6).hexdigest()
                 mk_name, mk_abs = L.ST.frame_ref(sess, private, f"{sess}_segmask_{h}.png")
                 os.replace(wk_abs, mk_abs)
-                preview = "data:image/png;base64," + base64.b64encode(data).decode()  # gated, no-store response
+                # preview = a FEATHERED copy of the mask (smooths the low-res stair-step edge for the overlay);
+                # the stored guide mask `data` stays binarized. Falls back to the raw mask if smoothing fails.
+                prev = L.E.smooth_mask_preview(mk_abs) or data
+                preview = "data:image/png;base64," + base64.b64encode(prev).decode()  # gated, no-store response
                 return self._send(200, json.dumps({"ok": True, "mask": mk_name, "preview": preview}),
                                   "application/json")
             finally:
                 _SEG_SEM.release()
+        if path == "/api/beat-previews":   # ADR-0023: render per-choice "potential path" stills during the DWELL
+            # Opportunistic + fail-open: start a worker that renders one still per beat SERIALLY under the WARM
+            # lease, so the cards stop all showing the seed image. Returns immediately; the page's /api/beats poll
+            # surfaces each preview as it lands. NEVER spawns a lease (skip if cold) and NEVER runs during a live
+            # beat — the real beat always wins. A new node supersedes a prior dwell's queue (epoch bump).
+            nv = req.get("node")
+            node_id = (int(nv) if isinstance(nv, (int, float))
+                       or (isinstance(nv, str) and nv.lstrip("-").isdigit()) else None)
+            sess = cur_session()
+            # PRIVACY (consult 2026-06-21): never speculate on un-taken paths for a private/incognito dream — that
+            # is the one dream the user most signaled "minimize this". Server-enforced regardless of the client
+            # toggle. The env kill-switch (LUCID_PREVIEWS=0) disables the feature outright.
+            if not PREVIEWS_ENABLED or L.ST.is_private(sess):
+                return self._send(200, json.dumps({"ok": True, "started": 0}), "application/json")
+            with LEASE_LOCK:                              # ride the warm lease only — never spawn just to preview
+                warm = CURRENT_TOKEN is not None
+            with TURN_LOCK:                              # never speculate while a real beat is in flight
+                busy = TURN["phase"] == "dreaming"
+            if not warm or busy:
+                return self._send(200, json.dumps({"ok": True, "started": 0}), "application/json")
+            try:
+                bts = L.beats_for_node(sess, node_id, roll=False)   # serve-only: the dwell never rolls the menu
+            except Exception:
+                bts = []
+            if not bts:
+                return self._send(200, json.dumps({"ok": True, "started": 0}), "application/json")
+            _cancel_previews()                           # supersede any prior dwell/node's worker
+            with PREVIEW_LOCK:
+                ep = PREVIEW_EPOCH
+            threading.Thread(target=_run_previews, args=(node_id, list(bts), ep, sess), daemon=True).start()
+            return self._send(202, json.dumps({"ok": True, "started": len(bts[:PREVIEW_MAX])}), "application/json")
         if path == "/api/note/delete":   # ADR-0023: drop a moment annotation by id (idempotent)
             try:
                 ok = L.remove_note(cur_session(), int(req.get("node")), req.get("id"))
@@ -1165,6 +1460,28 @@ class Handler(BaseHTTPRequestHandler):
                 return _started(private)
             finally:
                 _START_SEM.release()
+        if path == "/api/hero":   # ADR-0033: re-render a chosen beat at HERO quality (two-tier finalize)
+            # Reuses the beat's stored seed/prompt/anchor — the SAME shot at 20-step fidelity. Shares the
+            # one-beat-in-flight TURN lock + warm lease with /api/dream, so a finalize and a draft beat can't
+            # run at once (they serialize on the single GPU lease). Returns 202; the page polls the TURN record.
+            rd = readiness()
+            if not rd["can_dream"]:
+                return self._send(200, json.dumps({"error": "Not ready yet — " + "; ".join(rd["why"])}),
+                                  "application/json")
+            nv = req.get("node")
+            node_id = (int(nv) if isinstance(nv, (int, float))
+                       or (isinstance(nv, str) and nv.lstrip("-").isdigit()) else None)
+            if node_id is None:
+                return self._send(200, json.dumps({"error": "no beat to finalize"}), "application/json")
+            with TURN_LOCK:
+                if TURN["phase"] == "dreaming":
+                    return self._send(200, json.dumps(
+                        {"error": "A dream is already in flight — one beat at a time."}), "application/json")
+                epoch = TURN["epoch"]   # a later start/delete/burn bumps it to supersede this render
+                TURN.update(phase="dreaming", label="Finalizing in HD", error=None, started=time.monotonic())
+            _cancel_previews()   # a finalize owns the GPU now — abandon any in-flight preview queue (ADR-0023)
+            threading.Thread(target=_run_hero, args=(node_id, epoch, cur_session()), daemon=True).start()
+            return self._send(202, json.dumps({"ok": True, "started": True}), "application/json")
         # ---- /api/dream: start ONE gated, leased turn on a WORKER and return at once ----
         # The turn is minutes long; blocking the request was the central UX gap. The page reads the
         # honest in-flight TURN record (dreaming / done / skipped / refused / error) instead.
@@ -1189,6 +1506,7 @@ class Handler(BaseHTTPRequestHandler):
                     {"error": "A dream is already in flight — one beat at a time."}), "application/json")
             epoch = TURN["epoch"]   # this turn's generation; a later start/delete/burn bumps it to supersede
             TURN.update(phase="dreaming", label=label, error=None, started=time.monotonic())
+        _cancel_previews()   # the user picked — abandon any in-flight preview queue; the real beat wins (ADR-0023)
         # capture the session NOW so a switch mid-beat can't reroute this turn (the epoch still guards persist)
         threading.Thread(target=_run_turn, args=(prompt, label, epoch, length, parent_id, cur_session()),
                          daemon=True).start()
@@ -1212,7 +1530,9 @@ def _burn_private_on_stop():
             if failed:
                 print(f"on-stop burn: session {s!r} left {len(failed)} sink(s) un-wiped: {failed}", flush=True)
         cleared = L.ST.clear_priv_queue_dir()
-        tail = "; cleared queue dir" if cleared else ""
+        dl = L.ST.clear_download_scratch()   # wipe any in-flight download-stitch scratch (may be private)
+        tail = (("; cleared queue dir" if cleared else "")
+                + ("; cleared download scratch" if dl else ""))
         print(f"on-stop burn: wiped {wiped} sink(s) across {len(sessions)} private session(s){tail}", flush=True)
     except Exception as e:
         print(f"on-stop burn skipped: {e}", flush=True)
@@ -1296,6 +1616,10 @@ def main():
         reaped = L.ST.reap_orphans()
         if reaped:
             print(f"reaped {len(reaped)} orphaned private session(s): {reaped}", flush=True)
+        # a download-stitch scratch dir (possibly a private MP4) left by a crash mid-download has no
+        # session index, so reap_orphans can't see it — clear the whole transient root outright.
+        if L.ST.clear_download_scratch():
+            print("cleared orphaned download-stitch scratch", flush=True)
     except Exception as e:
         print(f"orphan reap skipped: {e}", flush=True)
     # Reopen where the user left off (ADR-0028): the most-recently-edited saved dream, else a fresh
@@ -1314,7 +1638,14 @@ def main():
     # ADR-0028: before releasing, re-seal any OPEN stash working copy back to ciphertext and burn its
     # tmpfs (the key is still in memory here; the ExecStop --burn-private hook runs in a separate
     # process that has no key, so reseal must happen in THIS process on stop).
+    # ADR-0019 §5 / ADR-0036 D9: the EPHEMERAL private-request drainer runs IN-PROCESS as a daemon
+    # thread so it lives and dies with the session (no after-logout window). It re-runs held PRIVATE
+    # create-from-image requests on a best-effort lease and ages out idle ones — every terminal is a
+    # SILENT burn (never a review row). daemon=True tears it down on a hard logout kill; the stop event
+    # is the clean path. Defined before _shutdown so the closure can set it.
+    _priv_drain_stop = threading.Event()
     def _shutdown(_signum, _frame):
+        _priv_drain_stop.set()                 # ask the private drainer to stop (daemon=True covers a hard kill)
         try:
             SH.reseal_opened(burn=True)
         except Exception:
@@ -1324,6 +1655,8 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
     threading.Thread(target=_lease_reaper, daemon=True).start()
+    threading.Thread(target=PD.run_in_session, args=(_priv_drain_stop,),
+                     daemon=True, name="lucid-priv-drain").start()
     print(f"Lucid web → http://{HOST}:{PORT}  (session '{cur_session()}')", flush=True)
     server.serve_forever()
 

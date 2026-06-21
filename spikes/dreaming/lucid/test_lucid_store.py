@@ -192,6 +192,33 @@ check("new_session_id is unique", ST.new_session_id("x") != ST.new_session_id("x
 check("new_session_id handles empty name", ST.valid_session(ST.new_session_id("")))
 check("new_session_id handles all-symbol name", ST.valid_session(ST.new_session_id("!!!@@@")))
 
+# --- download-stitch scratch (the "download the whole dream as one MP4" workdir) ---
+DL_ROOT = os.path.join(_TMP, "run", "agentos", "lucid-dl")
+check("clear_download_scratch no-op when the scratch root is absent",
+      ST.clear_download_scratch() is False and not os.path.exists(DL_ROOT))
+# private -> a fresh 0700 subdir under the reapable tmpfs lucid-dl root
+wd_priv = ST.make_download_workdir(True)
+check("private workdir lives under the tmpfs lucid-dl root",
+      wd_priv.startswith(DL_ROOT + os.sep) and os.path.isdir(wd_priv))
+check("private workdir is 0700", (os.stat(wd_priv).st_mode & 0o777) == 0o700)
+# persistent -> the OS temp dir, never the tmpfs private root
+wd_pub = ST.make_download_workdir(False)
+check("persistent workdir is NOT under the private tmpfs root",
+      not wd_pub.startswith(DL_ROOT) and os.path.isdir(wd_pub))
+shutil_pub = wd_pub
+# simulate a crash leftover: a stitched (possibly private) MP4 abandoned in the scratch root
+open(os.path.join(wd_priv, "dream.mp4"), "w").write("PRIVATEBYTES")
+check("clear_download_scratch wipes the whole root (crash leftovers + all)",
+      ST.clear_download_scratch() is True and not os.path.exists(DL_ROOT))
+# refuses to follow a planted symlink at the scratch root (mirrors the store's sealed-dir posture)
+os.makedirs(os.path.dirname(DL_ROOT), exist_ok=True)
+os.symlink(os.path.join(_TMP, "elsewhere"), DL_ROOT)
+check("clear_download_scratch refuses a symlinked root (no delete-through)",
+      ST.clear_download_scratch() is False)
+os.unlink(DL_ROOT)
+import shutil as _sh  # noqa: E402
+_sh.rmtree(shutil_pub, ignore_errors=True)
+
 # --- cleanup ---
 import shutil  # noqa: E402
 shutil.rmtree(_TMP, ignore_errors=True)

@@ -364,6 +364,41 @@ def clear_priv_queue_dir():
     return False
 
 
+# ---- download scratch: where a "download the whole dream as one MP4" stitch is assembled ----
+def _download_scratch_root():
+    """tmpfs root for transient download-stitch workdirs. Sibling of the lucid-priv dream root."""
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return os.path.join(base, "agentos", "lucid-dl")
+
+
+def make_download_workdir(private):
+    """A fresh 0700 scratch dir for one stitched download; the caller removes it after streaming.
+
+    PRIVATE dream -> a subdir of the tmpfs lucid-dl root (so the stitched — possibly private — MP4
+    is built in RAM, never on shared disk, AND a crash leftover is swept by clear_download_scratch).
+    The root is created through the symlink-refusing sealed-dir path (never makedirs+chmod, which
+    follows a planted link). Persistent dream -> the OS temp dir (non-private bytes; OS-cleaned)."""
+    import tempfile
+    if private:
+        root = _download_scratch_root()
+        os.makedirs(os.path.dirname(root), exist_ok=True)   # the per-user 'agentos' parent
+        _make_sealed(root)                                   # mkdir-or-validate; refuses a symlink
+        return tempfile.mkdtemp(dir=root)
+    return tempfile.mkdtemp(prefix="lucid-dl-")
+
+
+def clear_download_scratch():
+    """Remove the WHOLE tmpfs download-scratch root — every entry is a transient stitch workdir,
+    nothing worth keeping. Run at startup and on stop so a crash/SIGKILL mid-download can't leave a
+    stitched (possibly PRIVATE) MP4 lingering in tmpfs with no reaper — closing the same gap the
+    per-session reap closes for clips. Symlink-refusing. True iff a dir was actually cleared."""
+    root = _download_scratch_root()
+    if _own_real_dir(root) is True:
+        shutil.rmtree(root, ignore_errors=True)
+        return not os.path.exists(root)
+    return False
+
+
 def reap_orphans():
     """Burn any private sink (output/lucid-priv-*, input/.lucid-priv-*) whose tmpfs session is gone
     — a crash or logout can leave a clip + prompt-PNG on shared disk with no tmpfs index to find it

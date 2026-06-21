@@ -28,12 +28,17 @@ The B2 seed-likeness guard (ADR-0017) is NOT bypassable — start() is its singl
 user-supplied seed passes B2 (a server-generated abstract opening is the only trusted seed).
 """
 import argparse
+import hashlib
 import json
 import os
+import random
 import re
+import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lucid_engine as E   # noqa: E402  (generation backend + workflow parameterization)
@@ -52,8 +57,17 @@ EST_MIB = int(os.environ.get("LUCID_EST_MIB", "17000"))   # back-compat default 
 
 def _est_mib():
     """Admission estimate (MiB): explicit LUCID_EST_MIB wins; else the *active* engine's measured
-    peak (E.est_mib() — Wan ~17 GB, 10Eros Q6 ~22 GB) so the LTX lane doesn't under-admit and OOM.
-    Resolved at spawn time so a live engine toggle is reflected on the next lease."""
+    peak (E.est_mib() — Q4/Wan ~17 GB, 10Eros Q6 ~19 GB) so the LTX lane doesn't under-admit and OOM.
+    Resolved at spawn time so a live engine toggle is reflected on the next lease.
+
+    Calibration (80k telemetry.jsonl samples, 2026-06-21 — resolves the "measure real peak" OWED): the
+    ComfyUI proc footprint clusters at 16-17 GB (the Q4 default lane, matching est 17000), tails to
+    18-19 GB (Q6, est 19000), and the card has hit free<1 GB during real renders. est is therefore
+    correctly calibrated — do NOT shave it to widen the admission margin. The asymmetry is the point: a
+    false refusal is a now-retried annoyance (lucid_web ADMIT_RETRIES), an under-estimate is an OOM
+    crash. The knife-edge that refuses a Q4 job by a few MB is the live UE wallpaper's ~6 GB baseline
+    eating the last of free VRAM, not a bad est — the structural fix is freeing UE's VRAM (ADR-0029
+    throttle-to-admit), not a smaller number here."""
     env = os.environ.get("LUCID_EST_MIB")
     return int(env) if env else E.est_mib()
 
@@ -72,26 +86,65 @@ def _coord(*args):
                           capture_output=True, text=True, timeout=30)
 
 
+# Last lease_spawn outcome, so the SURFACE can tell the user WHY a turn failed open instead of a
+# silent/misleading "skipped" (audit finding 2.1). None once a spawn is granted; otherwise a dict:
+#   {"kind": "unreachable"|"refused", "reason": <raw>, "short_mib", "free_mib", "est_mib"}.
+# Read by lucid_web right after _ensure_lease returns None. Single-exclusive lease + LEASE_LOCK make
+# the write→read window effectively serial for the interactive loop; best-effort otherwise.
+LAST_REFUSAL = None
+
+_REFUSAL_RE = re.compile(r"short\s+(\d+)M.*free\s+(\d+)M.*est\s+(\d+)M", re.IGNORECASE)
+
+
+def _parse_refusal(reason):
+    m = _REFUSAL_RE.search(reason or "")
+    out = {"kind": "refused", "reason": reason or "GPU busy"}
+    if m:
+        out.update(short_mib=int(m.group(1)), free_mib=int(m.group(2)), est_mib=int(m.group(3)))
+    return out
+
+
 def lease_spawn(tier="batch"):
     """Ask agentosd to Spawn+own ComfyUI under a lease. Returns a token, or None to fail open
-    (coordinator down OR admission refused -> the dream yields, never forces VRAM).
+    (coordinator down OR admission refused -> the dream yields, never forces VRAM). On a None return,
+    LAST_REFUSAL carries the reason so the surface can be honest about it.
 
     `tier` defaults to "batch" so the interactive Lucid loop (create_from_image.py, lucid_web.py)
     is unchanged. The ADR-0019 drainer passes tier="best-effort" so arbitrate() (coord.rs:129-135)
     structurally Queues this run behind ANY holder and lets Tier::Interactive preempt it
     (lease.rs:583-592) — fail-open BY CONSTRUCTION, never by measurement (design doc G3)."""
+    global LAST_REFUSAL
     r = _coord("Spawn", "susas", tier, str(_est_mib()), PROFILE, str(len(PARAMS)), *PARAMS)
     if r.returncode != 0:
+        LAST_REFUSAL = {"kind": "unreachable", "reason": r.stderr.strip() or r.stdout.strip()}
         log(f"coordinator unreachable ({r.stderr.strip() or r.stdout.strip()}) — fail open (ADR-0003)")
         return None
     parts = r.stdout.split()           # "bts true <token> <msg...>"
     granted = len(parts) >= 2 and parts[1] == "true"
     if not granted:
-        log(f"admission refused — {' '.join(parts[2:]) or 'GPU busy'} — fail open")
+        reason = ' '.join(parts[2:]).strip('"') or "GPU busy"
+        LAST_REFUSAL = _parse_refusal(reason)
+        log(f"admission refused — {reason} — fail open")
         return None
+    LAST_REFUSAL = None
     token = parts[2] if len(parts) >= 3 else "0"
     log(f"lease GRANTED (token {token}); agentosd owns ComfyUI")
     return token
+
+
+def _coord_holder_tier():
+    """The coordinator's current holder tier ('interactive'|'batch'|'best-effort'|'yielding'|None),
+    best-effort. Used to tell a genuine PREEMPT (a higher tier took the GPU and SIGKILLed our owned
+    ComfyUI -> the dream yields calmly) apart from a ComfyUI crash / backend-down (same connection
+    error, but no higher-priority holder)."""
+    try:
+        r = _coord("Status")           # "bstu <held> <tier> <token> <free>"
+        parts = r.stdout.split()
+        if len(parts) >= 3 and parts[1] == "true":
+            return parts[2].strip('"').lower() or None
+    except Exception:                  # noqa: BLE001 — best-effort classifier, never raises
+        pass
+    return None
 
 
 def lease_release(token):
@@ -157,9 +210,14 @@ def start(session, opening_image, private=False, consent=False, _trusted_seed=Fa
     # name + created: the LIBRARY metadata (ADR-0028). `name` is the human label shown in the saved-
     # dreams list (defaults to the session id downstream if empty); `created` lets the library sort by
     # age. Both are persisted with the chain so the listing needs no sidecar.
+    # seed: the dream's BASE seed (ADR-0033). Every beat derives a deterministic per-node seed from it
+    # (_beat_seed = base + node id), so (a) a clip is reproducible — the hero re-render of a draft beat
+    # reuses the SAME seed to refine the SAME shot, not roll a new one — and (b) the whole dream shares one
+    # noise family instead of the old per-beat random() lottery (a small steadiness win on identity drift).
     chain = {"session": session, "private": private,
              "name": (name or "").strip()[:80] or None,
              "created": time.time(),
+             "seed": random.randint(1, 2**31 - 1),
              "premise": (premise or "").strip()[:300] or None,
              "nodes": [
                  {"id": 0, "parent": None, "label": "opening", "prompt": None,
@@ -205,6 +263,92 @@ def propose(context, n=4, rating="sfw", frame_b64=None):
         if len(out) >= n:
             break
     return out[:n]
+
+
+# ---------------- juncture prompt refine (model proposes, code disposes) ----------------
+REFINE_MAX_IN = 600     # a rough next-beat idea, not an essay
+
+
+def _extract_prompt(raw):
+    """Pull the single refined beat out of the narrator's JSON ({"prompt":"..."}). A small model sometimes
+    skips the wrapper and just returns the line — accept that too (treat the whole reply as the prompt).
+    Strips wrapping quotes and caps to the workflow length. '' on nothing usable -> caller fails honest."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    try:
+        data = json.loads(s)
+        if isinstance(data, dict) and isinstance(data.get("prompt"), str):
+            s = data["prompt"]
+    except (json.JSONDecodeError, TypeError):
+        pass        # not JSON — the reply IS the prompt (a smaller model may skip the wrapper)
+    return s.strip().strip('"').strip()[:S.PROMPT_MAX]
+
+
+def _refine_context(session, node_id):
+    """Best-effort grounding for a refine: (context, rating, frame_b64). Prefers the node's SEALED caption +
+    rating (the menu roll already grounded this frame — no second VLM pass), grounding fresh ONLY when a
+    caption is missing AND a frame is available. NEVER fails the refine on a grounding miss: any error (no
+    chain yet, unreachable model, unresolvable frame) degrades to the text-only, SFW-default path — exactly
+    like beat-gen's fail-open grounding. The caller still red-line-gates the input and output regardless."""
+    try:
+        chain = load_chain(session)
+        node = _node_or_tip(chain, node_id)
+        caption = node.get("caption")
+        rating = _max_rating(node.get("rating"))            # sealed monotone floor; None -> sfw
+        frame_b64 = E.frame_to_b64(_frame_abs(session, node))
+        if not caption and frame_b64:                       # frame never grounded yet — one cheap pass
+            cap, rt = E.ground_frame(frame_b64, chain.get("premise"))
+            if cap and S.red_line_ok(cap):                  # a model-written caption is untrusted text too
+                caption = cap
+            rating = _max_rating(rating, rt)
+        return context_for(session, caption=caption, node=node), rating, frame_b64
+    except Exception as e:
+        log(f"refine: grounding unavailable ({e}) — refining text-only")
+        return "", "sfw", None
+
+
+def refine_beat(session, text, node_id=None, _call=None):
+    """Sharpen the viewer's OWN rough next-beat idea into one vivid, frame-grounded, two-dial beat — the
+    juncture twin of the Start surface's lucid_refine, but mid-dream and grounded on the current frame +
+    premise + story-so-far (ADR-0023). The model PROPOSES the rewrite; the deterministic red-line gate
+    DISPOSES on BOTH the rough input and the refined output, so refine can never hand back a prompt Lucid
+    would block. Fails honestly: a blank/red-lined idea, an unreachable narrator, or an unsafe result
+    returns a calm {"ok": False, "reason": ...}, never a silent or unsafe string. No lease, no turn, no
+    chain write — safe to call during the dwell (same VRAM profile as a menu roll). `_call(system, user)
+    -> str` is injectable so the contract is testable without a model (grounding is then skipped — no
+    chain/GPU needed).
+
+    Returns {"ok": True, "refined": "<editable prompt>"} or {"ok": False, "reason": "<honest message>"}."""
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "reason": "Type an idea for the next moment first."}
+    text = text[:REFINE_MAX_IN]
+    # Gate the INPUT too — a red-lined idea is refused before we spend a model call on it (mirrors lucid_refine).
+    if S.gate_prompt(text) is None:
+        return {"ok": False, "reason": "That idea isn't something Lucid can dream. Try another."}
+    context, rating, frame_b64 = _refine_context(session, node_id) if _call is None else ("", "sfw", None)
+    sys_p = E.build_refine_sys(rating)
+    parts = [p for p in (context,) if p]
+    parts.append('The viewer\'s rough idea for what happens next: "' + text + '"')
+    parts.append("Rewrite THAT idea into one beat as instructed — keep their intent, sharpen and ground it.")
+    user = "\n".join(parts)
+    # A swapped-in text-only beat narrator can't see the frame — it works from the caption already in `context`
+    # (same rule as propose()). Default narrator == the vision MODEL -> attach the frame for tighter grounding.
+    images = [frame_b64] if (frame_b64 and E.NARRATOR_MODEL == E.MODEL) else None
+    try:
+        raw = _call(sys_p, user) if _call else E._ollama_json(
+            sys_p, user, model=E.NARRATOR_MODEL, images=images, temperature=E.BEAT_TEMP)
+    except Exception as e:
+        log(f"refine failed ({e}) — send your own")
+        return {"ok": False, "reason": "Couldn't reach the writer just now — send your own, or try again."}
+    out = _extract_prompt(raw)
+    if not out:
+        return {"ok": False, "reason": "No refinement came back — send your own."}
+    # Gate the OUTPUT — a refine can NEVER hand back a prompt the red-line would block (fail-closed).
+    if S.gate_prompt(out) is None:
+        return {"ok": False, "reason": "Couldn't refine that safely — try rephrasing."}
+    return {"ok": True, "refined": out}
 
 
 def _max_rating(*ratings):
@@ -279,6 +423,34 @@ def _valid_mask_ref(session, mask):
     if d not in ("", f".lucid-priv-{session}"):                 # only the session's own sealed subdir
         return None
     if not re.fullmatch(rf"{re.escape(session)}_segmask_[0-9a-f]+\.png", b):
+        return None
+    return m if os.path.exists(os.path.join(E.INPUT_DIR, m)) else None
+
+
+# ---------------- ADR-0023: per-choice "potential path" still previews ----------------
+def _beat_key(beat):
+    """A stable content-address for a beat (label+prompt) — the preview PNG's id, since a beat carries no
+    node id of its own. blake2b over `label\\x00prompt` so distinct siblings never collide and a re-served
+    identical beat resolves to the SAME preview (idempotent, held like the menu)."""
+    s = ((beat.get("label") or "") + "\x00" + (beat.get("prompt") or "")).encode("utf-8", "replace")
+    return hashlib.blake2b(s, digest_size=6).hexdigest()
+
+
+def _valid_preview_ref(session, ref):
+    """Validate an UNTRUSTED preview ref from the client (code disposes — never trust a path), the exact twin
+    of _valid_mask_ref. Must be EXACTLY a name generate_beat_preview mints for THIS session — basename
+    `<session>_bp_<nodeId>_<hex>.png`, optionally under the single sealed subdir `.lucid-priv-<session>/` and
+    nothing else — AND the file must exist. No traversal, no abs path, no foreign subdir, no session
+    substring-collision (anchored on the `<session>_bp_` prefix). Returns the ref or None (None -> 404)."""
+    if not ref:
+        return None
+    m = str(ref)
+    if ".." in m or m.startswith("/"):
+        return None
+    d, b = os.path.split(m)
+    if d not in ("", f".lucid-priv-{session}"):                 # only the session's own sealed subdir
+        return None
+    if not re.fullmatch(rf"{re.escape(session)}_bp_\d+_[0-9a-f]+\.png", b):
         return None
     return m if os.path.exists(os.path.join(E.INPUT_DIR, m)) else None
 
@@ -453,9 +625,105 @@ def beats_for_tip(session, n=4, roll=True):
     return beats_for_node(session, None, n=n, roll=roll)
 
 
+# ---------------- ADR-0033: deterministic seed + persistent subject anchor ----------------
+def _beat_seed(chain, node_id):
+    """The deterministic noise seed for a beat node (ADR-0033). Derived from the dream's BASE seed + the
+    node id, so a re-render (the hero pass) of a node reproduces its EXACT shot, while sibling takes
+    (different ids) still differ. Legacy chains predating the base seed fall back to a STABLE per-session
+    value (zlib.crc32 — process-independent, unlike hash()) so their re-renders reproduce too."""
+    base = chain.get("seed")
+    if not isinstance(base, int):
+        base = zlib.crc32((chain.get("session") or "").encode()) & 0x7FFFFFFF
+    return ((base + int(node_id)) % (2**31 - 1)) or 1
+
+
+SUBJECT_ANCHOR_ENABLED = os.environ.get("LUCID_SUBJECT_ANCHOR", "1") != "0"
+
+
+def _subject_for(session, chain):
+    """The dream's persistent subject descriptor (ADR-0033), captured ONCE from the OPENING frame and
+    cached on the chain. Returns the descriptor (str) or None (kill-switch off / no frame / model down /
+    red-line refusal -> the render stays motion-only, exactly as before). Costs one extra VLM pass on the
+    FIRST rendered beat only.
+
+    Mutates `chain["subject"]` IN MEMORY (an "" sentinel records a null capture) but does NOT persist —
+    the caller (step) owns the single guarded save, so a superseded/deleted turn never writes the capture
+    back and can't resurrect a wiped session. Once a turn persists, the cache is on disk and a later beat
+    short-circuits here; until then it re-grounds (idempotent, fail-open)."""
+    if not SUBJECT_ANCHOR_ENABLED:
+        return None
+    if "subject" in chain:                  # captured before (possibly "" = grounded-but-empty)
+        return (chain.get("subject") or None)
+    opening = _by_id(chain).get(0) or chain["nodes"][0]
+    subj = E.ground_subject(E.frame_to_b64(_frame_abs(session, opening)))
+    if subj and not S.red_line_ok(subj):    # a model-written descriptor is untrusted text too
+        subj = None
+    chain["subject"] = subj or ""           # in-memory sentinel; step()'s persist carries it to disk
+    return subj or None
+
+
+def _with_subject(subject, render_prompt):
+    """Quietly prefix the render prompt with the persistent subject so the identity carries across cuts
+    (ADR-0033). No subject -> the prompt is returned unchanged (legacy behaviour). The COMBINED string is
+    red-line-gated by the caller, so the descriptor passes the same gate as any prompt."""
+    subject = (subject or "").strip()
+    if not subject:
+        return render_prompt
+    body = (render_prompt or "").strip()
+    prefix = subject if subject.endswith((".", "!", "?")) else subject + "."
+    return (prefix + " " + body).strip() if body else prefix
+
+
+class GenerationError(Exception):
+    """A SUBSTANTIVE ComfyUI failure (OOM / bad graph / backend-down / timeout / no video) — as opposed
+    to a genuine lease PREEMPT (interactive work SIGKILLed ComfyUI mid-render, a calm fail-open yield).
+    `.user_msg` is the honest human-facing line the surface shows instead of the false-comforting
+    'skipped — your desktop is untouched'. Raised only when the caller opts in (raise_errors=True);
+    fail-open callers (create_from_image, the drainers) still get None (audit findings 1.1/2/5/6/11)."""
+    def __init__(self, user_msg, cause=""):
+        self.user_msg = user_msg
+        self.cause = cause
+        super().__init__(cause or user_msg)
+
+
+def _is_unreachable_error(e):
+    """True iff the exception is a TRANSPORT error = ComfyUI didn't answer (urllib/socket). A
+    RuntimeError/TimeoutError that a REACHABLE ComfyUI raised (an error status / a too-long render) is
+    NOT 'unreachable' — it's substantive. NB TimeoutError subclasses OSError, so exclude it first."""
+    if isinstance(e, (GenerationError, TimeoutError)):
+        return False
+    return isinstance(e, (urllib.error.URLError, ConnectionError, socket.timeout, OSError))
+
+
+def _human_gen_error(e):
+    """Map a raw generation exception to one honest, non-alarming, actionable line."""
+    s = str(e).lower()
+    if "out of memory" in s or "outofmemory" in s or "torch.cuda" in s and "memory" in s:
+        return "The graphics card ran out of memory on this clip — try a shorter or lower-quality beat."
+    if isinstance(e, TimeoutError):
+        return "The render took too long and timed out."
+    if _is_unreachable_error(e):
+        return "The video backend (ComfyUI) wasn't reachable — it may have been preempted or shut down."
+    if "/prompt rejected" in s or "prompt_no_outputs" in s:
+        return "ComfyUI rejected the render request (a workflow or model problem)."
+    if "produced no video" in s or "no video" in s:
+        return "The render finished but produced no video."
+    return "The clip didn't come through (a generation error)."
+
+
+def _classify_generation_failure(e):
+    """'preempt' (calm fail-open yield) vs 'error' (surface honestly). A genuine preempt = a higher-tier
+    lease took the GPU and SIGKILLed our owned ComfyUI -> a transport error AND the coordinator now shows
+    a higher-priority holder. A transport error with NO such holder is a crash/backend-down (an error);
+    a RuntimeError/TimeoutError from a reachable ComfyUI is always an error."""
+    if _is_unreachable_error(e) and _coord_holder_tier() in ("interactive", "yielding"):
+        return "preempt"
+    return "error"
+
+
 # ---------------- one leased, confirmed-evicted, gated video beat ----------------
 def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=False, length=None,
-                   rating="sfw", guides=None):
+                   rating="sfw", guides=None, seed=None, quality="draft", raise_errors=False):
     """B1 dance: actively evict beat model (`ollama stop`) + confirm -> lease -> generate -> release. Returns clip path,
     or None to skip the turn (fail open). The prompt MUST already have passed S.gate_prompt.
     Private sessions render to a sealed subdir and the clip is moved to tmpfs (ADR-0016).
@@ -489,12 +757,22 @@ def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=F
                 return None
             scope = ST._priv_output_dir(session) if private else None  # never a global output walk
             return ST.place_clip(session, private, _newest_clip(scope))
-        clip, _seed = E.run_beat(prompt, anchor_frame, length=length, rating=rating,
-                                 output_prefix=ST.output_prefix(session, private), guides=guides)
+        clip, _seed = E.run_beat(prompt, anchor_frame, seed=seed, length=length, rating=rating,
+                                 quality=quality, output_prefix=ST.output_prefix(session, private),
+                                 guides=guides)
         return ST.place_clip(session, private, clip)  # private: move out of shared output -> tmpfs
-    except Exception as e:
-        log(f"generation error ({e}) — likely preempted (SIGKILL); clip lost, loop yields")
-        return None
+    except Exception as e:                            # noqa: BLE001
+        # Don't blame SIGKILL for everything (audit finding 11): an OOM, a /prompt 400, a backend-down,
+        # or a render timeout are NOT preempts and must not be painted as the calm 'skipped — desktop
+        # untouched'. Classify, then either yield calmly (genuine preempt) or surface honestly.
+        if not raise_errors:                          # legacy fail-open callers: keep the None contract,
+            log(f"generation error ({type(e).__name__}: {e}) — fail open; clip lost, loop yields")
+            return None                               # but log honestly (no false 'likely preempted')
+        if _classify_generation_failure(e) == "preempt":
+            log(f"beat yielded — interactive work preempted the dream; ComfyUI was reclaimed ({e})")
+            return None                               # a real preempt: the dream yields, calm fail-open
+        log(f"generation FAILED ({type(e).__name__}: {e}) — surfacing as an error, not a skip")
+        raise GenerationError(_human_gen_error(e), cause=str(e)) from e
     finally:
         if not external_lease:
             lease_release(token)  # warm-keep caller owns the lease across beats; releases it itself
@@ -515,9 +793,95 @@ def _newest_clip(scope_dir=None):
     return best
 
 
+def generate_beat_preview(session, node_id, beat, external_lease=True):
+    """ADR-0023: render ONE still PREVIEW for a gutter choice — a glimpse of the "potential path" this beat
+    would grow into, so the choice cards stop all showing the same seed image. The cheapest faithful render: a
+    MIN_LEN draft i2v from the node's conditioning frame, on the (gated) beat prompt + the node's deterministic
+    seed (an honest prefix of the real beat), whose LAST frame is extracted to a sealed-for-private PNG; the
+    transient clip is then deleted (a preview is a still, never a chain node). Returns the preview ref
+    (INPUT_DIR-relative — the sealed subpath for private) or None.
+
+    Rides the WARM batch lease (external_lease=True): the caller (lucid_web's dwell worker) already holds the
+    lease and ComfyUI is up, so this neither Spawns nor Releases — serial, in-warm-process, never a second
+    ~17 GB admission (the council's blessed dwell-speculation; reuses ADR-0032's warm-lease pattern). IDEMPOTENT
+    (content-addressed by node+beat — a held menu re-renders nothing) and TOTALLY fail-open (any error -> None,
+    so the card simply stays on the seed still)."""
+    try:
+        private = ST.is_private(session)
+        chain = load_chain(session)
+        node = _node_or_tip(chain, node_id)
+        key = _beat_key(beat)
+        ref_name, abs_path = ST.frame_ref(session, private, f"{session}_bp_{node['id']}_{key}.png")
+        if os.path.exists(abs_path):                  # held like the menu — already rendered for this frame
+            return ref_name
+        gated = S.gate_prompt(beat.get("prompt") or "")
+        if gated is None:                             # never render an ungated prompt — skip (fail-open)
+            return None
+        anchor = node.get("out_frame")                # the conditioning frame this path continues FROM
+        if not anchor:
+            return None
+        rating = _max_rating(*(n.get("rating") for n in _ancestry(chain, node)))
+        # deterministic per-(node,beat) seed: reproducible across reloads AND distinct across siblings, so each
+        # card's path actually differs (a same-seed render of two prompts can converge).
+        seed = ((_beat_seed(chain, node["id"]) + zlib.crc32(key.encode())) % (2**31 - 1)) or 1
+        clip = generate_video(session, gated, anchor, external_lease=external_lease,
+                              length=E.MIN_LEN, rating=rating, seed=seed, quality="draft")
+        if not clip:
+            return None
+        out = E.extract_last_frame(clip, ref_name, out_path=abs_path)
+        # The clip is a transient — a preview is a STILL, never a chain node. Delete its whole stem family
+        # (the .mp4 AND any VHS metadata sidecar .png, which carries the un-taken beat's prompt) so no
+        # un-chosen-path residue lingers in the shared output dir (privacy consult 2026-06-21, P3/P4). The
+        # `{session}_`-prefixed names are also a purge_persistent backstop if a crash skips this.
+        try:
+            stem = os.path.basename(os.path.splitext(clip)[0])
+            cdir = os.path.dirname(clip)
+            for fn in os.listdir(cdir):
+                if fn.startswith(stem + "."):
+                    try:
+                        os.remove(os.path.join(cdir, fn))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return ref_name if out else None
+    except Exception as e:
+        log(f"preview: failed ({e}) — card stays on the seed still (fail-open)")
+        return None
+
+
+def decorate_beats(session, node_id, beats):
+    """Add per-beat `key` (content-address) + `preview` (the still's ref iff it EXISTS on disk, else None) to a
+    held menu, for /api/beats. PURE READ — never generates (that's the dwell worker's job), no dir side effects
+    (uses the read-only frame_abs, not frame_ref). The preview is keyed to the node the menu grounds on (the tip
+    if node_id is None), so a branch-from-an-earlier-beat menu resolves its OWN previews, not the tip's."""
+    if not beats:
+        return beats
+    try:
+        chain = load_chain(session)
+        nid = _node_or_tip(chain, node_id)["id"]
+        private = ST.is_private(session)
+    except Exception:
+        return [{**b, "key": _beat_key(b), "preview": None} for b in beats]
+    out = []
+    for b in beats:
+        key = _beat_key(b)
+        name = f"{session}_bp_{nid}_{key}.png"
+        ref = None
+        try:
+            if os.path.exists(ST.frame_abs(session, private, name)):
+                ref = (f".lucid-priv-{session}/{name}" if private else name)
+        except Exception:
+            ref = None
+        out.append({**b, "key": key, "preview": ref})
+    return out
+
+
 def step(session, prompt, label, tier="batch", external_lease=False, is_current=None, length=None,
-         parent_id=None):
+         parent_id=None, quality="draft", raise_errors=False):
     """One leased turn: gate the prompt (both paths), generate under lease, append a node.
+    `quality` ('draft'|'hero', ADR-0033) selects the Wan render lane; the interactive loop renders 'draft'
+    and the node records a deterministic `seed` + `anchor` so rerender_hero() can refine the SAME shot.
     `parent_id` (optional) forks the new beat from THAT node instead of the tip — a new take growing
     from an earlier frame (the tree branches). Default None = continue the linear tip (legacy callers).
     `length` (optional) is the caller's chosen next-segment frame count; clamped in lucid_engine
@@ -580,6 +944,11 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
     # VLM decomposition preferred; the deterministic steering suffix is the FALLBACK (model unavailable
     # / returned None / no tagged frames). The model's own output is still red-line-gated below.
     prompt_final = refined if refined else ((prompt or "") + _steering_suffix(notes))
+    # IDENTITY (ADR-0033): quietly prefix the persistent subject (captured once from the opening frame)
+    # so the face/clothing carry across the independent i2v cuts. Render-prompt ONLY — the beat MENU stays
+    # motion/idea-led (it must not be dampened, see [[lucid-beatgen-prompt-redesign]]). The COMBINED string
+    # is red-line-gated below, so the descriptor passes the same gate as any prompt. None -> unchanged.
+    prompt_final = _with_subject(_subject_for(session, chain), prompt_final)
     gated = S.gate_prompt(prompt_final)
     if gated is None:
         raise SystemExit("prompt refused by red-line gate (B3)")
@@ -597,8 +966,12 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
     # which applies them as guide-conditioning (fail-open in the engine). Wan keeps its VLM-decomposed
     # prompt + single anchor path, so it gets guides=None. No notes -> guides is [] -> None either way.
     g = guides if (guides and E.current_engine() == "10eros") else None
-    clip = generate_video(session, gated, anchor, tier=tier,
-                          external_lease=external_lease, length=seg_len, rating=rating, guides=g)
+    # SEED (ADR-0033): deterministic per-node noise, so this exact shot can be re-rendered at hero quality
+    # (rerender_hero reuses node["seed"]/["anchor"]/["prompt"]). Persisted on the node below.
+    beat_seed = _beat_seed(chain, nid)
+    clip = generate_video(session, gated, anchor, tier=tier, external_lease=external_lease,
+                          length=seg_len, rating=rating, guides=g, seed=beat_seed, quality=quality,
+                          raise_errors=raise_errors)
     if clip is None:
         log("turn skipped (fail open) — chain unchanged")
         return None
@@ -608,10 +981,63 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
     ref_name, abs_path = ST.frame_ref(session, private, f"{session}_n{nid}.png")
     out_frame = E.extract_last_frame(clip, ref_name, out_path=abs_path)  # store owns the path
     node = {"id": nid, "parent": parent["id"], "label": label, "prompt": gated,
-            "seed": None, "clip": clip, "out_frame": out_frame, "length": seg_len, "rating": rating}
+            "seed": beat_seed, "anchor": anchor, "quality": quality,
+            "clip": clip, "out_frame": out_frame, "length": seg_len, "rating": rating}
     chain["nodes"].append(node)
     save_chain(session, chain)
     return node
+
+
+def rerender_hero(session, node_id, tier="batch", external_lease=False, is_current=None,
+                  raise_errors=False):
+    """Re-render an existing beat at HERO quality (ADR-0033): reuse the node's stored seed + (gated) prompt
+    + anchor + rating so the non-distilled 20-step Wan lane refines the SAME shot the draft produced, and
+    store it as node['hero_clip'] (the draft `clip` is kept, so the browse loop stays fast and the keeper
+    plays/downloads in HD). The chain's `out_frame` anchors are NOT re-derived: the hero is the same shot at
+    higher fidelity (a same-seed hero last frame is ~identical), so the next beat still continues from the
+    draft's frame and downstream continuity is untouched. Returns the updated node, or None (unknown /
+    clip-less / opening node, a fail-open yield, or a superseded turn).
+
+    Wan-only quality lane (the chosen engine); harmless on 10eros (run_beat ignores `quality` there).
+    `external_lease`/`tier`/`is_current` mirror step() so a warm-keep web caller owns the lease across the
+    re-render and a mid-flight /api/start can't resurrect a deleted dream. Only node['hero_clip'] is written
+    (onto a FRESHLY re-loaded chain), so a concurrent edit during the minutes-long render isn't clobbered."""
+    chain = load_chain(session)
+    node = _by_id(chain).get(node_id)
+    if node is None or not node.get("clip"):
+        log(f"hero: node {node_id!r} unknown or not yet rendered — nothing to refine")
+        return None
+    parent = _by_id(chain).get(node.get("parent"))
+    anchor = node.get("anchor")
+    if not anchor and parent is not None:        # legacy node (pre-anchor persist): re-derive from parent
+        anchor = _anchor_for(session, parent, parent.get("notes") or [],
+                             f"{session}_n{node_id}_anchor.png")
+    if not anchor:
+        anchor = node.get("out_frame")           # last resort — render off the node's own stored frame
+    gated = S.gate_prompt(node.get("prompt") or "")   # the stored prompt already passed; re-gate defensively
+    if gated is None:
+        log(f"hero: node {node_id!r} prompt no longer passes the red-line gate — skipping")
+        return None
+    seed = node.get("seed")
+    if not isinstance(seed, int):
+        seed = _beat_seed(chain, node_id)        # legacy node without a stored seed
+    clip = generate_video(session, gated, anchor, tier=tier, external_lease=external_lease,
+                          length=node.get("length"), rating=node.get("rating", "sfw"),
+                          seed=seed, quality="hero", raise_errors=raise_errors)
+    if clip is None:
+        log("hero: re-render skipped (fail open) — chain unchanged")
+        return None
+    if is_current is not None and not is_current():
+        log("hero: superseded mid-render (session restarted/deleted) — discarding clip, chain unchanged")
+        return None
+    fresh = load_chain(session)                  # re-load: our copy may be stale after a minutes-long render
+    fnode = _by_id(fresh).get(node_id)
+    if fnode is None:
+        log("hero: node vanished during render (deleted) — discarding clip")
+        return None
+    fnode["hero_clip"] = clip
+    save_chain(session, fresh)
+    return fnode
 
 
 def context_for(session, caption=None, node=None):

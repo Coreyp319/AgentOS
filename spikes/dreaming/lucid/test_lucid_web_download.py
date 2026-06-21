@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Integration test for GET /api/download — the whole-dream MP4 stitch route.
+
+Drives the real Handler over a real socket against a temp dreams cache with real ffmpeg clips:
+  * download by ?session= (a library dream) -> 200, video/mp4, attachment w/ a slugged name,
+    Content-Length matched, and a valid ~2s MP4 in the body.
+  * download with no ?session -> the CURRENT dream.
+  * a PRIVATE dream downloads AND leaves no scratch dir behind (tmpfs workdir cleaned).
+  * a clip-less dream -> 404; a bad/unknown session -> 400/404.
+
+Needs ffmpeg + ffprobe. Run: python3 test_lucid_web_download.py
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import urllib.error
+import urllib.request
+
+_TMP = tempfile.mkdtemp(prefix="lucid_dl_web_")
+os.environ["XDG_RUNTIME_DIR"] = os.path.join(_TMP, "run")
+os.environ["LUCID_DREAMS"] = os.path.join(_TMP, "dreams")
+os.environ["COMFY_ROOT"] = os.path.join(_TMP, "comfy")
+os.environ["LUCID_WEB_PORT"] = "8791"
+os.environ["LUCID_WEB_HOST"] = "127.0.0.1"
+for d in ("run", "dreams", os.path.join("comfy", "input"), os.path.join("comfy", "output")):
+    os.makedirs(os.path.join(_TMP, d), exist_ok=True)
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lucid_web as W   # noqa: E402
+import lucid_store as ST   # noqa: E402
+import lucid_stitch as STCH   # noqa: E402
+
+ok = 0
+fail = []
+
+
+def check(name, cond):
+    global ok
+    if cond:
+        ok += 1
+    else:
+        fail.append(name)
+
+
+def mkclip(path, w=320, h=240, rate=10, dur=1):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi",
+                    "-i", f"testsrc=duration={dur}:size={w}x{h}:rate={rate}",
+                    "-pix_fmt", "yuv420p", "-c:v", "libx264", path],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return path
+
+
+def probe_dur(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                          "-of", "json", path], check=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+    return float(json.loads(out)["format"]["duration"])
+
+
+if not STCH.have_ffmpeg():
+    print("NOTE: ffmpeg/ffprobe not on PATH — skipping the download integration test")
+    print("\n0 passed, 0 failed")
+    sys.exit(0)
+
+# ---- a 2-clip persistent (library) dream ----
+sess = "testdream-a1b2c3"
+ST.ensure_session(sess, False)
+c1 = mkclip(os.path.join(_TMP, "c1.mp4"))
+c2 = mkclip(os.path.join(_TMP, "c2.mp4"))
+ST.save_chain(sess, False, {"session": sess, "private": False, "name": "Test Dream!! v2",
+    "nodes": [{"id": 0, "parent": None, "clip": None, "out_frame": f"{sess}_n0.png"},
+              {"id": 1, "parent": 0, "clip": c1, "out_frame": "n1.png"},
+              {"id": 2, "parent": 1, "clip": c2, "out_frame": "n2.png"}]})
+
+# ---- a clip-less dream (opening only) ----
+empty = "emptydream-x9y8z7"
+ST.save_chain(empty, False, {"session": empty, "private": False,
+    "nodes": [{"id": 0, "parent": None, "clip": None, "out_frame": "o.png"}]})
+
+# ---- a PRIVATE 1-clip dream (its tmpfs session dir makes is_private True) ----
+psess = "privdream-q1w2e3"
+ST.ensure_session(psess, True)
+pc1 = mkclip(os.path.join(_TMP, "pc1.mp4"))
+ST.save_chain(psess, True, {"session": psess, "private": True, "name": "Secret",
+    "nodes": [{"id": 0, "parent": None, "clip": None, "out_frame": "po.png"},
+              {"id": 1, "parent": 0, "clip": pc1, "out_frame": "pn1.png"}]})
+
+# ---- bring up the server in a thread ----
+from http.server import ThreadingHTTPServer   # noqa: E402
+srv = ThreadingHTTPServer(("127.0.0.1", W.PORT), W.Handler)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+BASE = f"http://127.0.0.1:{W.PORT}"
+
+
+def get(path):
+    try:
+        r = urllib.request.urlopen(urllib.request.Request(BASE + path), timeout=120)
+        return r.status, {k: v for k, v in r.headers.items()}, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, {k: v for k, v in e.headers.items()}, e.read()
+
+
+try:
+    # 1) download a library dream by explicit ?session=
+    st, h, body = get(f"/api/download?session={sess}")
+    check("library download -> 200", st == 200)
+    check("content-type video/mp4", h.get("Content-Type") == "video/mp4")
+    cd = h.get("Content-Disposition", "")
+    check("attachment + slugged filename", "attachment" in cd and 'filename="Test-Dream-v2.mp4"' in cd)
+    check("content-length matches body", h.get("Content-Length") == str(len(body)) and len(body) > 0)
+    check("no-store (a stitched temp is never cached)", h.get("Cache-Control") == "no-store")
+    outp = os.path.join(_TMP, "dl.mp4")
+    open(outp, "wb").write(body)
+    check("downloaded body is a valid ~2s mp4",
+          STCH._is_valid_mp4(outp) and abs(probe_dur(outp) - 2.0) < 0.5)
+
+    # 2) current-session download (no ?session=)
+    W.set_session(sess)
+    st2, _, b2 = get("/api/download")
+    check("current-session download -> 200 with bytes", st2 == 200 and len(b2) > 0)
+
+    # 3) a PRIVATE dream downloads, and its tmpfs scratch dir is cleaned up afterward
+    dl_base = os.path.join(os.environ["XDG_RUNTIME_DIR"], "agentos", "lucid-dl")
+    st3, h3, b3 = get(f"/api/download?session={psess}")
+    check("private download -> 200 with bytes", st3 == 200 and len(b3) > 0)
+    # the server's finally-rmtree runs AFTER the client has its Content-Length bytes, so poll briefly
+    # (this asserts cleanup, not timing): the scratch base must drain to empty.
+    import time as _t
+    for _ in range(50):
+        leftover = os.listdir(dl_base) if os.path.isdir(dl_base) else []
+        if not leftover:
+            break
+        _t.sleep(0.1)
+    check("private stitch scratch dir cleaned (no tmpfs leftovers)", leftover == [])
+
+    # 4) clip-less dream -> 404
+    st4, _, _ = get(f"/api/download?session={empty}")
+    check("clip-less dream -> 404", st4 == 404)
+
+    # 5) bad session name -> 400 (path-safety)
+    st5, _, _ = get("/api/download?session=../etc")
+    check("bad session -> 400", st5 == 400)
+
+    # 6) unknown session -> 404
+    st6, _, _ = get("/api/download?session=nope-zzzzzz")
+    check("unknown session -> 404", st6 == 404)
+finally:
+    srv.shutdown()
+
+print(f"\n{ok} passed, {len(fail)} failed")
+for f in fail:
+    print("  FAIL:", f)
+import shutil   # noqa: E402
+shutil.rmtree(_TMP, ignore_errors=True)
+sys.exit(1 if fail else 0)

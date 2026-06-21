@@ -25,6 +25,10 @@ class WarmKeep(unittest.TestCase):
         W.TOKEN_DEADLINE = None
         with W.TURN_LOCK:
             W.TURN.update(phase="idle", label=None, error=None, started=None)
+        # zero the admission-refusal backoff so the retry loop runs instantly (the timing knobs are
+        # module-level precisely so a test can do this); the count stands so retries are still exercised.
+        self._admit = (W.ADMIT_RETRIES, W.ADMIT_BACKOFF)
+        W.ADMIT_BACKOFF = 0.0
         # stub the lease primitives (count Spawns/Releases) and force ComfyUI "ready/up"
         self.spawns, self.releases, self.steps = [], [], []
         self._orig = (L.lease_spawn, L.lease_release, L.wait_ready, W._http_ok, L.step)
@@ -46,6 +50,7 @@ class WarmKeep(unittest.TestCase):
 
     def tearDown(self):
         (L.lease_spawn, L.lease_release, L.wait_ready, W._http_ok, L.step) = self._orig
+        (W.ADMIT_RETRIES, W.ADMIT_BACKOFF) = self._admit
 
     def test_one_spawn_across_beats_external_lease(self):
         W._run_turn("a beat", "l1")
@@ -67,12 +72,36 @@ class WarmKeep(unittest.TestCase):
         self.assertEqual(W.CURRENT_TOKEN, "tok2")
 
     def test_fail_open_when_admission_refused(self):
-        L.lease_spawn = lambda tier="batch": None    # GPU busy / coordinator down
+        W.ADMIT_RETRIES = 3                          # bound the (now-retried) refusal for a fast assertion
+        tries = []
+        L.lease_spawn = lambda tier="batch": tries.append(tier)    # GPU stays full every attempt -> None
         W._run_turn("a", "l1")
         with W.TURN_LOCK:
             self.assertEqual(W.TURN["phase"], "skipped")
         self.assertIsNone(W.CURRENT_TOKEN)
         self.assertEqual(self.steps, [], "no generation attempted without a lease")
+        self.assertEqual(len(tries), W.ADMIT_RETRIES + 1,
+                         "a persistent refusal must exhaust the retry budget before failing open")
+
+    def test_transient_refusal_retried_then_granted(self):
+        # The reported bug: the FIRST cold beat is refused by a knife-edge VRAM margin (the UE wallpaper),
+        # the turn skips, and the user must re-submit. With the retry, the same submission recovers as soon
+        # as free VRAM ticks up — here the 3rd admission attempt is granted, so the turn renders ('done')
+        # with NO user re-submit, and ComfyUI spawns exactly once.
+        W.ADMIT_RETRIES = 6
+        seq = []
+
+        def flaky_spawn(tier="batch"):
+            seq.append(tier)
+            return None if len(seq) < 3 else f"tok{len(seq)}"   # refused twice, granted on the 3rd
+
+        L.lease_spawn = flaky_spawn
+        W._run_turn("a", "l1")
+        self.assertEqual(len(seq), 3, "must retry the refusal, not fail open on the first margin miss")
+        self.assertEqual(W.CURRENT_TOKEN, "tok3", "the granted token is held (warm-keep) after recovery")
+        self.assertTrue(self.steps and self.steps[0]["external_lease"], "the beat actually rendered")
+        with W.TURN_LOCK:
+            self.assertEqual(W.TURN["phase"], "done")
 
     def test_release_lease_is_idempotent(self):
         W._run_turn("a", "l1")

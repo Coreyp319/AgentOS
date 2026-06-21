@@ -480,12 +480,29 @@ def output_files(history):
 VIDEO_EXTS = (".mp4", ".webm", ".gif", ".mkv", ".webp")
 
 
-def _newest_video(since=0.0):
+def _output_prefix(api_prompt):
+    """Best-effort: the filename_prefix the graph writes under, so a fallback file-walk can be SCOPED to
+    THIS run's outputs and never surface another session's clip (privacy — sealed private sessions must
+    not inherit a persistent dream's leftover video). None if no prefix is discoverable."""
+    try:
+        for node in api_prompt.values():
+            inp = node.get("inputs", {}) if isinstance(node, dict) else {}
+            p = inp.get("filename_prefix")
+            if isinstance(p, str) and p:
+                return p
+    except Exception:  # noqa: BLE001 — best-effort scoping; never break a render over it
+        pass
+    return None
+
+
+def _newest_video(since=0.0, prefix=None):
     newest, mt = None, since
     for root, _d, fns in os.walk(OUTPUT_DIR):
         for fn in fns:
             if os.path.splitext(fn)[1].lower() in VIDEO_EXTS:
                 p = os.path.join(root, fn)
+                if prefix and prefix not in os.path.relpath(p, OUTPUT_DIR):
+                    continue   # not under this run's prefix — never another session's clip (privacy)
                 m = os.path.getmtime(p)
                 if m > mt:
                     newest, mt = p, m
@@ -501,8 +518,8 @@ def generate(api_prompt, timeout=3600):
         raise RuntimeError(f"generation errored: {json.dumps(status)[:1500]}")
     files = [p for p in output_files(hist)
              if os.path.splitext(p)[1].lower() in VIDEO_EXTS and os.path.exists(p)]
-    if not files:  # fallback: newest video written during this run
-        files = _newest_video(since=start - 1)
+    if not files:  # fallback: newest video written during this run, SCOPED to this run's prefix (privacy)
+        files = _newest_video(since=start - 1, prefix=_output_prefix(api_prompt))
     return files, hist
 
 

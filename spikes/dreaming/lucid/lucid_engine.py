@@ -48,6 +48,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # (2026-06-19). Revert to the 20-step lane: LUCID_WORKFLOW=<…/lucid-nolight-nsfw-i2v.api.json>.
 REPO_WF = os.path.join(HERE, "..", "workflows", "lucid-nolight-nsfw-i2v-4x4.api.json")
 WORKFLOW = os.environ.get("LUCID_WORKFLOW", os.path.abspath(REPO_WF))
+# ── TWO-TIER quality (ADR-0033): the DRAFT lane (above — 4+4 lightning, ~4.5 min/beat) is what the
+# interactive browse loop renders; the HERO lane is re-rendered on demand for a keeper, the SAME shot
+# (same seed/prompt/anchor) at higher fidelity. It is the non-distilled 20-step Wan graph (NO lightx2v,
+# real CFG 3.5 on both experts — the anatomy/coherence base) PLUS a RealESRGAN 2× detail-upscale spliced
+# between VAEDecode and VHS_VideoCombine (720×1280 → ~1440×2560). The upscale is the ACTUAL "low-res feel"
+# fix: measured on the box 2026-06-21, raising steps (8→20) and precision (GGUF Q6K→fp8) left frame
+# sharpness IDENTICAL (Laplacian var 7→7→7), and higher NATIVE res (960×1696) VRAM-thrashed/timed out —
+# only a post-gen detail upscaler adds real high-frequency detail. So hero res STAYS at draft res
+# (LUCID_HERO_W/H default = 720×1280 — do NOT bump native res, it thrashes); the upscale provides the pixels.
+HERO_REPO_WF = os.path.join(HERE, "..", "workflows", "lucid-nolight-nsfw-i2v-hero-up.api.json")
+HERO_WORKFLOW = os.environ.get("LUCID_HERO_WORKFLOW", os.path.abspath(HERO_REPO_WF))
+# The hero upscale weight (in ComfyUI/models/upscale_models). If it isn't on disk (a fresh install that
+# hasn't fetched it), the hero degrades to a plain 20-step render rather than 400ing — fail-open (ADR-0003).
+HERO_UPSCALE_MODEL = os.environ.get("LUCID_HERO_UPSCALE_MODEL", "RealESRGAN_x2plus.pth")
 INPUT_DIR = os.path.join(cc.COMFY_ROOT, "input")
 DREAMS_DIR = os.environ.get(
     "LUCID_DREAMS", os.path.join(
@@ -85,6 +99,12 @@ DEFAULT_W, DEFAULT_H, DEFAULT_LEN = 720, 1280, 33  # ~2s portrait @16fps; matche
 # GGUF, beats past 49f (3s) run past the 1800s gen timeout (and toward the VRAM-thrash line); Wan's latent
 # stride wants 4k+1 frame counts. 17..49f ≈ 1..3s @16fps. (Raise once a faster expert — fp8 — lands.)
 MIN_LEN, MAX_LEN = 17, 49
+# HERO-lane resolution (ADR-0033). Defaults to the draft res — the 20-step hero's win is convergence/
+# detail, not pixels, and a higher res on the non-distilled GGUF courts the VRAM-thrash wall (REF
+# §Benchmarks: 640×1152/81f timed out). Raise to e.g. 832×1472 via LUCID_HERO_W/LUCID_HERO_H only on a
+# fresh/light desktop. Length stays the caller's clamp_length band — hero is the SAME shot, not a longer one.
+HERO_W = int(os.environ.get("LUCID_HERO_W", str(DEFAULT_W)))
+HERO_H = int(os.environ.get("LUCID_HERO_H", str(DEFAULT_H)))
 # I2V ModelSamplingSD3 shift. Shared by BOTH i2v paths, so the default stays 8.0: that is the distilled
 # Remix's baked schedule AND a sane 720x1280 value (Wan shift tracks resolution, not distillation —
 # higher res wants higher shift). Drop to ~5.0 via LUCID_SHIFT to calm motion on the non-distilled graph;
@@ -226,6 +246,24 @@ def load_validated_mask(src_abs, out_abs, w, h):
         return False
 
 
+def smooth_mask_preview(src_abs):
+    """A feathered (anti-aliased) copy of a binarized mask for the UI OVERLAY ONLY — softens the low-res
+    stair-step edge so the highlight reads as a clean glow. The STORED guide mask stays binarized/
+    deterministic (this never touches it). Returns PNG bytes, or None on failure (caller uses the raw mask)."""
+    try:
+        import io
+        from PIL import Image, ImageFilter
+        with Image.open(src_abs) as im:
+            g = im.convert("L")
+            r = max(1.5, round(min(g.size) * 0.012))   # feather ~1.2% of the shorter edge
+            g = g.filter(ImageFilter.GaussianBlur(r))
+        buf = io.BytesIO()
+        Image.merge("RGB", (g, g, g)).save(buf, "PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
 # ── ADR-0032 producer: click -> SAM2 object mask, inside the warm lease, headroom-gated, fail-open ──
 # Confirmed on the box 2026-06-21 (spike_sam2_segment.py): Sam2Segmentation(coordinates_positive JSON
 # [{"x":int,"y":int}]) -> MASK, loader DownloadAndLoadSAM2Model, sam2.1_hiera_small Apache-2.0; measured
@@ -263,7 +301,17 @@ def _segment_graph(frame_name, px, py):
     }
 
 
-def segment_at(frame_name, x, y, out_abs, timeout=120):
+def _comfy_busy():
+    """True if ComfyUI is actively processing (a dream render, a Blender job, …). A segment must NOT queue
+    behind it — that would block for minutes and hold the segment lock; bail fast to a point instead."""
+    try:
+        q = json.load(urllib.request.urlopen(f"{cc.BASE}/queue", timeout=2))
+        return bool(q.get("queue_running") or q.get("queue_pending"))
+    except Exception:
+        return False
+
+
+def segment_at(frame_name, x, y, out_abs, timeout=60):
     """ADR-0032 producer: segment the object under a NORMALIZED (x,y) tap on `frame_name` (INPUT_DIR-
     relative), validate the returned mask through load_validated_mask sized to the frame's own pixels, and
     write the clean 0/255 mask to out_abs. Returns out_abs on success else None (caller -> soft-disc/point).
@@ -274,6 +322,9 @@ def segment_at(frame_name, x, y, out_abs, timeout=120):
     free = _comfy_free_mib()                       # cold (None) or contended -> do not segment
     if free is None or free < SEG_PEAK_MIB + SEG_HEADROOM_MIB:
         print(f"seg: skip (free={free} MiB < need {SEG_PEAK_MIB + SEG_HEADROOM_MIB}); fall back to disc/point")
+        return None
+    if _comfy_busy():                              # don't queue behind a render -> would block the tag for minutes
+        print("seg: ComfyUI busy (queue non-empty); fall back to disc/point")
         return None
     try:
         from PIL import Image
@@ -403,6 +454,39 @@ def build_sys(rating, n):
 # E.SYS_SFW; .replace leaves {n} + the JSON {{...}} intact so SYS_SFW.format(n=n) keeps working.
 SYS_SFW = _SYS_TMPL.replace("{rating_clause}", _RATING_CLAUSE["sfw"])
 
+# ── juncture prompt refine (ADR-0023): at a choice moment the viewer types their OWN rough idea for the
+# next beat and asks to sharpen it. Unlike lucid_refine's OPENING rewrite (which is free to invent a whole
+# new shot), a mid-dream refine obeys the SAME two-dial law as beat-gen — MOTION stays small so the i2v
+# last-frame chain holds; the IDEA is the ONE thing the viewer's words introduce, drifting from THIS frame
+# — and must stay FAITHFUL to what they asked (sharpen + ground their intent, never swap in a different
+# idea). It returns ONE beat ({"prompt":...}), not a menu. Same fail-safe stance: the model proposes; the
+# downstream red-line gate (lucid_safety.gate_prompt) is the only safety authority, applied to BOTH the
+# rough input and the refined output. The {rating_clause} swap mirrors beat-gen — content rating tunes
+# creative tone only, never the rating-independent red line below.
+_SYS_REFINE_TMPL = (
+    "You are a film-continuation writer for a private, local, single-user dream-video tool. You are given "
+    "the dream's premise, the story so far, what is on screen NOW, and the viewer's OWN rough idea for what "
+    "happens next. Rewrite THEIR idea — keeping its intent — into ONE vivid, concrete, filmable beat.\n"
+    "KEEP THE MOTION SMALL so the video stays coherent: the next clip starts on this exact frame, so hold "
+    "the subject in the SAME pose, spot, and framing — small gestures, breathing, gaze, fabric, a slow "
+    "camera push or pull, a light or color change, or one thing morphing in place. The new thing the "
+    "viewer wants must arrive THROUGH the frame; never have the subject walk off, turn away, teleport, or "
+    "reposition.\n"
+    "Write ONE present-tense MOTION description under 40 words: the camera move + the subject's small "
+    "motion + the ONE thing the viewer's idea introduces, drifting continuously from this frame. Stay true "
+    "to what they asked for — sharpen and ground it in what is actually on screen; do NOT replace it with a "
+    "different idea, and do not add unrelated elements.\n"
+    "{rating_clause} RED LINE (never violate): no minors, no real or identifiable real people.\n"
+    'Return ONLY JSON — one beat: {{"prompt":"<the one rewritten beat>"}}.'
+)
+
+
+def build_refine_sys(rating):
+    """The juncture-refine system prompt for an inferred content `rating` ('sfw'|'mature'). Unknown -> SFW.
+    Shares _RATING_CLAUSE with beat-gen so a refine and a proposed beat carry the same creative tone."""
+    clause = _RATING_CLAUSE.get(rating, _RATING_CLAUSE["sfw"])
+    return _SYS_REFINE_TMPL.format(rating_clause=clause)
+
 # ── frame grounding (ADR-0014 §6): the narrator is a VISION model (qwen2.5vl) — let it SEE the frame.
 # One short VLM pass captions + content-rates the current frame; "model proposes, code disposes": the
 # rating only ever selects the steering clause above + the render LoRA strength, and ANY uncertainty
@@ -417,6 +501,24 @@ SYS_GROUND = (
     'or explicit; otherwise "sfw". This rating adjusts creative tone only — it NEVER permits minors or '
     "real, identifiable people."
 )
+
+# ── persistent SUBJECT anchor (ADR-0033): the #1 cause of "the face changes between beats" is that the
+# per-beat render prompt is MOTION-only — the subject is never re-described, so each independent i2v clip
+# re-invents the identity off the single pixel anchor. SYS_SUBJECT extracts ONE stable identity descriptor
+# from the OPENING frame (appearance only — not action, mood, or background), captured ONCE per dream and
+# reused as a quiet prefix on every render prompt so the subject persists across cuts. Same fail-safe shape
+# as SYS_GROUND (model proposes; the caller red-line-gates the text before it ever reaches the renderer).
+SYS_SUBJECT = (
+    "You are a careful visual analyst for a private, local, single-user dream-video tool. "
+    "Look at the attached image and describe ONLY the main subject's PERSISTENT identity — the traits "
+    "that should stay the same as the scene around them changes: who/what they are, approximate age band, "
+    "build, hair, skin tone, distinctive features, and the clothing they are wearing. Do NOT describe their "
+    "action, pose, expression, the lighting, the background, or the mood (those change beat to beat). If "
+    "there is no clear single subject, describe the dominant figure or object. "
+    'Reply with ONLY JSON: {"subject":"<one compact noun phrase, under 30 words, no trailing period>"}. '
+    "NEVER name or imply a real, identifiable person; describe only generic appearance."
+)
+
 
 # ── note decomposition (ADR-0014): the i2v workflow takes only ONE seed image, so when the viewer
 # tags several moments of the clip they just watched, those EXTRA frames can't be fed to ComfyUI.
@@ -494,6 +596,23 @@ def ground_frame(frame_b64, premise=None):
     cap = cap.strip()[:200] if isinstance(cap, str) and cap.strip() else None
     rating = "mature" if isinstance(data, dict) and data.get("rating") == "mature" else "sfw"
     return cap, rating
+
+
+def ground_subject(frame_b64):
+    """One VLM pass over the OPENING frame -> a compact persistent-subject descriptor (str) or None
+    (ADR-0033). The caller captures this ONCE per dream and red-line-gates it before reusing it as a quiet
+    identity prefix on every render prompt, so the subject persists across the independent i2v cuts. Fully
+    fail-open: an unreachable/garbled model or an empty result -> None (the render prompt stays motion-only,
+    exactly as before)."""
+    if not frame_b64:
+        return None
+    try:
+        data = json.loads(_ollama_json(SYS_SUBJECT, "Describe the persistent subject.", images=[frame_b64]))
+    except Exception:
+        return None
+    subj = data.get("subject") if isinstance(data, dict) else None
+    subj = subj.strip().rstrip(".").strip()[:200] if isinstance(subj, str) and subj.strip() else None
+    return subj or None
 
 
 def decompose_notes(beat_prompt, tagged, premise=None):
@@ -625,6 +744,33 @@ def _is_api_graph(wf):
     Lets WORKFLOW be either the UI Remix graph OR a non-distilled API graph (the anti-melt swap)."""
     return isinstance(wf, dict) and "nodes" not in wf and bool(wf) and all(
         isinstance(v, dict) and "class_type" in v for v in wf.values())
+
+
+def _strip_upscale_if_missing(api):
+    """Fail-open (ADR-0003): if the hero upscale weight isn't on disk, drop the upscale stage so the hero
+    still RENDERS (plain 20-step) instead of a /prompt 400. Rewire each ImageUpscaleWithModel's consumers
+    back to its own `image` source (the VAEDecode), then remove the upscale + its UpscaleModelLoader. No-op
+    when the model is present or the graph has no upscale stage (the draft lane). Mutates + returns `api`."""
+    up_ids = [i for i, n in api.items() if n.get("class_type") == "ImageUpscaleWithModel"]
+    if not up_ids:
+        return api
+    if os.path.isfile(os.path.join(cc.COMFY_ROOT, "models", "upscale_models", HERO_UPSCALE_MODEL)):
+        return api
+    print(f"hero: upscale model {HERO_UPSCALE_MODEL!r} not found — rendering hero WITHOUT upscale (fail-open)")
+    drop = set()
+    for up in up_ids:
+        src = api[up]["inputs"].get("image")               # pre-upscale image source (the VAEDecode)
+        loader = api[up]["inputs"].get("upscale_model")
+        for n in api.values():                             # rewire whatever consumed [up,0] back to src
+            for k, v in n.get("inputs", {}).items():
+                if isinstance(v, list) and v[:1] == [up]:
+                    n["inputs"][k] = list(src)
+        drop.add(up)
+        if isinstance(loader, list):
+            drop.add(loader[0])
+    for d in drop:
+        api.pop(d, None)
+    return api
 
 
 def _api_prompt_node(api):
@@ -912,11 +1058,17 @@ def _run_beat_ltx(prompt, first_frame_name, seed, length, timeout, output_prefix
 
 def run_beat(prompt, first_frame_name, seed=None,
              w=DEFAULT_W, h=DEFAULT_H, length=DEFAULT_LEN, timeout=1800, output_prefix=None,
-             rating="sfw", guides=None):
+             rating="sfw", guides=None, quality="draft"):
     """Parameterize the i2v workflow (UI Remix OR non-distilled API graph) and generate one clip.
     `rating` ('sfw'|'mature') sets the LOW-noise LoRA strength so a SFW continuation is NOT rendered
     by the explicit-anatomy graph (default SFW = LoRA off; the shipped path passes the sealed rating).
     ENGINE routes to the LTX-2.3 / 10Eros backend when selected (registry/env), Wan otherwise.
+
+    `quality` ('draft'|'hero', ADR-0033) selects the Wan workflow lane: 'draft' = the fast 4+4 lightning
+    graph (WORKFLOW); 'hero' = the non-distilled 20-step graph + a RealESRGAN 2× detail-upscale (HERO_WORKFLOW)
+    — a higher-fidelity render of the SAME shot when called with the draft's seed/prompt/anchor. If the upscale
+    weight is missing the hero degrades to plain 20-step (fail-open). Wan-only; the 10Eros path ignores it.
+    Default 'draft' is byte-identical to before.
 
     `guides` (LTX-only) = ordered list of (frame_abs_path, t_seconds, tag in more|less|hold|change)
     that pin tagged moments into the clip via LTXVAddGuide (spatial feed-forward). Ignored on the Wan
@@ -930,7 +1082,11 @@ def run_beat(prompt, first_frame_name, seed=None,
                                  guides=guides)
         return _run_beat_ltx(prompt, first_frame_name, seed, length, timeout, output_prefix)
     length = clamp_length(length)   # defensive: never trust a caller-supplied frame count
-    with open(WORKFLOW) as f:
+    hero = (quality == "hero")
+    wf_path = HERO_WORKFLOW if hero else WORKFLOW
+    if hero:                          # hero stays at draft res; the upscale (not native res) adds the pixels
+        w, h = HERO_W, HERO_H
+    with open(wf_path) as f:
         wf = json.load(f)
     if _is_api_graph(wf):                          # non-distilled GGUF graph (anti-melt) — drive directly
         api = dict(wf)
@@ -939,6 +1095,8 @@ def run_beat(prompt, first_frame_name, seed=None,
     else:                                          # UI Remix graph — widgets then convert
         _set_widgets(wf, prompt, first_frame_name, seed, w, h, length, output_prefix)
         api = cc.ui_to_api(wf)
+    if hero:                                        # fail-open: drop the upscale stage if the weight is absent
+        api = _strip_upscale_if_missing(api)
     files, _hist = cc.generate(api, timeout=timeout)
     if not files:
         raise RuntimeError("generation produced no video")
