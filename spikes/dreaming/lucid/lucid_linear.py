@@ -30,6 +30,7 @@ user-supplied seed passes B2 (a server-generated abstract opening is the only tr
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -263,14 +264,36 @@ def _note_seq(chain):
     return hi + 1
 
 
-def add_note(session, node_id, t, tag, text="", x=None, y=None, r=None):
-    """Attach a moment annotation to a node (ADR-0023/0025 spatial + semantic feed-forward). `tag` is one
-    of NOTE_TAGS (else ValueError); `t` is clamped to >= 0; `text` is UNTRUSTED — if present it must pass
+def _valid_mask_ref(session, mask):
+    """ADR-0032: validate an UNTRUSTED mask ref from the client (code disposes — never trust a path). It must
+    be EXACTLY a name /api/segment mints for THIS session — basename `<session>_segmask_<hex>.png`, optionally
+    under the single sealed subdir `.lucid-priv-<session>/` and nothing else — AND the file must exist. No
+    traversal, no abs path, no foreign subdir, no substring-collision on the session id (we anchor on the
+    `<session>_segmask_` prefix, not `in`). Returns the ref or None (None -> save as a plain point, fail-open)."""
+    if not mask:
+        return None
+    m = str(mask)
+    if ".." in m or m.startswith("/"):
+        return None
+    d, b = os.path.split(m)
+    if d not in ("", f".lucid-priv-{session}"):                 # only the session's own sealed subdir
+        return None
+    if not re.fullmatch(rf"{re.escape(session)}_segmask_[0-9a-f]+\.png", b):
+        return None
+    return m if os.path.exists(os.path.join(E.INPUT_DIR, m)) else None
+
+
+def add_note(session, node_id, t, tag, text="", x=None, y=None, r=None, mask=None):
+    """Attach a moment annotation to a node (ADR-0023/0025/0032 spatial + semantic feed-forward). `tag` is
+    one of NOTE_TAGS (else ValueError); `t` is clamped to >= 0; `text` is UNTRUSTED — if present it must pass
     the red-line gate (else ValueError) so a steered prompt can never carry it past the gate later. An
     OPTIONAL spatial point (`x`,`y` normalized 0..1, origin top-left) with radius `r` records WHERE on the
     frame the viewer tapped; persisted only when both x and y are given (legacy time-only notes stay clean).
-    The note is appended to the node's `notes` list with a monotonic per-chain id and persisted. Returns the
-    note dict. Raises ValueError on a bad tag, red-line-failing text, or an unknown node id."""
+    An OPTIONAL `mask` (ADR-0032) is the INPUT_DIR-relative ref of a stored segmentation mask produced by
+    /api/segment; it is validated (code disposes — session-scoped, no traversal, must exist) and persisted
+    so the engine uses the precise object silhouette, with (x,y,r) kept as the soft-disc fallback. The note
+    is appended to the node's `notes` list with a monotonic per-chain id and persisted. Returns the note
+    dict. Raises ValueError on a bad tag, red-line-failing text, or an unknown node id."""
     if tag not in NOTE_TAGS:
         raise ValueError(f"bad note tag {tag!r} (expected one of {NOTE_TAGS})")
     t = max(0.0, float(t))
@@ -285,6 +308,7 @@ def add_note(session, node_id, t, tag, text="", x=None, y=None, r=None):
         cy = min(1.0, max(0.0, float(y)))
         rr = min(0.9, max(0.02, float(r) if r is not None else DEFAULT_NOTE_RADIUS))
         region = (cx, cy, rr)
+    mask_ref = _valid_mask_ref(session, mask)
     chain = load_chain(session)
     node = _by_id(chain).get(node_id)
     if node is None:
@@ -292,6 +316,8 @@ def add_note(session, node_id, t, tag, text="", x=None, y=None, r=None):
     note = {"id": "nt" + str(_note_seq(chain)), "t": t, "tag": tag, "text": text}
     if region:
         note["x"], note["y"], note["r"] = region
+    if mask_ref:
+        note["mask"] = mask_ref
     node.setdefault("notes", []).append(note)
     save_chain(session, chain)
     return note
@@ -308,6 +334,16 @@ def remove_note(session, node_id, note_id):
     kept = [n for n in notes if n.get("id") != note_id]
     if len(kept) == len(notes):
         return False
+    # ADR-0032: unlink the removed note's stored segmentation mask (append-only artifact cleanup; the
+    # private burn also wipes the sealed dir). Best-effort — a missing file is fine (idempotent). Masks are
+    # CONTENT-ADDRESSED, so an identical mask may be shared by another note — only unlink one no surviving
+    # note still references (else removing one note would blank another's silhouette).
+    gone = next((n for n in notes if n.get("id") == note_id), None)
+    if gone and gone.get("mask") and not any(k.get("mask") == gone["mask"] for k in kept):
+        try:
+            os.remove(os.path.join(E.INPUT_DIR, gone["mask"]))
+        except OSError:
+            pass
     node["notes"] = kept
     save_chain(session, chain)
     return True
@@ -527,10 +563,14 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
                 fn = E.extract_frame_at(clip, note.get("t", 0.0), nm, out_path=ap)
                 if fn:
                     b64 = E.frame_to_b64(ap)
-                    # (abs_path, t, tag, region) — region=(x,y,r) is the WHERE (ADR-0025 amendment); the LTX
-                    # engine turns it into a soft-disc attention mask. None for legacy time-only notes.
+                    # (abs_path, t, tag, region, mask_abs) — region=(x,y,r) is the WHERE (ADR-0025); mask_abs
+                    # is a stored SEGMENTATION mask (ADR-0032, preferred over the disc). None for legacy notes.
                     region = (note["x"], note["y"], note["r"]) if ("x" in note and "y" in note) else None
-                    guides.append((ap, float(note.get("t", 0.0)), note.get("tag"), region))   # LTX pin
+                    mask_abs = None
+                    if note.get("mask"):
+                        cand = os.path.join(E.INPUT_DIR, note["mask"])
+                        mask_abs = cand if os.path.exists(cand) else None
+                    guides.append((ap, float(note.get("t", 0.0)), note.get("tag"), region, mask_abs))  # LTX pin
             else:                                       # clip-less opening: b64 the parent's stored frame
                 b64 = E.frame_to_b64(_frame_abs(session, parent))
             if b64:

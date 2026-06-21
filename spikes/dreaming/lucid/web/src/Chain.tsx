@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type KeyboardEvent } from 'react'
 import type { DreamNode, LucidState, Beat, Note } from './api'
-import { clipUrl, frameUrl, useBeats, useDream, useAddNote, useDeleteNote } from './api'
+import { clipUrl, frameUrl, downloadUrl, useBeats, useDream, useAddNote, useDeleteNote, segment } from './api'
 
 // pointer-parallax rect cache — read once per card on mouseenter so mousemove never forces a reflow.
 const rectCache = new WeakMap<HTMLElement, DOMRect>()
@@ -138,6 +138,14 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   // = a frame-wide note (legacy). Placed by tapping the clip while the draft is open; the engine turns it
   // into a soft-disc attention mask. Radius is the server default — one tap is the whole gesture.
   const [draftPt, setDraftPt] = useState<{ x: number; y: number } | null>(null)
+  // ADR-0032: the tap is segmented — SAM2 returns the tapped OBJECT'S mask, shown as a highlight. `draftMask`
+  // is the stored mask ref saved on the note (the precise silhouette); `draftPreview` is its inline data-URL
+  // for the overlay; `segmenting` drives the honest "finding the object…" state. Fail-open: if segmentation
+  // is unavailable (cold/contended GPU) the tap falls back to the bare point (draftPt) — a frame region note.
+  const [draftMask, setDraftMask] = useState<string | null>(null)
+  const [draftPreview, setDraftPreview] = useState<string | null>(null)
+  const [segmenting, setSegmenting] = useState(false)
+  const segSeq = useRef(0)   // ignore a stale segment response if the user re-tapped meanwhile
   // Reset transient per-beat / per-turn UI when the selected beat or the turn phase changes — adjusted
   // DURING render (React-docs "you might not need an effect"), not via a set-state-in-effect that cascades
   // an extra render. Each guard flips its own prev-tracker so it fires once per change, and every target is
@@ -145,22 +153,55 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   // which is just phase === 'dreaming'.)
   const [prevSelId, setPrevSelId] = useState(sel.id)
   const [prevPhase, setPrevPhase] = useState(state.turn.phase)
-  if (sel.id !== prevSelId) { setPrevSelId(sel.id); setDraftOpen(false); setDwell(false) }                       // new beat: close any open draft, end the dwell
+  if (sel.id !== prevSelId) { setPrevSelId(sel.id); setDraftOpen(false); setDwell(false); setDraftMask(null); setDraftPreview(null); setSegmenting(false) }   // new beat: close any open draft, end the dwell, drop the segmentation
   if (state.turn.phase !== prevPhase) { setPrevPhase(state.turn.phase); setCommitted(false); setDwell(false); setPendingLabel(null) }   // turn rolled over: unlock the menu, end the dwell, drop the optimistic caption
   function openDraft() {
     setDraftT(videoRef.current?.currentTime ?? 0)      // clip-less opening still -> t=0
-    setDraftTag('hold'); setDraftText(''); setDraftPt(null); setDraftOpen(true)
+    setDraftTag('hold'); setDraftText(''); setDraftPt(null); setDraftMask(null); setDraftPreview(null)
+    setSegmenting(false); setAiming(false); setKbCursor({ x: 0.5, y: 0.5 }); setDraftOpen(true)
   }
-  // place the spatial point from a tap on the clip overlay — normalized to the overlay's box, clamped in.
+  // Place a normalized point AND segment the object under it (ADR-0032). The mask highlight replaces the bare
+  // dot when SAM2 succeeds; on any failure (cold/contended GPU, empty/degenerate mask) we keep the point and
+  // the note saves as a frame region (fail-open). A re-place supersedes an in-flight segmentation.
+  function placeAt(x: number, y: number) {
+    setDraftPt({ x, y }); setDraftMask(null); setDraftPreview(null); setSegmenting(true)
+    const seq = ++segSeq.current
+    segment({ node: sel.id, t: draftT, x, y })
+      .then((res) => {
+        if (seq !== segSeq.current) return            // a newer place won — ignore this stale result
+        setSegmenting(false)
+        // gate the saved mask on the PREVIEW (one source of truth): the overlay + aria-live + the saved
+        // value must agree — never persist a mask the UI shows/announces as a bare point.
+        if (res.ok && res.mask && res.preview) { setDraftMask(res.mask); setDraftPreview(res.preview) }
+      })
+      .catch(() => { if (seq === segSeq.current) setSegmenting(false) })   // fail-open -> keep the point
+  }
   function placePoint(e: MouseEvent<HTMLDivElement>) {
     const r = e.currentTarget.getBoundingClientRect()
-    const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
-    const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))
-    setDraftPt({ x, y })
+    placeAt(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
+            Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)))
+  }
+  // KEYBOARD/switch path (WCAG 2.1.1): the aim surface is focusable; arrows nudge a crosshair (Shift = coarse),
+  // Enter/Space segments at it — so segmentation is never pointer-only. (The chip-based frame-wide note stays
+  // an equal first-class route for a note with no point.)
+  const [kbCursor, setKbCursor] = useState({ x: 0.5, y: 0.5 })
+  const [aiming, setAiming] = useState(false)
+  function aimKey(e: KeyboardEvent<HTMLDivElement>) {
+    const s = e.shiftKey ? 0.1 : 0.03
+    const nudge = (dx: number, dy: number) => {
+      e.preventDefault()
+      setKbCursor((c) => ({ x: Math.min(1, Math.max(0, c.x + dx)), y: Math.min(1, Math.max(0, c.y + dy)) }))
+    }
+    if (e.key === 'ArrowLeft') nudge(-s, 0)
+    else if (e.key === 'ArrowRight') nudge(s, 0)
+    else if (e.key === 'ArrowUp') nudge(0, -s)
+    else if (e.key === 'ArrowDown') nudge(0, s)
+    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); placeAt(kbCursor.x, kbCursor.y) }
   }
   function saveNote() {
     addNote.mutate({ node: sel.id, t: draftT, tag: draftTag, text: draftText.trim() || undefined,
-      x: draftPt?.x, y: draftPt?.y })   // x/y omitted when no point → a frame-wide note (legacy)
+      x: draftPt?.x, y: draftPt?.y,                  // x/y omitted when no point → a frame-wide note (legacy)
+      mask: draftMask ?? undefined })                // the precise object silhouette when segmentation landed
     setDraftOpen(false)
   }
   // carry indicator: remember which node a beat was fired from, so while dreaming we can tell the user the
@@ -239,7 +280,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const selDur = sel.length ? sel.length / FPS : 0   // 0 for a still -> no marker track
   const markerLeft = (t: number) => selDur > 0 ? Math.min(100, Math.max(0, (t / selDur) * 100)) : 0
   // the tag button surfaces only on a real, settled node (a clip OR the opening still), never mid-dream
-  const canTag = !dreaming && !revealing && (!!sel.clip || idx === 0)
+  const canTag = !dreaming && !revealing && !busy && (!!sel.clip || idx === 0)   // !busy: no tap during the fire→dream bridge (ADR-0032)
 
   // keep the selected node in view as the story advances (own scroll only; honour reduced-motion).
   useEffect(() => {
@@ -454,15 +495,37 @@ export default function Chain({ state, revealing = false, onLatestReady }:
             )}
           </div>
           <div className="stage-vig" />
-          {/* ADR-0025: while tagging, an overlay turns a tap on the clip into the note's spatial point
-              (optional — skip it for a frame-wide note). Sits above the video, below the caption/draft. */}
+          {/* ADR-0025/0032: while tagging, a tap on the clip segments the OBJECT under it (SAM2) and shows
+              its silhouette as a highlight — figure/ground, not hue: a tag-tinted boundary on the object PLUS
+              a darkening scrim on everything else (so it reads on any frame), the tag also named in the draft
+              chip below. Fail-open: no mask -> the bare point (a frame region). Sits above the video. */}
           {canTag && draftOpen && (
-            <div className="tag-aim" onClick={placePoint}
-              aria-label="Tap where on the frame this tag applies (optional)">
-              {draftPt && (
-                <span className={'aim-dot aim-' + draftTag}
+            <div className="tag-aim" onClick={placePoint} tabIndex={0} role="application"
+              onKeyDown={aimKey} onFocus={() => setAiming(true)} onBlur={() => setAiming(false)}
+              aria-label="Aim at an object to steer the next beat — click it, or use the arrow keys then Enter">
+              {draftPreview && (
+                <>
+                  <div className="aim-scrim" />
+                  <div className={'aim-mask aim-' + draftTag} aria-hidden="true"
+                    style={{ WebkitMaskImage: `url(${draftPreview})`, maskImage: `url(${draftPreview})` }} />
+                </>
+              )}
+              {draftPt && !draftPreview && (
+                <span className={'aim-dot aim-' + draftTag + (segmenting ? ' seg' : '')}
                   style={{ left: draftPt.x * 100 + '%', top: draftPt.y * 100 + '%' }} />
               )}
+              {aiming && !draftPreview && (   /* keyboard aiming crosshair (shown while focused, pre-point) */
+                <span className="aim-cross" aria-hidden="true"
+                  style={{ left: kbCursor.x * 100 + '%', top: kbCursor.y * 100 + '%' }} />
+              )}
+            </div>
+          )}
+          {/* honest, calm status across the segmentation lifecycle — announced to assistive tech */}
+          {canTag && draftOpen && (
+            <div className="seg-status" role="status" aria-live="polite">
+              {segmenting ? 'finding the object…'
+                : draftPreview ? 'object highlighted — confirm to keep'
+                : draftPt ? 'the GPU was busy — saved as a point' : ''}
             </div>
           )}
           {/* existing notes that carry a point: faint dots on the frame (in addition to the timeline track) */}

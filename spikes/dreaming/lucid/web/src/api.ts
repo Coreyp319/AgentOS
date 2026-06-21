@@ -13,6 +13,7 @@ export type Readiness = {
 export type Note = {
   id: string; t: number; tag: 'more' | 'less' | 'hold' | 'change'; text: string
   x?: number; y?: number; r?: number          // optional region (ADR-0025): where on the frame, normalized
+  mask?: string                                // optional segmentation-mask ref (ADR-0032): the tapped object
 }
 export type DreamNode = {
   id: number; parent: number; label: string; prompt: string
@@ -126,8 +127,14 @@ export const useDelete = () => useStateMutation((session?: string) => post('/api
 // ---- ADR-0023 moment tags (spatial feed-forward): annotate a node's clip; steers the next beat ----
 // Both go through useStateMutation so a settle invalidates ['state'] — the next poll reflects node.notes.
 export const useAddNote = () =>
-  useStateMutation((b: { node: number; t: number; tag: string; text?: string; x?: number; y?: number; r?: number }) =>
+  useStateMutation((b: { node: number; t: number; tag: string; text?: string; x?: number; y?: number; r?: number; mask?: string }) =>
     post('/api/note', b))
+
+// ADR-0032: tap an object -> SAM2 returns its mask. A one-off (not a state mutation; the note is saved
+// later via addNote with the returned ref). Fail-open: {ok:false} -> the caller saves a plain point.
+export type SegmentResult = { ok: boolean; mask?: string; preview?: string; reason?: string }
+export const segment = (b: { node: number; t: number; x: number; y: number }): Promise<SegmentResult> =>
+  post('/api/segment', b)
 export const useDeleteNote = () =>
   useStateMutation((b: { node: number; id: string }) => post('/api/note/delete', b))
 

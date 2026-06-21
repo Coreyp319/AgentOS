@@ -238,6 +238,58 @@ class NotesTest(unittest.TestCase):
         self.assertEqual(node.get("notes"), [])                 # gone
         self.assertFalse(L.remove_note("t", 1, note["id"]))     # idempotent: a second delete is a no-op
 
+    def test_add_note_persists_validated_mask_ref(self):
+        # ADR-0032: a valid, existing, session-scoped mask ref persists; bogus refs are dropped (code disposes).
+        import tempfile, shutil
+        d = tempfile.mkdtemp(); orig = L.E.INPUT_DIR; L.E.INPUT_DIR = d
+        try:
+            with open(os.path.join(d, "t_segmask_0.png"), "wb") as f:
+                f.write(b"x")
+            note = L.add_note("t", 1, 0.5, "more", "", x=0.5, y=0.5, mask="t_segmask_0.png")
+            self.assertEqual(note["mask"], "t_segmask_0.png")                 # valid ref persists
+            add = lambda m: L.add_note("t", 1, 0.5, "more", "", x=0.5, y=0.5, mask=m)
+            self.assertNotIn("mask", add("../etc/passwd"))                    # traversal
+            self.assertNotIn("mask", add("/abs/t_segmask_0.png"))            # absolute path
+            self.assertNotIn("mask", add("t_missing.png"))                   # wrong name pattern
+            # substring-collision + foreign-subdir are now rejected (anchored prefix, not `in`):
+            for bad in ("tother_segmask_0.png", "other/t_segmask_0.png", ".lucid-priv-x/t_segmask_0.png"):
+                with open(os.path.join(d, os.path.basename(bad)), "wb") as f:
+                    f.write(b"x")                                            # exists, but still rejected by shape
+                self.assertNotIn("mask", add(bad), bad)
+        finally:
+            L.E.INPUT_DIR = orig; shutil.rmtree(d, ignore_errors=True)
+
+    def test_remove_note_keeps_a_shared_content_addressed_mask(self):
+        # content-addressed masks may be shared by two notes; removing one must NOT blank the other's silhouette.
+        import tempfile, shutil
+        d = tempfile.mkdtemp(); orig = L.E.INPUT_DIR; L.E.INPUT_DIR = d
+        try:
+            p = os.path.join(d, "t_segmask_abc123.png")
+            with open(p, "wb") as f:
+                f.write(b"x")
+            a = L.add_note("t", 1, 0.0, "more", "", x=0.5, y=0.5, mask="t_segmask_abc123.png")
+            b = L.add_note("t", 1, 0.5, "hold", "", x=0.4, y=0.4, mask="t_segmask_abc123.png")
+            self.assertTrue(L.remove_note("t", 1, a["id"]))
+            self.assertTrue(os.path.exists(p))                               # still referenced by b -> kept
+            self.assertTrue(L.remove_note("t", 1, b["id"]))
+            self.assertFalse(os.path.exists(p))                             # last reference gone -> unlinked
+        finally:
+            L.E.INPUT_DIR = orig; shutil.rmtree(d, ignore_errors=True)
+
+    def test_remove_note_unlinks_mask(self):
+        import tempfile, shutil
+        d = tempfile.mkdtemp(); orig = L.E.INPUT_DIR; L.E.INPUT_DIR = d
+        try:
+            p = os.path.join(d, "t_segmask_9.png")
+            with open(p, "wb") as f:
+                f.write(b"x")
+            note = L.add_note("t", 1, 0.0, "more", "", x=0.5, y=0.5, mask="t_segmask_9.png")
+            self.assertTrue(os.path.exists(p))
+            self.assertTrue(L.remove_note("t", 1, note["id"]))
+            self.assertFalse(os.path.exists(p))                              # mask unlinked with the note
+        finally:
+            L.E.INPUT_DIR = orig; shutil.rmtree(d, ignore_errors=True)
+
     def test_add_note_rejects_bad_tag_and_redline_text(self):
         with self.assertRaises(ValueError):
             L.add_note("t", 1, 0.0, "nonsense", "")             # tag not in NOTE_TAGS
@@ -436,9 +488,10 @@ class GuidesTest(unittest.TestCase):
         self.assertIsNotNone(guides)
         self.assertEqual(len(guides), 2)                       # one guide per note
         for g in guides:
-            self.assertEqual(len(g), 4)                        # (path, t, tag, region)
+            self.assertEqual(len(g), 5)                        # (path, t, tag, region, mask_abs) — ADR-0032
             self.assertTrue(isinstance(g[0], str) and g[0])    # a (truthy) abs path
             self.assertIsNone(g[3])                            # time-only notes carry no region
+            self.assertIsNone(g[4])                            # ...and no segmentation mask
         by_t = {g[1]: g[2] for g in guides}
         self.assertEqual(by_t, {0.5: "more", 1.4: "change"})   # right t -> tag mapping
 

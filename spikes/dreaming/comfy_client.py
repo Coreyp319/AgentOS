@@ -506,6 +506,23 @@ def generate(api_prompt, timeout=3600):
     return files, hist
 
 
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def generate_image(api_prompt, timeout=300):
+    """Like generate() but for an IMAGE-output graph (e.g. an ADR-0032 SAM2 segment graph ending in
+    SaveImage). generate() filters output_files() to VIDEO_EXTS and falls back to _newest_video, so it
+    would DROP a mask PNG and hand back a stale clip; this path keeps the images. Returns ([paths], history)."""
+    pid, _ = submit(api_prompt)
+    hist = wait(pid, timeout=timeout)
+    status = hist.get("status", {})
+    if status.get("status_str") == "error":
+        raise RuntimeError(f"image generation errored: {json.dumps(status)[:1500]}")
+    files = [p for p in output_files(hist)
+             if os.path.splitext(p)[1].lower() in IMAGE_EXTS and os.path.exists(p)]
+    return files, hist
+
+
 def free_vram():
     """Unload models + free VRAM. The /free endpoint returns an empty body,
     so we don't parse JSON — just require a 2xx."""

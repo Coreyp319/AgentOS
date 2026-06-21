@@ -23,10 +23,12 @@ Host/port via LUCID_WEB_HOST / LUCID_WEB_PORT (default 127.0.0.1:8765, loopback 
 """
 import base64
 import errno
+import hashlib
 import hmac
 import io
 import json
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -95,6 +97,13 @@ def _share_key():
 # Bound the expensive start path (each upload = an image decode + a ~13s vision model load) so a
 # burst of /api/start can't exhaust memory / thrash the GPU the coordinator arbitrates (security).
 _START_SEM = threading.BoundedSemaphore(2)
+# Serialize whole-dream stitches: a download spawns ffmpeg (a re-encode of a long dream is CPU-heavy
+# and runs for seconds-to-minutes). One at a time keeps a mashed button / many tabs from oversubscribing
+# the cores the box also runs inference on; a second concurrent request gets a clean 503 (review).
+_DOWNLOAD_SEM = threading.BoundedSemaphore(1)
+# Serialize SAM2 segmentations (ADR-0032): a rapid re-tap must not stack concurrent segment graphs against
+# one stale free-VRAM snapshot (the admission TOCTOU) — a second concurrent /api/segment fails open to a point.
+_SEG_SEM = threading.BoundedSemaphore(1)
 MAX_BODY = 30 * 1024 * 1024     # hard request-body ceiling (before reading)
 MAX_IMG = 20 * 1024 * 1024      # decoded-image-bytes ceiling
 MAX_PIXELS = 24_000_000         # ~6000x4000 — reject decompression bombs
@@ -922,7 +931,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         if path not in ("/api/dream", "/api/burn", "/api/start", "/api/delete", "/api/engine",
-                        "/api/note", "/api/note/delete",
+                        "/api/note", "/api/note/delete", "/api/segment",
                         "/api/queue/retry", "/api/queue/dismiss", "/api/queue/approve",
                         # ADR-0028: save & reopen + the encrypted private stash
                         "/api/open", "/api/rename", "/api/stash/init", "/api/stash/unlock",
@@ -967,10 +976,64 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 note = L.add_note(cur_session(), int(req.get("node")), req.get("t", 0.0),
                                   req.get("tag"), req.get("text", ""),
-                                  x=req.get("x"), y=req.get("y"), r=req.get("r"))
+                                  x=req.get("x"), y=req.get("y"), r=req.get("r"),
+                                  mask=req.get("mask"))   # ADR-0032: optional validated segmentation-mask ref
             except (ValueError, TypeError) as e:
                 return self._send(200, json.dumps({"error": str(e)}), "application/json")
             return self._send(200, json.dumps({"ok": True, "note": note}), "application/json")
+        if path == "/api/segment":   # ADR-0032: tap -> SAM2 object mask (warm-only, headroom-gated, fail-open)
+            # Extract the tapped frame into a SEALED input location, segment under the WARM lease (segment_at
+            # gates on free VRAM; cold/contended -> None), validate the mask, and return it INLINE as a
+            # no-store data-URL (NOT a new unauthenticated GET). Any failure -> {ok:false} and the client
+            # saves a plain point. The transient frame is single-use (deleted). Private masks seal + burn.
+            sess = cur_session()
+            # (ADR §5) refuse during a LIVE beat — the calm, legible downgrade; also skips a wasted ffmpeg
+            # extract. And SERIALIZE: a rapid re-tap must not stack concurrent SAM2 graphs against one stale
+            # free-VRAM read (the segment-admission TOCTOU) — non-blocking, fail-open to a point on contention.
+            with TURN_LOCK:
+                if TURN["phase"] == "dreaming":
+                    return self._send(200, json.dumps({"ok": False, "reason": "GPU busy — saved as a point"}),
+                                      "application/json")
+            if not _SEG_SEM.acquire(blocking=False):
+                return self._send(200, json.dumps({"ok": False, "reason": "segmenter busy — saved as a point"}),
+                                  "application/json")
+            try:
+                try:
+                    node_id = int(req.get("node"))
+                    t = max(0.0, float(req.get("t", 0.0)))
+                    x, y = float(req.get("x")), float(req.get("y"))
+                except (ValueError, TypeError):
+                    return self._send(200, json.dumps({"ok": False, "reason": "bad request"}), "application/json")
+                chain = L.load_chain(sess)
+                node = next((nn for nn in chain.get("nodes", []) if nn.get("id") == node_id), None)
+                clip = node.get("clip") if node else None
+                if not clip:
+                    return self._send(200, json.dumps({"ok": False, "reason": "no clip to tag"}), "application/json")
+                private = L.ST.is_private(sess) or bool(chain.get("private"))
+                fr_name, fr_abs = L.ST.frame_ref(sess, private, f"{sess}_segframe.png")
+                wk_name, wk_abs = L.ST.frame_ref(sess, private, f"{sess}_segmask_work.png")
+                res = None
+                if L.E.extract_frame_at(clip, t, fr_name, out_path=fr_abs):
+                    res = L.E.segment_at(fr_name, x, y, wk_abs)
+                try:
+                    os.remove(fr_abs)                   # transient frame is single-use (private footprint ~0)
+                except OSError:
+                    pass
+                if not res:                             # cold / contended / empty / degenerate -> save a point
+                    return self._send(200, json.dumps({"ok": False, "reason": "segmenter unavailable"}),
+                                      "application/json")
+                # CONTENT-ADDRESS the mask (append-only — ADR-0005): a re-tap with a new silhouette gets a new
+                # name and never clobbers a kept mask; an identical mask dedupes to the same file.
+                with open(wk_abs, "rb") as f:
+                    data = f.read()
+                h = hashlib.blake2b(data, digest_size=6).hexdigest()
+                mk_name, mk_abs = L.ST.frame_ref(sess, private, f"{sess}_segmask_{h}.png")
+                os.replace(wk_abs, mk_abs)
+                preview = "data:image/png;base64," + base64.b64encode(data).decode()  # gated, no-store response
+                return self._send(200, json.dumps({"ok": True, "mask": mk_name, "preview": preview}),
+                                  "application/json")
+            finally:
+                _SEG_SEM.release()
         if path == "/api/note/delete":   # ADR-0023: drop a moment annotation by id (idempotent)
             try:
                 ok = L.remove_note(cur_session(), int(req.get("node")), req.get("id"))

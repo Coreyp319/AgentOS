@@ -154,6 +154,18 @@ LTX_ATTN_ADV = {"crf": 29, "blur_radius": 0, "interpolation": "lanczos", "crop":
 # (drops the spatial masks, fail-safe to pre-amendment behaviour). Default on.
 LTX_ATTENTION_ENABLED = os.environ.get("LUCID_LTX_ATTENTION", "1") != "0"
 
+# ── ADR-0032: segmentation-produced mask gate (model proposes, code disposes) ──────────────────────
+# A SAM2 click-to-segment mask is a NON-deterministic pixel field; load_validated_mask is the deterministic
+# gate it must pass before it can become a guide's attention_mask (it replaces the soft-disc as the PRIMARY
+# producer; the disc stays the fail-open floor). SHIPPED defaults — tunable, not undefined.
+SEG_BINARIZE = 0.5      # cut SAM's 0..1 field (saved 0..255) at this fraction of full-scale -> clean 0/255
+SEG_MIN_AREA = 0.003    # reject specks (segmenter caught nothing meaningful under the tap)
+SEG_MAX_AREA = 0.85     # reject a near-full-frame mask (an ambiguous tap that grabbed the background)
+SEG_ASPECT_TOL = 0.15   # reject-to-disc when the tag-time frame aspect differs from the seed by > this
+# Master kill-switch: LUCID_SEGMENT_ENABLED=0 forces the legacy soft-disc path even when a note carries a
+# stored segmentation mask (fail-safe to ADR-0025), composing under LUCID_LTX_ATTENTION. Default on.
+SEGMENT_ENABLED = os.environ.get("LUCID_SEGMENT_ENABLED", "1") != "0"
+
 
 def _ltx_softdisc_mask(out_abs, w, h, x, y, r):
     """Write a soft-disc grayscale MASK PNG (white inside the tapped region, linearly feathered to black)
@@ -170,6 +182,123 @@ def _ltx_softdisc_mask(out_abs, w, h, x, y, r):
     v = np.clip((r_px + feather - dist) / feather, 0.0, 1.0)        # 1 inside, ramp over `feather`, 0 out
     img = (v * 255.0).astype(np.uint8)
     Image.fromarray(np.stack([img, img, img], axis=-1), "RGB").save(out_abs)
+
+
+def load_validated_mask(src_abs, out_abs, w, h):
+    """ADR-0032 deterministic gate: validate a stored segmentation-mask PNG and, on success, write a clean
+    seed-sized 0/255 RGB mask to `out_abs` for LoadImageMask(channel='red'), returning True. On ANY reject
+    return False so the caller falls back to the ADR-0025 soft-disc. Pure + total (no exception escapes).
+
+    The mask's OWN pixel dimensions are the tag-time frame size, so the tag-time/render-time divergence is
+    a code decision, not a silent stretch: if the mask aspect differs from the seed (w,h) by more than
+    SEG_ASPECT_TOL we reject (the disc is render-time + seed-sized and always correct); otherwise we
+    LETTERBOX-fit (preserve aspect, pad black) — never raw-stretch. Order: load(red) -> aspect-gate ->
+    letterbox-resize -> binarize -> empty-gate -> area-gate (computed on the FINAL seed canvas, so the black
+    letterbox padding dilutes the area fraction downward — a near-MAX mask can fall below MIN — and bilinear+
+    binarize can shift it slightly). Lazy numpy/PIL import keeps the engine's cold path dep-free."""
+    try:
+        import numpy as np
+        from PIL import Image
+        with Image.open(src_abs) as im:
+            sw, sh = im.size
+            arr = np.asarray(im.convert("RGB"))[:, :, 0]      # red channel (matches the soft-disc/LoadImageMask)
+        if sw <= 0 or sh <= 0 or w <= 0 or h <= 0:
+            return False
+        if abs((sw / sh) - (w / h)) / (w / h) > SEG_ASPECT_TOL:   # aspect gate (no silent warp)
+            return False
+        scale = min(w / sw, h / sh)                            # letterbox-fit into the seed box
+        nw, nh = max(1, round(sw * scale)), max(1, round(sh * scale))
+        m = np.asarray(Image.fromarray(arr).resize((nw, nh), Image.BILINEAR))
+        canvas = np.zeros((h, w), dtype=np.uint8)
+        oy, ox = (h - nh) // 2, (w - nw) // 2
+        canvas[oy:oy + nh, ox:ox + nw] = m
+        binm = canvas >= int(SEG_BINARIZE * 255)              # binarize -> clean boolean mask
+        if not binm.any():                                    # empty (nothing under the tap)
+            return False
+        area = float(binm.mean())
+        if area < SEG_MIN_AREA or area > SEG_MAX_AREA:        # speck / near-full-frame
+            return False
+        out = (binm.astype(np.uint8) * 255)
+        Image.fromarray(np.stack([out, out, out], axis=-1), "RGB").save(out_abs)
+        return True
+    except Exception as e:
+        print(f"LTX seg-mask validation failed ({e}); falling back to soft-disc (code disposes)")
+        return False
+
+
+# ── ADR-0032 producer: click -> SAM2 object mask, inside the warm lease, headroom-gated, fail-open ──
+# Confirmed on the box 2026-06-21 (spike_sam2_segment.py): Sam2Segmentation(coordinates_positive JSON
+# [{"x":int,"y":int}]) -> MASK, loader DownloadAndLoadSAM2Model, sam2.1_hiera_small Apache-2.0; measured
+# ~1.3-1.5 GB peak / 102 MiB resident (keep_model_loaded=False releases). The graph runs INSIDE the
+# already-leased warm ComfyUI under its existing batch token (NO second lease -> no self-preemption); the
+# only new arbitration is the pre-flight free-VRAM headroom read below.
+SEG_MODEL = os.environ.get("LUCID_SEG_MODEL", "sam2.1_hiera_small.safetensors")
+SEG_PEAK_MIB = int(os.environ.get("LUCID_SEG_PEAK_MIB", "2048"))   # measured ~1.3-1.5GB + ADR-0004 margin
+SEG_HEADROOM_MIB = int(os.environ.get("LUCID_SEG_HEADROOM_MIB", "1024"))
+
+
+def _comfy_free_mib():
+    """Free VRAM (MiB) from ComfyUI /system_stats devices[0]; None if ComfyUI is unreachable (cold) —
+    which the caller treats as "do not segment" (warm-only gate, ADR-0032 §2/§5)."""
+    try:
+        d = json.load(urllib.request.urlopen(f"{cc.BASE}/system_stats", timeout=2))["devices"][0]
+        return int(d.get("vram_free", 0)) // (1024 * 1024)
+    except Exception:
+        return None
+
+
+def _segment_graph(frame_name, px, py):
+    """The confirmed single-shot Sam2Segmentation point->MASK->SaveImage api graph (ADR-0032 §S, measured).
+    `frame_name` is INPUT_DIR-relative (sealed subdir for private); (px,py) are PIXEL coords on that frame."""
+    return {
+        "load": {"class_type": "LoadImage", "inputs": {"image": frame_name}},
+        "loader": {"class_type": "DownloadAndLoadSAM2Model",
+                   "inputs": {"model": SEG_MODEL, "segmentor": "single_image",
+                              "device": "cuda", "precision": "fp16"}},
+        "seg": {"class_type": "Sam2Segmentation",
+                "inputs": {"sam2_model": ["loader", 0], "image": ["load", 0], "keep_model_loaded": False,
+                           "coordinates_positive": json.dumps([{"x": int(px), "y": int(py)}])}},
+        "m2i": {"class_type": "MaskToImage", "inputs": {"mask": ["seg", 0]}},
+        "save": {"class_type": "SaveImage", "inputs": {"images": ["m2i", 0], "filename_prefix": "lucid/segmask"}},
+    }
+
+
+def segment_at(frame_name, x, y, out_abs, timeout=120):
+    """ADR-0032 producer: segment the object under a NORMALIZED (x,y) tap on `frame_name` (INPUT_DIR-
+    relative), validate the returned mask through load_validated_mask sized to the frame's own pixels, and
+    write the clean 0/255 mask to out_abs. Returns out_abs on success else None (caller -> soft-disc/point).
+    Warm-only + VRAM-headroom gated; TOTAL fail-open (no exception escapes). The mask is stored at the FRAME
+    resolution; the render-time _inject_ltx_guides re-validates + resizes it to the actual seed."""
+    if not SEGMENT_ENABLED:
+        return None
+    free = _comfy_free_mib()                       # cold (None) or contended -> do not segment
+    if free is None or free < SEG_PEAK_MIB + SEG_HEADROOM_MIB:
+        print(f"seg: skip (free={free} MiB < need {SEG_PEAK_MIB + SEG_HEADROOM_MIB}); fall back to disc/point")
+        return None
+    try:
+        from PIL import Image
+        with Image.open(os.path.join(INPUT_DIR, frame_name)) as im:
+            fw, fh = im.size                       # SAM wants pixel coords on this frame
+        # clamp to the LAST valid pixel index (round(1.0*fw) == fw is one past the edge -> OOB point -> empty
+        # mask); an edge tap on a real object must still segment it, not silently degrade to the disc.
+        px = min(fw - 1, round(min(1.0, max(0.0, float(x))) * fw))
+        py = min(fh - 1, round(min(1.0, max(0.0, float(y))) * fh))
+        imgs, _hist = cc.generate_image(_segment_graph(frame_name, px, py), timeout=timeout)
+        if not imgs:
+            return None
+        ok = load_validated_mask(imgs[0], out_abs, fw, fh)
+        # PRIVACY (ADR-0016/0032): the raw SaveImage lands in the SHARED ~/ComfyUI/output/lucid/ dir, which
+        # neither the private burn nor logout reaches. It is single-use scratch the moment the clean mask is
+        # sealed to out_abs, so delete it unconditionally (success OR reject) — no silhouette outlives the
+        # session, and non-private raw masks don't accumulate unbounded.
+        try:
+            os.remove(imgs[0])
+        except OSError:
+            pass
+        return out_abs if ok else None
+    except Exception as e:
+        print(f"seg: segmentation failed ({e}); fall back to disc/point (fail-open)")
+        return None
 
 
 def _is_ltx(name):
@@ -668,7 +797,11 @@ def _inject_ltx_guides(api, guides, length):
         # so it's all-or-nothing per chain — region-less guides become NEUTRAL attention nodes (no-op).
         def _region(g):
             return g[3] if len(g) > 3 else None
-        use_attn = LTX_ATTENTION_ENABLED and any(_region(g) for g in guides)
+        def _mask(g):                                # ADR-0032: a stored segmentation-mask abs path, or None
+            return g[4] if len(g) > 4 else None
+        # a note localizes the steer via EITHER a segmentation mask (ADR-0032) or a soft-disc region
+        # (ADR-0025); either upgrades the whole chain to attention nodes (all-or-nothing invariant).
+        use_attn = LTX_ATTENTION_ENABLED and any(_region(g) or _mask(g) for g in guides)
         mask_wh = None
         if use_attn:                                # the mask is pixel-space; size it to the seed aspect
             try:
@@ -696,18 +829,27 @@ def _inject_ltx_guides(api, guides, length):
             img_id, guide_id = f"g{i}_img", f"g{i}_guide"
             api[img_id] = {"class_type": "LoadImage", "inputs": {"image": name}}
             if use_attn:
-                # region-bearing guide → tag-driven attention_strength + soft-disc mask; region-less guide
-                # → neutral (attention_strength 1.0, no mask) so it behaves exactly like its plain form.
-                attn = LTX_ATTN_STRENGTH.get(tagl, 0.6) if region else 1.0
+                # Localize this guide's attention via a mask, PREFERRING a validated SEGMENTATION mask
+                # (ADR-0032) and falling back to the ADR-0025 soft-disc. A guide that places no mask (no seg
+                # mask + no region, OR a seg mask that fails the gate with no region) stays NEUTRAL
+                # (attention_strength 1.0, no mask) — exactly its plain form (model no-op).
+                seg_mask = _mask(g)
+                mask_name = os.path.join(seed_dir, f"{base}_guide{i}_mask.png")
+                mask_abs = os.path.join(INPUT_DIR, mask_name)
+                wrote = False
+                if seg_mask and SEGMENT_ENABLED:                 # model proposes -> code disposes (gate)
+                    wrote = load_validated_mask(seg_mask, mask_abs, mask_wh[0], mask_wh[1])
+                if (not wrote) and region:                       # fall back to the soft-disc at the tap point
+                    x, y, r = region
+                    _ltx_softdisc_mask(mask_abs, mask_wh[0], mask_wh[1], x, y, r)
+                    wrote = True
+                attn = LTX_ATTN_STRENGTH.get(tagl, 0.6) if wrote else 1.0   # localized -> tag knob; else neutral
                 inputs = {"positive": list(pos_src), "negative": list(neg_src),
                           "vae": list(vae_src), "latent": list(lat_src),
                           "image": [img_id, 0], "frame_idx": frame_idx, "strength": strength,
                           "attention_strength": attn, **LTX_ATTN_ADV}
-                if region:
-                    x, y, r = region
+                if wrote:
                     mask_id = f"g{i}_mask"
-                    mask_name = os.path.join(seed_dir, f"{base}_guide{i}_mask.png")
-                    _ltx_softdisc_mask(os.path.join(INPUT_DIR, mask_name), mask_wh[0], mask_wh[1], x, y, r)
                     api[mask_id] = {"class_type": "LoadImageMask",
                                     "inputs": {"image": mask_name, "channel": "red"}}
                     inputs["attention_mask"] = [mask_id, 0]

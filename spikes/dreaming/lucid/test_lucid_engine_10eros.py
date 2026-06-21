@@ -164,6 +164,150 @@ def test_inject_guides_killswitch_forces_plain(monkeypatch=None):
         assert "LTXVAddGuide" in cts and "LTXVAddGuideAdvancedAttention" not in cts, cts
 
 
+# ── ADR-0032: load_validated_mask deterministic gate (model proposes, code disposes) ──────────────
+def _seg_mask_png(path, w, h, area_frac=0.2, fill=255):
+    """A test segmentation mask: a centered filled rectangle covering ~area_frac of a w×h frame."""
+    import math
+    from PIL import Image, ImageDraw
+    im = Image.new("RGB", (w, h), (0, 0, 0))
+    if area_frac > 0:
+        rw, rh = int(w * math.sqrt(area_frac)), int(h * math.sqrt(area_frac))
+        cx, cy = w // 2, h // 2
+        ImageDraw.Draw(im).rectangle([cx - rw // 2, cy - rh // 2, cx + rw // 2, cy + rh // 2],
+                                     fill=(fill, fill, fill))
+    im.save(path)
+    return path
+
+
+def test_seg_mask_accepts_clean_and_writes_seed_sized():
+    # a clean mid-area mask passes; the gate writes a SEED-sized, binarized 0/255 PNG for LoadImageMask
+    import numpy as np
+    from PIL import Image
+    d = _tempfile.mkdtemp(prefix="lucid_seg_")
+    try:
+        src = _seg_mask_png(os.path.join(d, "m.png"), 96, 160, area_frac=0.2)
+        out = os.path.join(d, "out.png")
+        assert E.load_validated_mask(src, out, 96, 160) is True
+        with Image.open(out) as im:
+            assert im.size == (96, 160), im.size
+            vals = set(np.unique(np.asarray(im.convert("RGB"))[:, :, 0]).tolist())
+        assert vals <= {0, 255}, f"must be binarized 0/255, got {vals}"
+    finally:
+        _shutil.rmtree(d, ignore_errors=True)
+
+
+def test_seg_mask_rejects_empty_speck_and_near_full():
+    # empty (nothing under the tap), a speck (< SEG_MIN_AREA), and near-full-frame (> SEG_MAX_AREA) all reject
+    d = _tempfile.mkdtemp(prefix="lucid_seg_")
+    try:
+        for frac in (0.0, 0.001, 0.95):
+            src = _seg_mask_png(os.path.join(d, f"m{frac}.png"), 96, 160, area_frac=frac)
+            assert E.load_validated_mask(src, os.path.join(d, "o.png"), 96, 160) is False, frac
+    finally:
+        _shutil.rmtree(d, ignore_errors=True)
+
+
+def test_seg_mask_rejects_aspect_mismatch():
+    # a landscape mask (160×96) cannot map onto a portrait seed (96×160) -> reject-to-disc, never stretch
+    d = _tempfile.mkdtemp(prefix="lucid_seg_")
+    try:
+        src = _seg_mask_png(os.path.join(d, "m.png"), 160, 96, area_frac=0.2)
+        assert E.load_validated_mask(src, os.path.join(d, "o.png"), 96, 160) is False
+    finally:
+        _shutil.rmtree(d, ignore_errors=True)
+
+
+def test_seg_mask_binarize_drops_subthreshold_gray():
+    # a uniform gray BELOW SEG_BINARIZE*255 (=127) becomes empty after binarize -> reject (no trusting floats)
+    d = _tempfile.mkdtemp(prefix="lucid_seg_")
+    try:
+        src = _seg_mask_png(os.path.join(d, "m.png"), 96, 160, area_frac=0.3, fill=100)
+        assert E.load_validated_mask(src, os.path.join(d, "o.png"), 96, 160) is False
+    finally:
+        _shutil.rmtree(d, ignore_errors=True)
+
+
+def test_seg_mask_letterbox_resizes_same_aspect_to_seed():
+    # a same-aspect mask at a different pixel size letterbox-fits onto the seed grid (output is seed-sized)
+    from PIL import Image
+    d = _tempfile.mkdtemp(prefix="lucid_seg_")
+    try:
+        src = _seg_mask_png(os.path.join(d, "m.png"), 48, 80, area_frac=0.2)   # 48:80 == 96:160
+        out = os.path.join(d, "out.png")
+        assert E.load_validated_mask(src, out, 96, 160) is True
+        with Image.open(out) as im:
+            assert im.size == (96, 160), im.size
+    finally:
+        _shutil.rmtree(d, ignore_errors=True)
+
+
+def test_seg_mask_unreadable_returns_false():
+    # a missing/garbage source path is total fail-open (no exception escapes) -> caller uses the disc
+    assert E.load_validated_mask("/nonexistent/nope.png", "/tmp/o.png", 96, 160) is False
+
+
+# ── ADR-0032: the _inject_ltx_guides consumer branch (stored seg mask -> guide, disc as fallback) ──
+def test_inject_guides_segmentation_mask_preferred():
+    # a guide carrying a stored VALID seg mask -> attention node wired to that BINARIZED mask (sharp 0/255,
+    # NOT the feathered disc) with the tag-driven attention_strength.
+    import numpy as np
+    from PIL import Image
+    with _guided_graph_env() as (api, guide):
+        d = _tempfile.mkdtemp(prefix="lucid_segwire_")
+        try:
+            sm = _seg_mask_png(os.path.join(d, "sm.png"), 96, 160, area_frac=0.2)   # matches the seed aspect
+            out = E._inject_ltx_guides(api, [(guide, 0.5, "more", None, sm)], 49)
+            attn = [n for n in out.values() if n["class_type"] == "LTXVAddGuideAdvancedAttention"]
+            masks = [n for n in out.values() if n["class_type"] == "LoadImageMask"]
+            assert len(attn) == 1 and len(masks) == 1, [n["class_type"] for n in out.values()]
+            assert "attention_mask" in attn[0]["inputs"]
+            assert attn[0]["inputs"]["attention_strength"] == E.LTX_ATTN_STRENGTH["more"]
+            wired = os.path.join(E.INPUT_DIR, masks[0]["inputs"]["image"])
+            with Image.open(wired) as im:
+                vals = set(np.unique(np.asarray(im.convert("RGB"))[:, :, 0]).tolist())
+            assert vals <= {0, 255}, f"seg mask is binarized, not the feathered disc: {sorted(vals)[:6]}"
+        finally:
+            _shutil.rmtree(d, ignore_errors=True)
+
+
+def test_inject_guides_bad_segmask_falls_back_to_disc():
+    # an aspect-MISMATCHED seg mask is rejected by the gate; with a region present the soft-disc is used
+    # (a mask is still wired -> not neutral), and the disc is FEATHERED (intermediate values, not pure 0/255).
+    import numpy as np
+    from PIL import Image
+    with _guided_graph_env() as (api, guide):
+        d = _tempfile.mkdtemp(prefix="lucid_segfb_")
+        try:
+            bad = _seg_mask_png(os.path.join(d, "bad.png"), 160, 96, area_frac=0.2)   # landscape -> rejected
+            out = E._inject_ltx_guides(api, [(guide, 0.5, "more", (0.3, 0.4, 0.2), bad)], 49)
+            masks = [n for n in out.values() if n["class_type"] == "LoadImageMask"]
+            assert len(masks) == 1, "disc fallback still wires a mask"
+            wired = os.path.join(E.INPUT_DIR, masks[0]["inputs"]["image"])
+            with Image.open(wired) as im:
+                vals = np.unique(np.asarray(im.convert("RGB"))[:, :, 0])
+            assert len(vals) > 2, f"the soft-disc is feathered, not pure 0/255: {vals[:6]}"
+        finally:
+            _shutil.rmtree(d, ignore_errors=True)
+
+
+def test_inject_guides_segment_killswitch_drops_mask():
+    # LUCID_SEGMENT_ENABLED=0: a mask-only note (no region) -> NEUTRAL attention node (no mask, attn 1.0)
+    with _guided_graph_env() as (api, guide):
+        d = _tempfile.mkdtemp(prefix="lucid_segks_")
+        orig = E.SEGMENT_ENABLED
+        E.SEGMENT_ENABLED = False
+        try:
+            sm = _seg_mask_png(os.path.join(d, "sm.png"), 96, 160, area_frac=0.2)
+            out = E._inject_ltx_guides(api, [(guide, 0.5, "more", None, sm)], 49)
+            attn = [n for n in out.values() if n["class_type"] == "LTXVAddGuideAdvancedAttention"]
+            assert len(attn) == 1, "mask presence still upgrades the chain to attention"
+            assert "attention_mask" not in attn[0]["inputs"], "killswitch drops the seg mask"
+            assert attn[0]["inputs"]["attention_strength"] == 1.0, "neutral when no mask is wired"
+        finally:
+            E.SEGMENT_ENABLED = orig
+            _shutil.rmtree(d, ignore_errors=True)
+
+
 def _run():
     fails = 0
     for name, fn in sorted(globals().items()):

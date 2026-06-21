@@ -341,11 +341,30 @@ a{ color:var(--inst-blue) }
    is z-index 2 — above the video (z1) to catch the tap, BELOW the caption/draft panel (.cap z3) so the
    chips + save stay usable. Only mounted while the draft is open, so it never blocks normal playback. */
 .tag-aim{ position:absolute; inset:0; z-index:2; cursor:crosshair }
+.tag-aim:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:-2px }
+/* keyboard aiming crosshair (ADR-0032 WCAG 2.1.1): a ringed marker the user nudges with arrows + Enter */
+.aim-cross{ position:absolute; width:20px; height:20px; z-index:3; transform:translate(-50%,-50%); pointer-events:none;
+  border:2px solid var(--inst-blue); border-radius:50%; background:color-mix(in srgb,var(--inst-blue) 16%,transparent);
+  box-shadow:0 0 0 1px rgba(0,0,0,.55), 0 0 10px -1px color-mix(in srgb,var(--inst-blue) 80%,transparent) }
 .aim-marks{ position:absolute; inset:0; z-index:2; pointer-events:none }
 .aim-dot{ position:absolute; width:15px; height:15px; border-radius:50%; transform:translate(-50%,-50%);
-  border:2px solid var(--inst-blue); background:color-mix(in srgb,var(--inst-blue) 26%,transparent);
-  box-shadow:0 0 10px -1px color-mix(in srgb,var(--inst-blue) 80%,transparent); pointer-events:none }
+  border:2px solid var(--aim,var(--inst-blue)); background:color-mix(in srgb,var(--aim,var(--inst-blue)) 26%,transparent);
+  box-shadow:0 0 10px -1px color-mix(in srgb,var(--aim,var(--inst-blue)) 80%,transparent); pointer-events:none }
 .aim-dot.static{ width:10px; height:10px; opacity:.5; border-width:1.5px }   /* a saved note's point, quiet */
+.aim-dot.seg{ opacity:.75 }                                                  /* segmenting — tap landed, awaiting mask */
+/* ADR-0032: tag-coded tints (redundant to the draft chip — never tint alone) used by the dot AND the mask */
+.aim-more{ --aim:#7fd49a } .aim-hold{ --aim:#7aa2ff } .aim-change{ --aim:#e6a86e } .aim-less{ --aim:#a8a8be }
+/* figure/ground object highlight: a darkening scrim everywhere + the tag-tinted silhouette lifted out of it
+   (reads on any frame, hue is not the only signal — the draft chip names the tag, the status narrates it) */
+.aim-scrim{ position:absolute; inset:0; z-index:1; background:rgba(6,8,16,.5); pointer-events:none }
+.aim-mask{ position:absolute; inset:0; z-index:2; pointer-events:none; opacity:.6; mix-blend-mode:screen;
+  background:var(--aim,var(--inst-blue));
+  /* the mask PNG is white(object)/black(bg), OPAQUE RGB -> mask by LUMINANCE, not the default alpha
+     (alpha is 255 everywhere, which would flood the WHOLE frame instead of the silhouette) */
+  -webkit-mask-mode:luminance; mask-mode:luminance;
+  -webkit-mask-size:100% 100%; mask-size:100% 100%; -webkit-mask-repeat:no-repeat; mask-repeat:no-repeat }
+.seg-status{ position:absolute; left:0; right:0; bottom:8px; z-index:3; text-align:center; pointer-events:none;
+  color:var(--inst-label); font-size:12px; text-shadow:0 1px 3px rgba(0,0,0,.85) }
 @media (prefers-reduced-motion:no-preference){
   .tag-aim .aim-dot{ animation:aim-pulse 1.6s ease-in-out infinite } }
 @keyframes aim-pulse{ 0%,100%{ box-shadow:0 0 8px -2px color-mix(in srgb,var(--inst-blue) 70%,transparent) }
