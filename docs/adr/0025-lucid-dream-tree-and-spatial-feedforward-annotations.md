@@ -25,11 +25,22 @@
   `web/src/Chain.tsx` (the git-graph dream-tree + tag-a-moment UI) + `api.ts`; tests
   `test_lucid_linear.py` (held-menu, branch, notes, decompose, guides), `test_lucid_engine_10eros.py`;
   harness `verify_guides.py`. Design provenance: the claude.ai/design "Lucid Dream Viewer" DC.
-- Verification: **logic + graph-injection verified; GPU end-to-end NOT.** Unit suites green
-  (`test_lucid_linear` 21, `test_lucid_warmkeep` 6, `test_lucid_engine_10eros` 5); the `LTXVAddGuide`
-  splice is proven offline against the real `10eros-i2v.api.json`. Confirming the guides actually
-  *land* on a render needs a 4090/ComfyUI run (`verify_guides.py --run`); the whole guide path is
-  additive + fail-open so the unverified case degrades to today's single-anchor render, never a break.
+- Verification: **GPU-verified end-to-end (2026-06-19).** A non-private 10eros dream rendered a guided
+  beat through the live daemon — the journal logged `LTX guides: injected 2 LTXVAddGuide node(s)
+  (fps=25.0)` and the beat completed (a real clip appended to the tree, conditioned on two tagged
+  moments). Unit suites green (`test_lucid_linear` 21, `test_lucid_warmkeep` 6,
+  `test_lucid_engine_10eros` 5); injection also proven offline via `verify_guides.py`. The GPU run
+  found + fixed one real bug: guides must chain on the **pre-concat VIDEO latent**
+  (`LTXVImgToVideoInplace`), not the audio+video `NestedTensor` the sampler consumes
+  (`LTXVConcatAVLatent`) — which threw `'NestedTensor' object has no attribute 'clone'`.
+- Private × 10eros seed path — **fixed + GPU-verified (2026-06-19)**. Was: `ltx.build` basenamed the
+  seed, dropping a private session's sealed subdir (`.lucid-priv-<s>/…`) so ComfyUI couldn't find it
+  (any private LTX beat failed). Fix: `build` sets the seed `LoadImage` to the input-**relative** path
+  (subdir preserved, both private + non-private), and `_inject_ltx_guides` co-locates guide frames in
+  that same sealed subdir. Verified: a private 10eros dream rendered a beat **and** a guided beat;
+  every frame (seed, hold-anchor, guides, VLM-grounding) stayed sealed (no leak to `input/` root); and
+  `/api/burn` wiped the sealed dir empty — guide frames destroyed with the session. Fail-open holds
+  throughout (a bad seed/splice → skip, never a crash).
 
 ## Context
 
@@ -123,3 +134,43 @@ node**, its notes feed forward, by engine:
 - **Verification gate (restated, honestly).** Everything up to the diffusion step is verified
   (logic + offline graph injection). The end-to-end LTX render with guides is **owed** — the single
   thing this environment cannot run.
+
+## Amendment (2026-06-20): regional attention steering + the verification gate, closed
+
+Two things changed.
+
+**1. The attention path is GPU-verified.** The plain-`LTXVAddGuide` render was already proven (the
+verification bullets above, 2026-06-19). This amendment adds a guard those plain guides never trip:
+ComfyUI core's seed-keyframe accounting (`comfy/ldm/lightricks/model.py`:
+`total_pre_filter_count == keyframe_grid_mask`) activates *only* once an **attention** entry exists. On the
+4090 — with the wallpaper yielded (a manual `systemctl --user stop` of the Hexen wallpaper unit; see the
+gap below) — a guided 10Eros beat carrying attention entries rendered end-to-end through the lease and the
+invariant **holds** with the seed + guides in one chain. Spike:
+`spikes/dreaming/lucid/spike_ltx_attention.py` (`--dry-run`/`--run`/`--ab`).
+
+**2. Annotations gain a real *where*.** ADR-0025 shipped "spatial" feed-forward that was really *temporal*
+(which moment) + semantic (which tag); a note carried `{t, tag, text}`, no point. The amendment adds an
+**optional normalized region `(x, y, r)`** to a note — the pixel the viewer tapped — and upgrades the LTX
+guide from `LTXVAddGuide` to **`LTXVAddGuideAdvancedAttention`** (already installed; ComfyUI-LTXVideo
+@4f45fd6). Its per-region `attention_mask` is consumed by core as `weights = pixel_mask * attention_strength`
+(pixel_mask=1 ⇒ attend-to-the-guide *here*), so a soft-disc mask localizes the steer: *more/hold here, let
+it change there*. The tag now drives a second knob, `attention_strength` (`LTX_ATTN_STRENGTH`: hold 1.0 /
+more .85 / change .40 / less .25), alongside the unchanged keyframe `strength`. GPU A/B at one seed: the
+masked region changed 1.12× the rest — localization confirmed, magnitude is the next tuning knob (the curve
+is now *measured*, not untestable).
+
+**Invariants kept.** (a) **All-or-nothing per chain** — core requires every keyframe to carry an attention
+entry, so a chain with *any* regional note promotes *all* its guides to attention nodes; region-less ones
+become **neutral** (`attention_strength` 1.0, no mask = model no-op), preserving their prior behaviour.
+(b) **Byte-identical legacy path** — no note carries a region ⇒ the plain `LTXVAddGuide` chain, unchanged.
+(c) **Kill-switch** `LUCID_LTX_ATTENTION=0` forces the legacy path even with regions (fail-safe). (d) Still
+LTX-only, additive, fail-open; Wan keeps its VLM-decomposed prompt. (e) Coords are **clamped, never trusted**
+(code disposes). Surfaces: `lucid_engine._inject_ltx_guides` (branch + `_ltx_softdisc_mask`),
+`lucid_linear.add_note(x,y,r)`, `/api/note`, and a tap-to-point overlay in `Chain.tsx`. Tests:
+`test_lucid_engine_10eros` (plain/attention/kill-switch branches) + `test_lucid_linear` (region persist/clamp).
+
+**Surfaced gap (not this ADR's to fix).** The lease *admission* is correct (it DENIED at 16.4 GB free vs
+17 GB est, GRANTED after the yield), but the daemon's **graphics-yield is not wired into the lease** — it
+auto-reclaims only via `ollama stop`, never the wallpaper/UE. So ComfyUI-under-lease starves whenever a live
+graphics holder squats VRAM; the manual `systemctl` stop above stands in for the eviction the coordinator
+should perform. That integration is the next substrate step (relates to ADR-0004/0023).

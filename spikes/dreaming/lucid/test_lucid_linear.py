@@ -214,6 +214,23 @@ class NotesTest(unittest.TestCase):
         node = next(n for n in self.chain["nodes"] if n["id"] == 1)
         self.assertEqual(node["notes"], [note])                 # appended onto the node's notes list
 
+    def test_add_note_time_only_has_no_region_keys(self):
+        # legacy notes (no x/y) stay clean — no x/y/r keys leak in (ADR-0025 amendment back-compat).
+        note = L.add_note("t", 1, 0.5, "more", "")
+        self.assertNotIn("x", note)
+        self.assertNotIn("y", note)
+        self.assertNotIn("r", note)
+
+    def test_add_note_persists_spatial_region(self):
+        # a tap point persists as x/y/r; a missing r takes the default; out-of-range coords clamp.
+        note = L.add_note("t", 1, 0.5, "more", "the lamp", x=0.3, y=0.4, r=0.22)
+        self.assertEqual((note["x"], note["y"], note["r"]), (0.3, 0.4, 0.22))
+        d = L.add_note("t", 1, 0.5, "more", "", x=0.5, y=0.5)   # no r -> default
+        self.assertEqual(d["r"], L.DEFAULT_NOTE_RADIUS)
+        c = L.add_note("t", 1, 0.5, "more", "", x=1.9, y=-0.5, r=5.0)   # clamp into frame + radius bound
+        self.assertEqual((c["x"], c["y"]), (1.0, 0.0))
+        self.assertLessEqual(c["r"], 0.9)
+
     def test_remove_note(self):
         note = L.add_note("t", 1, 0.0, "more", "")
         self.assertTrue(L.remove_note("t", 1, note["id"]))      # removed
@@ -409,7 +426,7 @@ class GuidesTest(unittest.TestCase):
 
     def test_ltx_engine_gets_guides_per_note(self):
         # (a) engine == "10eros" + two notes -> generate_video handed guides of length 2, each a
-        #     (abs_path, t, tag) tuple carrying the right t/tag.
+        #     (abs_path, t, tag, region) tuple carrying the right t/tag; region is None for time-only notes.
         L.add_note("t", 1, 0.5, "more", "the lamp")
         L.add_note("t", 1, 1.4, "change", "the sky")
         node = L.step("t", "a calm aurora", "l1", is_current=lambda: True)
@@ -419,10 +436,23 @@ class GuidesTest(unittest.TestCase):
         self.assertIsNotNone(guides)
         self.assertEqual(len(guides), 2)                       # one guide per note
         for g in guides:
-            self.assertEqual(len(g), 3)                        # (path, t, tag)
+            self.assertEqual(len(g), 4)                        # (path, t, tag, region)
             self.assertTrue(isinstance(g[0], str) and g[0])    # a (truthy) abs path
+            self.assertIsNone(g[3])                            # time-only notes carry no region
         by_t = {g[1]: g[2] for g in guides}
         self.assertEqual(by_t, {0.5: "more", 1.4: "change"})   # right t -> tag mapping
+
+    def test_ltx_engine_threads_region_when_note_has_xy(self):
+        # (a') a note tagged with a spatial point (x,y[,r]) -> the guide tuple's region carries (x,y,r),
+        #      clamped; a time-only sibling stays region=None (ADR-0025 amendment).
+        L.add_note("t", 1, 0.5, "more", "the lamp", x=0.3, y=0.4, r=0.2)
+        L.add_note("t", 1, 1.4, "change", "the sky")           # no point -> region None
+        node = L.step("t", "a calm aurora", "l1", is_current=lambda: True)
+        self.assertIsNotNone(node)
+        guides = self.gen_kwargs[-1].get("guides")
+        by_t = {g[1]: g[3] for g in guides}                    # t -> region
+        self.assertEqual(by_t[0.5], (0.3, 0.4, 0.2))           # point threaded through
+        self.assertIsNone(by_t[1.4])                           # sibling stays time-only
 
     def test_wan_engine_gets_no_guides(self):
         # (b) engine == "wan" + notes -> guides=None (Wan keeps its VLM-prompt + single-anchor path).

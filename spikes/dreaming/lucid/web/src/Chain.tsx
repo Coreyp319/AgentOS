@@ -50,6 +50,9 @@ function DevelopHero({ caption, posterSrc, onResolved }:
       {posterSrc && <img className="poster-reveal" src={posterSrc} alt="" onLoad={onPosterLoad} />}
       <div className="stage-vig" />
       <div className="cap">
+        {/* a generating hero (no poster) wears a live "forming" badge so a curated pick — which otherwise shows
+            only its label — still reads as "working", and the cue is up the instant the click commits. */}
+        {!posterSrc && caption && <span className="forming-k">✦ forming…</span>}
         <p className="beat-q" style={caption ? undefined : { opacity: 0.6 }}>
           {caption ? `“${caption}”` : 'the next moment is forming…'}
         </p>
@@ -112,6 +115,9 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const [len, setLen] = useState(33)            // default ~2s, matches lucid_engine DEFAULT_LEN
   const [flash, setFlash] = useState('')
   const [committed, setCommitted] = useState(false)
+  // the just-committed beat's label — shown as the forming hero's caption to BRIDGE the gap between the click
+  // and the 2.5–5s poll flipping the server turn to 'dreaming' (without it, a click read as a no-op).
+  const [pendingLabel, setPendingLabel] = useState<string | null>(null)
   const busy = dream.isPending || committed
   // ADR-0023 council S2 ("the path you didn't take is remembered, never wasted"): when you pick a beat,
   // the options you DIDN'T pick are stashed per node — so a branched-from beat keeps them, one click from
@@ -128,6 +134,10 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const [draftT, setDraftT] = useState(0)
   const [draftTag, setDraftTag] = useState<Note['tag']>('hold')
   const [draftText, setDraftText] = useState('')
+  // ADR-0025: an OPTIONAL spatial point (normalized 0..1 over the clip) saying WHERE the tag applies. null
+  // = a frame-wide note (legacy). Placed by tapping the clip while the draft is open; the engine turns it
+  // into a soft-disc attention mask. Radius is the server default — one tap is the whole gesture.
+  const [draftPt, setDraftPt] = useState<{ x: number; y: number } | null>(null)
   // Reset transient per-beat / per-turn UI when the selected beat or the turn phase changes — adjusted
   // DURING render (React-docs "you might not need an effect"), not via a set-state-in-effect that cascades
   // an extra render. Each guard flips its own prev-tracker so it fires once per change, and every target is
@@ -136,13 +146,21 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const [prevSelId, setPrevSelId] = useState(sel.id)
   const [prevPhase, setPrevPhase] = useState(state.turn.phase)
   if (sel.id !== prevSelId) { setPrevSelId(sel.id); setDraftOpen(false); setDwell(false) }                       // new beat: close any open draft, end the dwell
-  if (state.turn.phase !== prevPhase) { setPrevPhase(state.turn.phase); setCommitted(false); setDwell(false) }   // turn rolled over: unlock the menu, end the dwell
+  if (state.turn.phase !== prevPhase) { setPrevPhase(state.turn.phase); setCommitted(false); setDwell(false); setPendingLabel(null) }   // turn rolled over: unlock the menu, end the dwell, drop the optimistic caption
   function openDraft() {
     setDraftT(videoRef.current?.currentTime ?? 0)      // clip-less opening still -> t=0
-    setDraftTag('hold'); setDraftText(''); setDraftOpen(true)
+    setDraftTag('hold'); setDraftText(''); setDraftPt(null); setDraftOpen(true)
+  }
+  // place the spatial point from a tap on the clip overlay — normalized to the overlay's box, clamped in.
+  function placePoint(e: MouseEvent<HTMLDivElement>) {
+    const r = e.currentTarget.getBoundingClientRect()
+    const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
+    const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))
+    setDraftPt({ x, y })
   }
   function saveNote() {
-    addNote.mutate({ node: sel.id, t: draftT, tag: draftTag, text: draftText.trim() || undefined })
+    addNote.mutate({ node: sel.id, t: draftT, tag: draftTag, text: draftText.trim() || undefined,
+      x: draftPt?.x, y: draftPt?.y })   // x/y omitted when no point → a frame-wide note (legacy)
     setDraftOpen(false)
   }
   // carry indicator: remember which node a beat was fired from, so while dreaming we can tell the user the
@@ -165,6 +183,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   function showFlash(m: string) { setFlash(m); window.setTimeout(() => setFlash(''), 6000) }
   async function fire(prompt: string, label: string) {
     setFiredFrom(sel.id)   // remember the node we grew from so the carry line can read its notes count
+    setPendingLabel(label && label !== 'custom' ? label : null)   // optimistic caption for the forming hero (cleared when the turn rolls over)
     const notTaken = beats.filter((b) => !(b.label === label && b.prompt === prompt))   // S2: remember the rest
     if (notTaken.length) setGhosts((g) => ({ ...g, [sel.id]: notTaken }))
     try {
@@ -379,7 +398,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
       <button key={f.label + f.prompt} className="gchoice" disabled={busy} aria-label={ariaName}
         data-gkey={f.label + f.prompt} onMouseEnter={cardEnter} onMouseMove={cardMove} onMouseLeave={cardLeave}
         onClick={() => fire(f.prompt, f.label)} title={f.prompt}>
-        <span className="gthumb"><img src={frameUrl(sel.id)} alt="" aria-hidden="true" loading="lazy" /></span>
+        <span className="gthumb"><img src={frameUrl(sel.id, sel.out_frame)} alt="" aria-hidden="true" loading="lazy" /></span>
         <span className="geyebrow" aria-hidden="true">a glimpse — not the final beat</span>
         <span className="glabel">{f.label}</span>
         <span className="gprompt">{f.prompt}</span>
@@ -401,36 +420,60 @@ export default function Chain({ state, revealing = false, onLatestReady }:
     </div>
   )
 
-  const treeTitle = dreaming ? 'The dream grows…' : 'Your dream so far'
+  const treeTitle = dreaming || busy ? 'The dream grows…' : 'Your dream so far'
   const t = state.turn
+  // BRIDGE the click→poll gap: the instant a beat is committed (busy), show the forming hero with the
+  // clicked label as its caption — so an option click / prompt submit reads as "started", not a no-op.
+  const bridging = busy && !dreaming
+  const heroCaption = bridging ? pendingLabel : caption
 
   return (
     <div>
       {flash && <div className="flash" role="alert">{flash}</div>}
 
       {/* ---- the cinematic player + the on-stage choice gutters ---- */}
-      {dreaming || revealing ? (
-        <DevelopHero caption={caption} posterSrc={revealing ? frameUrl(latest) : null}
+      {dreaming || revealing || busy ? (
+        <DevelopHero caption={heroCaption} posterSrc={revealing ? frameUrl(latest, nodes.find((n) => n.id === latest)?.out_frame) : null}
           onResolved={() => onLatestReady?.()} />
       ) : (
        <div className={'stage-wrap' + (choicesRevealed ? ' revealed' : '')} ref={wrapRef}>
         <div className={'stage' + (dwell ? ' dwell' : '') + (showFutures ? ' has-choices' : '')} ref={stageRef}>
-          <img className="spill" src={frameUrl(sel.id)} alt="" aria-hidden="true" />
+          <img className="spill" src={frameUrl(sel.id, sel.out_frame)} alt="" aria-hidden="true" />
           <div className="clipwrap">
             {sel.clip ? (
               <video
-                key={sel.id} ref={videoRef} className="vid"
-                src={clipUrl(sel.id)} poster={frameUrl(sel.id)}
+                key={sel.clip ?? sel.id} ref={videoRef} className="vid"
+                src={clipUrl(sel.id, sel.clip)} poster={frameUrl(sel.id, sel.out_frame)}
                 aria-label={`Dream clip: ${sel.label || 'opening'}`}
                 autoPlay muted playsInline controls
                 loop={!playAll && (dwell || (repeat && !choiceMoment))}
                 onEnded={onEnded} onLoadedData={onLatestReady} onError={onLatestReady}
               />
             ) : (
-              <img key={sel.id} className="still" src={frameUrl(sel.id)} alt={sel.label || 'opening frame'} />
+              <img key={sel.out_frame || sel.id} className="still" src={frameUrl(sel.id, sel.out_frame)} alt={sel.label || 'opening frame'} />
             )}
           </div>
           <div className="stage-vig" />
+          {/* ADR-0025: while tagging, an overlay turns a tap on the clip into the note's spatial point
+              (optional — skip it for a frame-wide note). Sits above the video, below the caption/draft. */}
+          {canTag && draftOpen && (
+            <div className="tag-aim" onClick={placePoint}
+              aria-label="Tap where on the frame this tag applies (optional)">
+              {draftPt && (
+                <span className={'aim-dot aim-' + draftTag}
+                  style={{ left: draftPt.x * 100 + '%', top: draftPt.y * 100 + '%' }} />
+              )}
+            </div>
+          )}
+          {/* existing notes that carry a point: faint dots on the frame (in addition to the timeline track) */}
+          {!draftOpen && selNotes.some((n) => n.x != null) && (
+            <div className="aim-marks" aria-hidden="true">
+              {selNotes.filter((n) => n.x != null).map((n) => (
+                <span key={n.id} className={'aim-dot static aim-' + n.tag}
+                  style={{ left: (n.x as number) * 100 + '%', top: (n.y as number) * 100 + '%' }} />
+              ))}
+            </div>
+          )}
           {/* moment-tag markers: dots along the clip's timeline (spatial feed-forward). Skip on a still. */}
           {selDur > 0 && selNotes.length > 0 && (
             <div className="mk-track" aria-hidden="true">
@@ -477,6 +520,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                 <div className="tag-draft" role="group" aria-label="Tag this moment">
                   <div className="tag-draft-head">
                     Tag at <b>{draftT.toFixed(1)}s</b> — steers the next beat
+                    <span className="aim-hint">{draftPt ? ' · point set ✓ (tap to move)' : ' · tap the clip to point (optional)'}</span>
                   </div>
                   <div className="tagchips" role="radiogroup" aria-label="What kind of note">
                     {TAGS.map((o) => (
@@ -505,13 +549,17 @@ export default function Chain({ state, revealing = false, onLatestReady }:
         {showFutures && (
           // one labelled group for BOTH gutters — the left/right split is presentational, so a single
           // "what happens next" group is announced (was: only the left gutter was a labelled group).
-          <div className="choices" role="group"
+          <div className={'choices' + (draftOpen ? ' tagging' : '')} role="group"
             aria-label={branchingFrom ? 'Branch a new take — choose a path' : 'What happens next — choose a branch'}>
             <div className="gutter left">
               {gutterBeats.filter((b) => b.side === 'L').map(gutterCard)}
             </div>
             <div className="gutter right">
-              {gutterBeats.filter((b) => b.side === 'R').map(gutterCard)}
+              {/* curated beats keep their even vertical spread (.gutter-beats grows to fill the top);
+                  compose sits below them in normal flow so a beat card can never overlap the input */}
+              <div className="gutter-beats">
+                {gutterBeats.filter((b) => b.side === 'R').map(gutterCard)}
+              </div>
               {composeCard}
             </div>
             {loadingBeats && <div className="gutter-loading">considering the next moves…</div>}
@@ -561,7 +609,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
 
         <div className="tree-head">
           <div className="tree-title">{treeTitle}</div>
-          {showFutures && (
+          {showFutures && !busy && (
             <div className="seglen" style={{ margin: 0 }}>
               <span className="seglen-label">Length of the next moment</span>
               <div className="seglen-opts" role="group" aria-label="Next segment length">
@@ -655,7 +703,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                   aria-current={cur ? 'true' : undefined}
                   title={n.prompt || n.caption || n.label || 'opening'}>
                   <span className="cell">
-                    <img src={frameUrl(n.id)} alt={n.label || 'frame'} loading="lazy" />
+                    <img src={frameUrl(n.id, n.out_frame)} alt={n.label || 'frame'} loading="lazy" />
                     {cur && <span className="tri"><i /></span>}
                     {n.rating === 'mature' && <span className="mat" title="mature" />}
                   </span>

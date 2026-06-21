@@ -5,10 +5,15 @@ export type Readiness = {
   coordinator: boolean; comfyui: boolean; ollama: boolean
   can_dream: boolean; why: string[]
 }
-// ADR-0023 spatial feed-forward: a "tag a moment" annotation pinned to a timestamp on a node's clip.
-// `hold` is the steering primitive — it anchors the next beat on that exact moment (more/less/change steer
-// the direction). The backend folds a node's notes into the next beat grown from it.
-export type Note = { id: string; t: number; tag: 'more' | 'less' | 'hold' | 'change'; text: string }
+// ADR-0023/0025 spatial feed-forward: a "tag a moment" annotation pinned to a timestamp on a node's clip,
+// and OPTIONALLY a point (x,y normalized 0..1, radius r) saying WHERE on the frame. `hold` is the steering
+// primitive — it anchors the next beat on that exact moment (more/less/change steer the direction). With a
+// point, the LTX engine localizes the steering to a soft-disc region around it; without one it's frame-wide.
+// The backend folds a node's notes into the next beat grown from it.
+export type Note = {
+  id: string; t: number; tag: 'more' | 'less' | 'hold' | 'change'; text: string
+  x?: number; y?: number; r?: number          // optional region (ADR-0025): where on the frame, normalized
+}
 export type DreamNode = {
   id: number; parent: number; label: string; prompt: string
   clip: string | null; out_frame: string; length?: number   // chosen segment frame count (@16fps); absent on the opening
@@ -121,7 +126,8 @@ export const useDelete = () => useStateMutation((session?: string) => post('/api
 // ---- ADR-0023 moment tags (spatial feed-forward): annotate a node's clip; steers the next beat ----
 // Both go through useStateMutation so a settle invalidates ['state'] — the next poll reflects node.notes.
 export const useAddNote = () =>
-  useStateMutation((b: { node: number; t: number; tag: string; text?: string }) => post('/api/note', b))
+  useStateMutation((b: { node: number; t: number; tag: string; text?: string; x?: number; y?: number; r?: number }) =>
+    post('/api/note', b))
 export const useDeleteNote = () =>
   useStateMutation((b: { node: number; id: string }) => post('/api/note/delete', b))
 

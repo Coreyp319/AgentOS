@@ -119,6 +119,40 @@ EST_MIB_WAN, EST_MIB_LTX = 17000, 17000   # LTX default lane = Q4_K_M (~Wan foot
 # "less" (de-emphasize) pins softest. Unknown/missing tags fall to a neutral 0.6 (see _inject_ltx_guides).
 LTX_GUIDE_STRENGTH = {"hold": 0.9, "more": 0.7, "change": 0.55, "less": 0.4}
 
+# ── REGIONAL attention steering (ADR-0025 amendment, GPU-verified 2026-06-20) ──────────────────────
+# When a note carries a spatial point (x,y,r normalized), the whole guide chain upgrades from
+# LTXVAddGuide to LTXVAddGuideAdvancedAttention: a soft-disc MASK localizes the guide's self-attention
+# influence to the tapped region (comfy/ldm/lightricks/model.py: weights = pixel_mask * attention_strength,
+# pixel_mask=1 ⇒ attend-to-the-guide-HERE). This is the NEW knob — how hard the noisy tokens attend to a
+# guide in its region: hold/more attend hard (keep/emphasize), change/less attend weakly (let it move).
+# attention_strength==1.0 + no mask is the identity (model no-ops), so a region-LESS guide in an attention
+# chain stays neutral — that's how a mixed chain (some notes spatial, some not) keeps the legacy ones
+# unchanged while satisfying the model's seed-keyframe accounting (every keyframe carries one entry).
+LTX_ATTN_STRENGTH = {"hold": 1.0, "more": 0.85, "change": 0.40, "less": 0.25}
+# Required-input defaults for LTXVAddGuideAdvancedAttention (crf/blur are its "more motion" levers; kept
+# neutral so enabling regions doesn't change fidelity, only spatial attention). ComfyUI 400s on any miss.
+LTX_ATTN_ADV = {"crf": 29, "blur_radius": 0, "interpolation": "lanczos", "crop": "disabled"}
+# Kill-switch: LUCID_LTX_ATTENTION=0 forces the legacy plain-guide path even when notes carry regions
+# (drops the spatial masks, fail-safe to pre-amendment behaviour). Default on.
+LTX_ATTENTION_ENABLED = os.environ.get("LUCID_LTX_ATTENTION", "1") != "0"
+
+
+def _ltx_softdisc_mask(out_abs, w, h, x, y, r):
+    """Write a soft-disc grayscale MASK PNG (white inside the tapped region, linearly feathered to black)
+    for LoadImageMask(channel='red'). (x,y,r) normalized 0..1, origin top-left. The model downsamples this
+    to the guide latent grid, so exact size is non-critical; we match the anchor for faithful placement.
+    Lazy numpy/PIL import keeps the engine's cold path dependency-free when no region is in play."""
+    import numpy as np
+    from PIL import Image
+    cx, cy = x * w, y * h
+    r_px = max(2.0, r * min(w, h))
+    feather = max(1.0, 0.40 * r_px)
+    yy, xx = np.ogrid[:h, :w]
+    dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    v = np.clip((r_px + feather - dist) / feather, 0.0, 1.0)        # 1 inside, ramp over `feather`, 0 out
+    img = (v * 255.0).astype(np.uint8)
+    Image.fromarray(np.stack([img, img, img], axis=-1), "RGB").save(out_abs)
+
 
 def _is_ltx(name):
     return (name or "").strip().lower() in ("10eros", "ltx", "ltx2", "ltx-2.3")
@@ -549,9 +583,12 @@ def _inject_ltx_guides(api, guides, length):
     (positive, negative, latent) slot-for-slot (0,1,2). The single-anchor `first_frame_name` remains
     the seed; guides are an *extra* spatial pin on top of it.
 
-    `guides` = ordered-by-t list of (frame_abs_path, t_seconds, tag). Mutates `api` IN PLACE only on
-    full success; on ANY error logs and leaves `api` untouched (single anchor). `length` is the clamped
-    LTX frame count, used to bound frame_idx into the clip.
+    `guides` = ordered-by-t list of (frame_abs_path, t_seconds, tag) or (…, tag, region) where region is
+    (x,y,r) normalized 0..1 or None (ADR-0025 amendment). If ANY guide carries a region AND attention is
+    enabled, the WHOLE chain upgrades to LTXVAddGuideAdvancedAttention (region-bearing guides get a
+    soft-disc attention mask; region-less ones stay neutral, attention_strength 1.0). With no regions the
+    chain is the legacy plain LTXVAddGuide — byte-identical to before. Mutates `api` IN PLACE only on full
+    success; on ANY error logs and leaves `api` untouched (single anchor). `length` bounds frame_idx.
     """
     if not guides:
         return api
@@ -580,11 +617,29 @@ def _inject_ltx_guides(api, guides, length):
         base = os.path.splitext(os.path.basename(seed_img))[0]
         if seed_dir:
             os.makedirs(os.path.join(INPUT_DIR, seed_dir), exist_ok=True)
+        # Regional steering (ADR-0025 amendment): the chain upgrades to attention nodes iff ANY note
+        # carries a spatial region AND the kill-switch is on. The model's seed-keyframe accounting requires
+        # ALL keyframes in the chain to carry an attention entry (you cannot mix plain + attention guides),
+        # so it's all-or-nothing per chain — region-less guides become NEUTRAL attention nodes (no-op).
+        def _region(g):
+            return g[3] if len(g) > 3 else None
+        use_attn = LTX_ATTENTION_ENABLED and any(_region(g) for g in guides)
+        mask_wh = None
+        if use_attn:                                # the mask is pixel-space; size it to the seed aspect
+            try:
+                from PIL import Image
+                with Image.open(os.path.join(INPUT_DIR, seed_img)) as im:
+                    mask_wh = im.size                # (w, h)
+            except Exception as e:                   # no seed size → fall back to plain guides (fail-open)
+                print(f"LTX guides: seed size unreadable ({e}); attention disabled this beat")
+                use_attn = False
         # the conditioning sources for the FIRST guide come from the LTXVConditioning outputs
         pos_src, neg_src, lat_src = [cond_id, 0], [cond_id, 1], list(latent_src)
         new_ids = set()                          # nodes WE add — never rewire these back onto themselves
+        masked = 0
         for i, g in enumerate(guides):
-            frame_abs_path, t_seconds, tag = g
+            frame_abs_path, t_seconds, tag = g[0], g[1], g[2]
+            region = _region(g)
             name = os.path.join(seed_dir, f"{base}_guide{i}.png")   # subdir-relative LoadImage name
             shutil.copy(frame_abs_path, os.path.join(INPUT_DIR, name))
             tagl = (tag or "").strip().lower()
@@ -595,10 +650,29 @@ def _inject_ltx_guides(api, guides, length):
             strength = LTX_GUIDE_STRENGTH.get(tagl, 0.6)
             img_id, guide_id = f"g{i}_img", f"g{i}_guide"
             api[img_id] = {"class_type": "LoadImage", "inputs": {"image": name}}
-            api[guide_id] = {"class_type": "LTXVAddGuide", "inputs": {
-                "positive": list(pos_src), "negative": list(neg_src),
-                "vae": list(vae_src), "latent": list(lat_src),
-                "image": [img_id, 0], "frame_idx": frame_idx, "strength": strength}}
+            if use_attn:
+                # region-bearing guide → tag-driven attention_strength + soft-disc mask; region-less guide
+                # → neutral (attention_strength 1.0, no mask) so it behaves exactly like its plain form.
+                attn = LTX_ATTN_STRENGTH.get(tagl, 0.6) if region else 1.0
+                inputs = {"positive": list(pos_src), "negative": list(neg_src),
+                          "vae": list(vae_src), "latent": list(lat_src),
+                          "image": [img_id, 0], "frame_idx": frame_idx, "strength": strength,
+                          "attention_strength": attn, **LTX_ATTN_ADV}
+                if region:
+                    x, y, r = region
+                    mask_id = f"g{i}_mask"
+                    mask_name = os.path.join(seed_dir, f"{base}_guide{i}_mask.png")
+                    _ltx_softdisc_mask(os.path.join(INPUT_DIR, mask_name), mask_wh[0], mask_wh[1], x, y, r)
+                    api[mask_id] = {"class_type": "LoadImageMask",
+                                    "inputs": {"image": mask_name, "channel": "red"}}
+                    inputs["attention_mask"] = [mask_id, 0]
+                    new_ids.add(mask_id); masked += 1
+                api[guide_id] = {"class_type": "LTXVAddGuideAdvancedAttention", "inputs": inputs}
+            else:
+                api[guide_id] = {"class_type": "LTXVAddGuide", "inputs": {
+                    "positive": list(pos_src), "negative": list(neg_src),
+                    "vae": list(vae_src), "latent": list(lat_src),
+                    "image": [img_id, 0], "frame_idx": frame_idx, "strength": strength}}
             new_ids.add(img_id); new_ids.add(guide_id)
             # the next guide (and finally the sampler) chains from THIS guide's outputs
             pos_src, neg_src, lat_src = [guide_id, 0], [guide_id, 1], [guide_id, 2]
@@ -618,7 +692,8 @@ def _inject_ltx_guides(api, guides, length):
             if isinstance(ins.get("negative"), list) and ins["negative"][:1] == [cond_id] \
                and ins["negative"][1] == 1:
                 ins["negative"] = list(neg_src)
-        print(f"LTX guides: injected {len(guides)} LTXVAddGuide node(s) (fps={fps})")
+        kind = f"LTXVAddGuideAdvancedAttention ({masked} masked)" if use_attn else "LTXVAddGuide"
+        print(f"LTX guides: injected {len(guides)} {kind} node(s) (fps={fps})")
         return api
     except Exception as e:
         print(f"LTX guide injection failed ({e}); proceeding with single anchor (fail-open)")

@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lucid_engine as E   # noqa: E402  (generation backend + workflow parameterization)
@@ -135,7 +136,8 @@ def save_chain(session, chain):
     ST.save_chain(session, ST.is_private(session), chain)
 
 
-def start(session, opening_image, private=False, consent=False, _trusted_seed=False, premise=None):
+def start(session, opening_image, private=False, consent=False, _trusted_seed=False, premise=None,
+          name=None):
     # start() is the SINGLE B2 chokepoint (ADR-0017). _trusted_seed=True is reachable ONLY for a
     # server-generated abstract opening (no real person) — never for a user-supplied image. Every
     # user seed passes B2 here, so no surface can route around the guard.
@@ -151,7 +153,12 @@ def start(session, opening_image, private=False, consent=False, _trusted_seed=Fa
     # premise: the session's initial prompt — "what this dream is about". Persisted with the chain so
     # context_for() can bias EVERY beat suggestion toward it, not just the opening frame (the Start
     # "initial prompt"). Optional + gated by the caller; stored trimmed, never required.
+    # name + created: the LIBRARY metadata (ADR-0028). `name` is the human label shown in the saved-
+    # dreams list (defaults to the session id downstream if empty); `created` lets the library sort by
+    # age. Both are persisted with the chain so the listing needs no sidecar.
     chain = {"session": session, "private": private,
+             "name": (name or "").strip()[:80] or None,
+             "created": time.time(),
              "premise": (premise or "").strip()[:300] or None,
              "nodes": [
                  {"id": 0, "parent": None, "label": "opening", "prompt": None,
@@ -218,6 +225,9 @@ def _next_id(chain):
 
 # ---------------- moment annotations (notes) — spatial + semantic feed-forward ----------------
 NOTE_TAGS = ("more", "less", "hold", "change")
+# ADR-0025 amendment: a note may carry a normalized region (x,y,r) — WHERE on the frame the viewer tapped.
+# r defaults when a point is given without one; the LTX engine turns it into a soft-disc attention mask.
+DEFAULT_NOTE_RADIUS = 0.18
 
 
 def _note_seq(chain):
@@ -233,11 +243,13 @@ def _note_seq(chain):
     return hi + 1
 
 
-def add_note(session, node_id, t, tag, text=""):
-    """Attach a moment annotation to a node (ADR-0023 spatial + semantic feed-forward). `tag` is one of
-    NOTE_TAGS (else ValueError); `t` is clamped to >= 0; `text` is UNTRUSTED — if present it must pass
-    the red-line gate (else ValueError) so a steered prompt can never carry it past the gate later. The
-    note is appended to the node's `notes` list with a monotonic per-chain id and persisted. Returns the
+def add_note(session, node_id, t, tag, text="", x=None, y=None, r=None):
+    """Attach a moment annotation to a node (ADR-0023/0025 spatial + semantic feed-forward). `tag` is one
+    of NOTE_TAGS (else ValueError); `t` is clamped to >= 0; `text` is UNTRUSTED — if present it must pass
+    the red-line gate (else ValueError) so a steered prompt can never carry it past the gate later. An
+    OPTIONAL spatial point (`x`,`y` normalized 0..1, origin top-left) with radius `r` records WHERE on the
+    frame the viewer tapped; persisted only when both x and y are given (legacy time-only notes stay clean).
+    The note is appended to the node's `notes` list with a monotonic per-chain id and persisted. Returns the
     note dict. Raises ValueError on a bad tag, red-line-failing text, or an unknown node id."""
     if tag not in NOTE_TAGS:
         raise ValueError(f"bad note tag {tag!r} (expected one of {NOTE_TAGS})")
@@ -245,11 +257,21 @@ def add_note(session, node_id, t, tag, text=""):
     text = text or ""
     if text and not S.red_line_ok(text):   # untrusted free-text — fail-closed, exactly like a prompt
         raise ValueError("note text refused by red-line gate")
+    # Optional spatial region — clamp into the frame; default + bound the radius. Code disposes (the model
+    # only proposes a tap location); an out-of-range coord is clamped, never trusted verbatim.
+    region = None
+    if x is not None and y is not None:
+        cx = min(1.0, max(0.0, float(x)))
+        cy = min(1.0, max(0.0, float(y)))
+        rr = min(0.9, max(0.02, float(r) if r is not None else DEFAULT_NOTE_RADIUS))
+        region = (cx, cy, rr)
     chain = load_chain(session)
     node = _by_id(chain).get(node_id)
     if node is None:
         raise ValueError(f"no such node {node_id!r}")
     note = {"id": "nt" + str(_note_seq(chain)), "t": t, "tag": tag, "text": text}
+    if region:
+        note["x"], note["y"], note["r"] = region
     node.setdefault("notes", []).append(note)
     save_chain(session, chain)
     return note
@@ -485,7 +507,10 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
                 fn = E.extract_frame_at(clip, note.get("t", 0.0), nm, out_path=ap)
                 if fn:
                     b64 = E.frame_to_b64(ap)
-                    guides.append((ap, float(note.get("t", 0.0)), note.get("tag")))   # LTX timeline pin
+                    # (abs_path, t, tag, region) — region=(x,y,r) is the WHERE (ADR-0025 amendment); the LTX
+                    # engine turns it into a soft-disc attention mask. None for legacy time-only notes.
+                    region = (note["x"], note["y"], note["r"]) if ("x" in note and "y" in note) else None
+                    guides.append((ap, float(note.get("t", 0.0)), note.get("tag"), region))   # LTX pin
             else:                                       # clip-less opening: b64 the parent's stored frame
                 b64 = E.frame_to_b64(_frame_abs(session, parent))
             if b64:

@@ -960,12 +960,14 @@ class Handler(BaseHTTPRequestHandler):
             if active != prev:
                 _release_lease()    # next beat re-admits/re-spawns with the new engine's VRAM estimate
             return self._send(200, json.dumps({"ok": True, "engine": active}), "application/json")
-        if path == "/api/note":   # ADR-0023: attach a moment annotation to a node (spatial+semantic feed-forward)
-            # Tiny + synchronous (no worker): just a guarded chain write. add_note clamps t, validates the
-            # tag, and red-line-gates the untrusted text — a bad tag / failing text maps to a 200 {error}.
+        if path == "/api/note":   # ADR-0023/0025: attach a moment annotation to a node (spatial+semantic)
+            # Tiny + synchronous (no worker): just a guarded chain write. add_note clamps t + the optional
+            # (x,y,r) region, validates the tag, and red-line-gates the untrusted text — a bad tag / failing
+            # text / non-numeric coord maps to a 200 {error}. x,y,r are OPTIONAL (legacy time-only notes).
             try:
                 note = L.add_note(cur_session(), int(req.get("node")), req.get("t", 0.0),
-                                  req.get("tag"), req.get("text", ""))
+                                  req.get("tag"), req.get("text", ""),
+                                  x=req.get("x"), y=req.get("y"), r=req.get("r"))
             except (ValueError, TypeError) as e:
                 return self._send(200, json.dumps({"error": str(e)}), "application/json")
             return self._send(200, json.dumps({"ok": True, "note": note}), "application/json")

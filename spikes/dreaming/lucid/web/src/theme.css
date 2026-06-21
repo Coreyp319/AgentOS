@@ -337,6 +337,21 @@ a{ color:var(--inst-blue) }
 /* `hold` is the steering primitive — give it a touch more presence than the directional nudges */
 .mk-dot.mk-hold{ height:9px; width:4px }
 
+/* ADR-0025 regional steering: tap-to-place the note's spatial point on the clip while tagging. The overlay
+   is z-index 2 — above the video (z1) to catch the tap, BELOW the caption/draft panel (.cap z3) so the
+   chips + save stay usable. Only mounted while the draft is open, so it never blocks normal playback. */
+.tag-aim{ position:absolute; inset:0; z-index:2; cursor:crosshair }
+.aim-marks{ position:absolute; inset:0; z-index:2; pointer-events:none }
+.aim-dot{ position:absolute; width:15px; height:15px; border-radius:50%; transform:translate(-50%,-50%);
+  border:2px solid var(--inst-blue); background:color-mix(in srgb,var(--inst-blue) 26%,transparent);
+  box-shadow:0 0 10px -1px color-mix(in srgb,var(--inst-blue) 80%,transparent); pointer-events:none }
+.aim-dot.static{ width:10px; height:10px; opacity:.5; border-width:1.5px }   /* a saved note's point, quiet */
+@media (prefers-reduced-motion:no-preference){
+  .tag-aim .aim-dot{ animation:aim-pulse 1.6s ease-in-out infinite } }
+@keyframes aim-pulse{ 0%,100%{ box-shadow:0 0 8px -2px color-mix(in srgb,var(--inst-blue) 70%,transparent) }
+  50%{ box-shadow:0 0 15px 1px color-mix(in srgb,var(--inst-blue) 88%,transparent) } }
+.aim-hint{ color:var(--inst-label); opacity:.82 }
+
 /* "Notes → next beat": the tagged moments steering the next beat, in the tree (blue, hairline, rounded) */
 .notes-row{ display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; margin:2px 0 12px }
 .notes-k{ flex:0 0 auto; font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.06em;
