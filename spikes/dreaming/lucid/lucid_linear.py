@@ -174,16 +174,32 @@ def burn(session):
 
 # ---------------- beat-gen (grounded + validated) ----------------
 def propose(context, n=4, rating="sfw", frame_b64=None):
-    """Ollama beat-gen with the rating-selected steering (sfw|mature) and the current frame attached
-    for grounding, then schema-validate + red-line-filter (lucid_safety). [] -> type-your-own. The
-    red-line is rating-INDEPENDENT and always fail-closed; `rating` only swaps the creative clause."""
-    try:
-        raw = E._ollama_json(E.build_sys(rating, n), context,
-                             images=[frame_b64] if frame_b64 else None)
-    except Exception as e:
-        log(f"beat-gen failed ({e}) — type your own")
-        return []
-    return S.validate_beats(raw, n)
+    """Ollama beat-gen with the rating-selected steering (sfw|mature) and the current frame attached for
+    grounding, then schema-validate + red-line-filter (lucid_safety). [] -> type-your-own. The red-line
+    is rating-INDEPENDENT and always fail-closed; `rating` only swaps the creative clause.
+
+    The narrator is a small (3B) model: it occasionally returns fewer than n valid beats (an intermittent
+    collapse, or a beat red-line-dropped), which would leave the menu thin. So we roll ONCE MORE if short
+    and merge the unique beats (model proposes, code disposes) — the repair roll costs one extra eviction
+    only when needed, and the held-menu contract means it happens at most once per frame. Beat-gen runs at
+    BEAT_TEMP (above the shared 0.6 fidelity lane) for a little more narrative surprise. Still fail-open:
+    any exception / a persistently-empty roll returns what we have (possibly []) -> type-your-own."""
+    sys_p, images = E.build_sys(rating, n), ([frame_b64] if frame_b64 else None)
+    out, seen = [], set()
+    for _attempt in range(2):                              # initial roll + one repair roll if short
+        try:
+            raw = E._ollama_json(sys_p, context, images=images, temperature=E.BEAT_TEMP)
+        except Exception as e:
+            log(f"beat-gen failed ({e}) — type your own")
+            break
+        for b in S.validate_beats(raw, n):
+            key = (b["label"].lower(), b["prompt"].lower())   # the repair roll must not duplicate the first
+            if key not in seen:
+                seen.add(key)
+                out.append(b)
+        if len(out) >= n:
+            break
+    return out[:n]
 
 
 def _max_rating(*ratings):
@@ -571,6 +587,12 @@ def context_for(session, caption=None, node=None):
         parts.append("This dream is about: " + premise + ".")
     parts.append("Story so far: " + " -> ".join(labels) + "." if labels else "The dream is just beginning.")
     parts.append("On screen now: " + (cap or "the opening image."))
+    # Reinforce the beat-gen prompt's DIAL 2 (advance-the-narrative) at the END of the user turn — the
+    # spot a small model weights hardest. The system prompt carries this on its own; this just sharpens
+    # premise-advancement (A/B-verified: noticeably richer, more on-premise menus). Pure steering — the
+    # red-line gate is still the only safety authority and is unaffected.
+    parts.append("Advance THIS dream toward its premise and the open question in the story so far — "
+                 "surprise me THROUGH the frame, don't just hold it.")
     return " ".join(parts)
 
 

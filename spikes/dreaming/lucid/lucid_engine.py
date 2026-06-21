@@ -60,6 +60,12 @@ OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 # force_evict and can coexist with the lighter video models; gemma4 (9.6 GB) was slow/wedge-prone to
 # evict and blocked the video step every turn (ADR-0015 §3 force-evict / ADR-0018 small-model lane).
 MODEL = os.environ.get("LUCID_MODEL") or lucid_models.get("narrator", "qwen2.5vl:3b")
+# Beat-gen ("what happens next" menu) sampling temperature — ABOVE the shared 0.6 fidelity default of
+# ground_frame/decompose. The move-taxonomy now supplies divergence STRUCTURALLY, so 0.78 only restores a
+# little surprise without the off-frame drift the old 0.9 caused. Beat-gen ONLY — never raise the
+# captioning/decompose path (they need fidelity). Tune live with LUCID_BEAT_TEMP; drop toward 0.75 first
+# if outputs ever wander off the grounded frame, before touching the prompt.
+BEAT_TEMP = float(os.environ.get("LUCID_BEAT_TEMP", "0.78"))
 
 DEFAULT_W, DEFAULT_H, DEFAULT_LEN = 720, 1280, 33  # ~2s portrait @16fps; matches the
 # workflow's baked WanImageToVideo length and stays under the VRAM-thrash line (ADR-0014 §6)
@@ -194,23 +200,47 @@ def clamp_length(n):
     n = max(MIN_LEN, min(MAX_LEN, n))
     return ((n - 1) // 4) * 4 + 1   # snap down to 4k+1 (latent stride)
 
-# ── beat-gen steering, split into TWO orthogonal concerns (was one hard-SFW string) ──────────────
-# `_SYS_TMPL` is the CONTINUITY core — narrator role + the i2v guidance that keeps last-frame chaining
-# coherent (subtle motion, hold the same pose/framing). It is the SAME for every rating. Only the
-# {rating_clause} varies, so the *content rating* never bleeds into the *motion guidance* (and vice
-# versa). {n} and the JSON contract are filled by build_sys(); the doubled braces survive .format().
+# ── beat-gen steering: TWO orthogonal DIALS (the fix for "generic suggestions") ───────────────────
+# The old prompt's one "subtle motion, hold the pose" rule conflated SMALL MOTION (an i2v last-frame-
+# chaining requirement) with SMALL IDEA (the bug): with no axis of divergence the 3B narrator differed
+# the n cards only along which micro-fidget (breath / hair / gaze), so every menu read the same.
+# `_SYS_TMPL` now holds those two concerns APART — DIAL 1 keeps motion magnitude small (i2v stays
+# coherent), DIAL 2 forces each choice onto a DIFFERENT narrative direction (something enters / light
+# turns / a feeling shifts / a dream-logic morph / a camera reveal / gravity loosens) that ADVANCES the
+# premise — "subtle means small motion, never a small idea." Tuned for a 3B (qwen2.5vl): no bulleted
+# move-list (it fixated on the first bullet and emitted it as the label), divergence carried by one
+# inline "for example" sentence, the label rule + "prompt"-before-"label" order pinned to the final
+# JSON line (a 3B binds the last instruction hardest — this fixed the "..." placeholder labels and the
+# collapse-to-1-beat). Verified A/B vs the old prompt on the live narrator (spikes' ab_branch_prompt.py).
+# It is the SAME for every rating — only {rating_clause} swaps, so content-rating never bleeds into the
+# motion/divergence guidance. {n} + the JSON contract are filled by build_sys(); doubled braces survive
+# .format(). Beat-gen also runs at BEAT_TEMP (above the 0.6 fidelity lane) for a little more surprise.
 _SYS_TMPL = (
-    "You are the narrator of a SILENT, looping dream video. Study the CURRENT FRAME (attached when "
-    "available) plus the story so far, then propose {n} DISTINCT 'what happens next' choices that each "
-    "clearly continue FROM THE CURRENT FRAME and stay faithful to what is actually on screen. "
-    "Each: a 2-5 word button LABEL, and a vivid image-to-video MOTION prompt "
-    "(camera movement + subject motion, present tense, concrete, under 40 words). "
-    "Favor SUBTLE motion that keeps the subject in the SAME pose and framing (small gestures, "
-    "breathing, shifting weight, hair, fabric, gaze, gentle camera) — NOT turning away, walking off, "
-    "or large repositioning; the current composition must stay in view. "
-    "Make the {n} choices genuinely different from one another. {rating_clause} "
-    "RED LINE (never violate): no minors, no real or identifiable real people. "
-    'Return ONLY JSON: {{"beats":[{{"label":"...","prompt":"..."}}]}}.'
+    "You narrate a SILENT, looping DREAM video. Look at the CURRENT FRAME (attached when available) "
+    "plus the premise and the story so far, then propose EXACTLY {n} different 'what happens next' "
+    "choices that each continue FROM THIS FRAME.\n"
+    "KEEP THE MOTION SMALL so the video stays coherent: the next clip starts on this exact frame, so "
+    "hold the subject in the SAME pose, spot, and framing — small gestures, breathing, gaze, fabric, a "
+    "slow camera push or pull, a light or color change, or one thing morphing in place. Never have the "
+    "subject walk off, turn away, teleport, or reposition; the new thing must arrive THROUGH the frame.\n"
+    "BUT MAKE EACH IDEA BIG AND DIFFERENT — 'small motion' must never mean a small idea, and do NOT "
+    "return {n} versions of the same fidget. Each choice is a real story turn that advances THIS dream "
+    "toward its premise or the open question in the story so far. Pull the {n} choices in genuinely "
+    "different directions — for example: something new enters or appears at the frame's edge; the light, "
+    "weather, or time-of-day turns and changes the mood; a feeling visibly shifts on the subject (calm "
+    "to dread, a dawning wonder, a held breath breaking); an on-screen thing morphs in dream-logic "
+    "(water to glass, a shadow detaches, a pattern crawls over fabric); the camera slowly pushes in to "
+    "reveal a hidden detail or pulls back to reveal new context; or gravity loosens and things drift in "
+    "place. Use a different direction for each card — a choice that could fit ANY dream is wrong.\n"
+    "For each choice write IN PLAIN ENGLISH, in this order: a \"prompt\" — a concrete present-tense "
+    "MOTION description under 40 words (the camera move + the subject's small motion + the ONE thing "
+    "that changes, "
+    "drifting continuously from this frame); then a \"label\" — a 2-5 plain-word title naming that idea "
+    "(e.g. \"A figure at the door\", \"The room floods gold\"). The label must be real words, never "
+    "empty, never \"...\", never a category name.\n"
+    "{rating_clause} RED LINE (never violate): no minors, no real or identifiable real people.\n"
+    "Return ONLY JSON — EXACTLY {n} choices, each a different direction, each with both a prompt and a "
+    'label: {{"beats":[{{"prompt":"...","label":"..."}}]}}.'
 )
 # The ONLY part the inferred content rating swaps. The RED LINE above is rating-independent and is ALSO
 # re-enforced deterministically in code (lucid_safety.red_line_ok) on every beat — this clause only
@@ -265,9 +295,12 @@ SYS_DECOMPOSE = (
 
 
 # ---------------- LLM (beat-gen) ----------------
-def _ollama_json(system, user, model=MODEL, images=None):
+def _ollama_json(system, user, model=MODEL, images=None, temperature=0.6):
     """One JSON-mode chat turn. `images` (list of base64 PNG/JPEG) attaches to the user message so a
-    vision model can ground on the actual frame (lucid_b2 shape); None keeps the text-only path."""
+    vision model can ground on the actual frame (lucid_b2 shape); None keeps the text-only path.
+    `temperature` defaults to 0.6 — the FIDELITY lane that ground_frame + decompose MUST stay on (a higher
+    value hallucinates captions and degrades the i2v continuation prompt). Only the beat-gen menu overrides
+    it (to BEAT_TEMP) for a little more narrative surprise; never raise the shared default."""
     user_msg = {"role": "user", "content": user}
     if images:
         user_msg["images"] = images
@@ -277,9 +310,9 @@ def _ollama_json(system, user, model=MODEL, images=None):
         "stream": False,
         "format": "json",
         "keep_alive": 0,            # evict right after -> frees VRAM for video
-        # 0.9 favored divergence over fidelity to the frame; 0.6 keeps options varied but on-scene now
-        # that the model can actually see what it is continuing from (the grounding pass).
-        "options": {"temperature": 0.6},
+        # 0.6 is the fidelity lane (captioning/decompose); beat-gen overrides to BEAT_TEMP. The old fixed
+        # 0.9 over-favored divergence and drifted off the grounded frame.
+        "options": {"temperature": temperature},
     }).encode()
     req = urllib.request.Request(OLLAMA + "/api/chat", data=body,
                                  headers={"Content-Type": "application/json"})
@@ -359,7 +392,7 @@ def _sanitize(beat):
 
 
 def propose_beats(context, n=4):
-    raw = _ollama_json(SYS_SFW.format(n=n), context)
+    raw = _ollama_json(SYS_SFW.format(n=n), context, temperature=BEAT_TEMP)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
