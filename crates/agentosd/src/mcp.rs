@@ -636,6 +636,21 @@ async fn call_renew(conn: &zbus::Connection, token: u64) -> Result<bool, String>
     reply.body().deserialize::<bool>().map_err(|e| e.to_string())
 }
 
+/// The heartbeat's "was this lease taken from under us?" decision (ADR-0021 #10) — factored out of the
+/// async loop so the load-bearing guard is unit-testable without a bus. The daemon has just told us
+/// (`Renew → false`) it no longer holds `token`. Record a `lease_lost` contention ONLY if THIS session
+/// still believed it held exactly that token: that means it was preempted/expired, NOT self-released (a
+/// `gpu_release` would have cleared `held` already) and NOT superseded (a re-acquire would have moved
+/// `held` to a new token). Prunes the now-stale belief as a side effect. Returns whether to record.
+fn observe_lease_lost(table: &mut SessionTable, session: &str, token: u64) -> bool {
+    if table.held(session) == Some(token) {
+        table.released(session);
+        true
+    } else {
+        false
+    }
+}
+
 /// Keep this session's held lease alive (ADR-0021 #3): every `interval`, `Renew` each token the session
 /// table holds. A definitive `false` (daemon no longer holds it — preempted/expired) prunes the entry so
 /// we stop renewing a dead token and the next `gpu_status` reflects reality; a transient timeout/bus
@@ -652,12 +667,7 @@ async fn heartbeat(conn: zbus::Connection, sessions: Arc<Mutex<SessionTable>>, i
                 // touching the contention log (no nested locks — keeps the lock order acyclic).
                 let lost = {
                     let mut t = lock_sessions(&sessions);
-                    if t.held(&session) == Some(token) {
-                        t.released(&session);
-                        true
-                    } else {
-                        false
-                    }
+                    observe_lease_lost(&mut t, &session, token)
                 };
                 // ADR-0021 #10: we still believed we held this lease, so it was lost out from under us —
                 // preempted or expired, NOT a self-release (a release would have cleared `held` already).
@@ -1178,6 +1188,65 @@ mod tests {
         assert_eq!(v["status"], "ok", "caller history alone is enough to answer — not 'blind'");
         assert_eq!(v["last_contention"], "no lease snapshot to read");
         assert_eq!(v["your_recent_contention"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn observe_lease_lost_fires_only_when_the_lease_was_taken_from_under_us() {
+        // The heartbeat's load-bearing #10 guard (review: rust-correctness coverage gap). A daemon
+        // `Renew → false` records a `lease_lost` ONLY if THIS session still believed it held that exact token.
+        let mut t = SessionTable::default();
+        t.acquired("S", 7);
+
+        // (a) Lost out from under us: still held → record + prune the stale belief.
+        assert!(observe_lease_lost(&mut t, "S", 7), "still-held token lost → record");
+        assert_eq!(t.held("S"), None, "the stale belief is pruned");
+        // (b) Idempotent: a second observation of the same token does NOT re-fire (already pruned).
+        assert!(!observe_lease_lost(&mut t, "S", 7), "no double-record after pruning");
+
+        // (c) Self-release excluded: a clean gpu_release cleared `held` first → never a spurious lease_lost.
+        t.acquired("S", 8);
+        t.released("S");
+        assert!(!observe_lease_lost(&mut t, "S", 8), "self-released token → NOT lease_lost");
+
+        // (d) Superseded excluded: a re-acquire moved `held` to a new token → the old token's loss is inert.
+        t.acquired("S", 9);
+        t.acquired("S", 10); // single-exclusive: re-acquire replaces
+        assert!(!observe_lease_lost(&mut t, "S", 9), "stale superseded token → NOT lease_lost");
+        assert_eq!(t.held("S"), Some(10), "the live re-acquired token is untouched");
+
+        // (e) Cross-session: observing S's loss never touches another session's hold.
+        t.acquired("S", 11);
+        t.acquired("B", 22);
+        assert!(observe_lease_lost(&mut t, "S", 11));
+        assert_eq!(t.held("B"), Some(22), "another session's hold is untouched");
+    }
+
+    #[test]
+    fn heartbeat_loss_records_exactly_one_holder_free_contention_but_self_release_records_none() {
+        // End-to-end of the heartbeat body (observe → if lost, record): a real preempt/expiry records ONE
+        // holder-free `lease_lost`; a self-release records nothing.
+        let mut t = SessionTable::default();
+        let mut log = ContentionLog::default();
+
+        // A real loss → observe fires → record.
+        t.acquired("S", 7);
+        if observe_lease_lost(&mut t, "S", 7) {
+            let rid = log.mint_id();
+            log.record("S", rid, "lease_lost", lease_lost_why());
+        }
+        let r = log.recent("S");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].kind, "lease_lost");
+        assert!(!r[0].why.contains("interactive") && !r[0].why.contains("Hermes"), "holder-free");
+
+        // A self-release → observe is false → nothing recorded.
+        t.acquired("S", 8);
+        t.released("S");
+        if observe_lease_lost(&mut t, "S", 8) {
+            let rid = log.mint_id();
+            log.record("S", rid, "lease_lost", lease_lost_why());
+        }
+        assert_eq!(log.recent("S").len(), 1, "self-release must not record a lease_lost");
     }
 
     #[test]
