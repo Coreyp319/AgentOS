@@ -17,6 +17,9 @@
 //!     applies (ADR-0018 §4; see `analyze.rs`).
 //!   * `mcp` — agent-facing GPU MCP server (ADR-0020 Phase 1, perceive-only): `gpu_status`/
 //!     `gpu_residency`/`gpu_why` over stdio, read-only, no NVML/D-Bus/network (see `mcp.rs`).
+//!   * `scene` — ADR-0030 reactive disposer: reads `agent.json`/`wind.json` → one pre-disposed
+//!     `scene-params.json` (mood axes only; clamp/slew/snap-to-rest, fail-to-calm) for the UE
+//!     dark-ride applier. PAUSED prototype ahead of the UE wallpaper layer (see `scene.rs`).
 //!
 //! `monitor` proves the load-bearing pieces of the VRAM coordinator WITHOUT doing
 //! anything destructive:
@@ -42,6 +45,7 @@ mod feed;
 mod keyhole;
 mod lease;
 mod mcp;
+mod scene;
 mod scope_reclaim;
 mod telemetry;
 mod wind;
@@ -110,6 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "telemetry" => telemetry::run(std::env::args().skip(2).collect()),
         "coexist" => analyze::run(std::env::args().skip(2).collect()),
         "mcp" => mcp::run(std::env::args().skip(2).collect()),
+        "scene" => scene::run(std::env::args().any(|a| a == "--once")),
         other => {
             eprintln!(
                 "agentosd: unknown mode `{other}`. Modes: monitor (read-only VRAM), \
@@ -117,7 +122,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  coord (VRAM lease + SIGKILL evict), lease (D-Bus lease server), \
                  telemetry (append telemetry.jsonl history for coexistence tuning), \
                  coexist (analyze telemetry → propose a residency plan), \
-                 mcp (agent-facing read-only GPU MCP server, ADR-0020). See docs/adr/."
+                 mcp (agent-facing read-only GPU MCP server, ADR-0020), \
+                 scene (reactive dark-ride mood disposer → scene-params.json, ADR-0030). See docs/adr/."
             );
             std::process::exit(2);
         }
