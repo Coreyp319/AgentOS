@@ -800,6 +800,9 @@ impl Coordinator {
 
         // Reclaim the evicted victim OFF the lock (review C5): a Spawned victim → group SIGKILL + reap;
         // a Scope victim → cgroup.kill via its pinned fd, then backpressure the grant until VRAM frees.
+        // Whether a SIGKILL/cgroup reclaim actually ran (an OWNED victim). Captured before `evicted` is
+        // moved into the reclaim, so the ADR-0029 §3 log below can be honest about the backstop.
+        let victim_reclaimed = evicted.is_some();
         if let Some((label, reclaim, fit)) = evicted {
             self.perform_reclaim(label, reclaim, fit, free_opt.unwrap_or(0)).await;
         }
@@ -807,9 +810,9 @@ impl Coordinator {
         // ADR-0029 §3: if the victim was the live UE wallpaper (`Tier::Yielding`), surface the
         // governor's PROACTIVE throttle-not-kill decision (the two-number-footprint call, D4). NB the
         // RC throttle TRANSPORT and the lease-side coexistence model are unbuilt (ADR-0029 Open §B +
-        // the reservation model), so a `Yielding` victim still took the SIGKILL backstop above — this
-        // logs the decision the governor WILL enact (throttle UE to floor + coexist, or kill) once the
-        // hardened Remote Control client lands. Computed off the lock from the pre-eviction footprints.
+        // the reservation model), so an OWNED `Yielding` victim still took the SIGKILL backstop above —
+        // this logs the decision the governor WILL enact (throttle UE to floor + coexist, or kill) once
+        // the hardened Remote Control client lands. Computed off the lock from the pre-eviction footprints.
         if prev_tier == Some(Tier::Yielding) {
             let action = crate::governor::plan_preemption(crate::coord::yield_decision(
                 free_opt.unwrap_or(0),
@@ -818,9 +821,16 @@ impl Coordinator {
                 est,
                 headroom,
             ));
+            // Honest about what ACTUALLY happened: an owned UE PID took the SIGKILL backstop; a
+            // cooperative (unowned) wallpaper did not (it must self-release — not the intended profile).
+            let backstop = if victim_reclaimed {
+                "SIGKILL backstop applied"
+            } else {
+                "no owned PID — cooperative victim must self-release"
+            };
             eprintln!(
                 "coordd: ADR-0029 §3 — {} preempted the UE wallpaper; governor decision: {} \
-                 [RC throttle + coexistence GATED on ADR-0029 §B → SIGKILL backstop applied]",
+                 [RC throttle + coexistence GATED on ADR-0029 §B → {backstop}]",
                 tier.as_str(),
                 action.describe(),
             );

@@ -39,9 +39,11 @@ use tokio::signal::unix::{signal, SignalKind};
 
 /// Lease priority tiers (ADR-0010 §2, extended by ADR-0029 §3). A strictly-higher tier
 /// PREEMPTS a lower one; `interactive/live inference > overnight batch > best-effort >
-/// yielding (the UE wallpaper)`. Declaration order IS the priority order — `derive(Ord)`
-/// ranks variants by position, so keep them ascending. The explicit discriminants are for
-/// logging only (nothing serializes them — a tier crosses the wire as `as_str`).
+/// yielding (the UE wallpaper)`. Ordering is by DECLARATION POSITION — `derive(Ord)` ranks
+/// variants top-to-bottom and ignores any explicit discriminant — so the only thing that
+/// matters is the order written here; keep them ascending. (No discriminants: nothing reads a
+/// numeric tier — a tier crosses the wire as `as_str`. The `tier_priority_*` tests are the
+/// guard if this is ever reordered.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
     /// The live UE 5.8 dark-ride wallpaper (ADR-0029). LOWEST priority — it yields to every
@@ -50,10 +52,10 @@ pub enum Tier {
     /// SIGKILL→relaunch-to-shader-floor is the backstop when the throttle can't free enough or
     /// UE misbehaves (see `yield_decision`). Owned PID (a `Spawn` profile), so the backstop kill
     /// is reachable.
-    Yielding = 0,
-    BestEffort = 1,
-    Batch = 2,
-    Interactive = 3,
+    Yielding,
+    BestEffort,
+    Batch,
+    Interactive,
 }
 
 impl Tier {
@@ -572,6 +574,16 @@ mod tests {
             yield_decision(2_000, 4_000, 1_000, 4_500, 512),
             YieldOutcome::KillToShaderFloor
         );
+    }
+
+    #[test]
+    fn yield_decision_handles_the_full_equals_floor_degenerate_case() {
+        // On a trivial tableau UE's full ≈ floor (Phase-A: ~1.2 vs ~1.0 GB), and some tableaux will
+        // measure them EQUAL — then throttling frees nothing, so the outcome is purely "does it fit as-is".
+        // Fits already (free alone admits) → coexist (a no-op shrink is fine).
+        assert_eq!(yield_decision(8_000, 1_000, 1_000, 5_000, 512), YieldOutcome::ThrottleAndCoexist);
+        // Doesn't fit and the throttle can't help (full==floor frees 0) → the kill backstop.
+        assert_eq!(yield_decision(2_000, 1_000, 1_000, 5_000, 512), YieldOutcome::KillToShaderFloor);
     }
 
     #[test]
