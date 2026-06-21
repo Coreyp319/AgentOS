@@ -42,6 +42,7 @@ use serde::Deserialize;
 mod analyze;
 mod coord;
 mod feed;
+mod governor;
 mod keyhole;
 mod lease;
 mod mcp;

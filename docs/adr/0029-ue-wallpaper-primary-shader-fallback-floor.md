@@ -151,33 +151,57 @@ motion in build. This proves **UE-runs-live-on-Wayland** — but not the wallpap
     two-surface separation (D6), and the source-swap → ADR-0005 routing (D7).
   - **PROVEN in spike (risk retired, code NOT in the crate):** packaged-runtime VRAM/GPU-time
     feasibility (~1 GB floor, GPU-time is the lever); a tableau look approved ("The Indigo Channel");
-    UE runs **live-windowed** on this Wayland box. A retired risk still has an unwritten
-    implementation — the `Tier::Yielding` tier, the throttle governor, the keyhole control
-    back-channel, and the dark-ride sequencer are all **unbuilt in `crates/agentosd`**.
+    UE runs **live-windowed** on this Wayland box.
+  - **BUILT + TESTED 2026-06-20 — the `Tier::Yielding` decision core + the governor's pure half.**
+    `crates/agentosd/src/coord.rs`: the new `Tier::Yielding` tier (lowest priority — UE yields to
+    every workload — with `from_arg`/`as_str` round-trips and the existing Ord/clamp honoring it), and
+    `yield_decision` — the pure, saturating **throttle-vs-kill** call computed against UE's
+    **throttled-floor** footprint, not its full one (the D4 two-number-footprint invariant: a gen that
+    won't fit beside UE-full but fits beside UE-floor reads `ThrottleAndCoexist`; otherwise
+    `KillToShaderFloor`). `crates/agentosd/src/governor.rs`: the throttle ladder as typed `Rung`s
+    (verbatim `cvar_ladder.md`), the **security-critical `is_allowed_cvar` allowlist** that fences the
+    Remote Control channel to the closed set of ladder `(cvar, value)` pairs (D1 — the generic
+    `ExecuteConsoleCommand` path is refused by construction, value-scoped so a gen can't smuggle
+    `t.MaxFPS 999`), and `plan_preemption` mapping the decision to `Throttle(Floor)` | `Kill` (the
+    governor only ASKS UE to shrink; the lease owns the SIGKILL — D3 in the type). Wired into the lease
+    preempt path as an honest decision-LOG (`lease.rs`, off-lock): a `Yielding` victim's governor
+    decision is computed + narrated, while the SIGKILL backstop still runs. 12 new tests; full suite +
+    clippy green. **STILL UNBUILT (the gated remainder):** the hardened Remote Control TRANSPORT (the
+    loopback-asserted, rebinding-aware HTTP client that sends a rung — gated on the §B lockdown below),
+    the lease-side **coexistence model** (keep UE resident at floor while a gen holds the lease — the
+    single-exclusive lease can't yet represent it), the keyhole control back-channel, and the dark-ride
+    sequencer.
   - **OPEN / NOT ratified — do not overclaim:**
-    - **(A) The true Wayland WALLPAPER LAYER is UNBUILT and is a large engine/compositor effort.**
-      Verified on-box: there is **no "Application-Wallpaper" Plasma plugin** (only stock
-      `org.kde.*`), KWin does not reparent foreign toplevels, and UE/SDL3 binds no layer-shell role
-      — so **UE cannot be a *native* Wayland wallpaper** as a window-to-background. Live-windowed
-      proves UE-runs-on-Wayland, *not* the layer. The user **governed the vision call to Option A**
-      ("every pixel is UE, live, authoritative"), which requires a hand-rolled layer-shell host +
-      VulkanRHI swapchain retarget — bounded but large. **The one cheap gating probe before any of
-      A is built:** boot-test whether a native-Wayland UE `-game` build runs as a long-lived,
-      *input-less* wallpaper proc (a wallpaper takes no pointer input → may dodge the bug Epic calls
-      "unusable"); it **must** run on the user's live console (offscreen/agent shells have no GL
-      context). Pass → A is a bounded engine effort; Fail → A is dead on this box and fallback "C"
-      returns with data. Routed to `wayland-computeruse-reviewer` + `design-technologist`.
+    - **(A) RESOLVED 2026-06-20 — UE CAN be a native Wayland wallpaper on this box (the original
+      premise here was STALE).** KWin 6.6.5 advertises `zwlr_layer_shell_v1` v5; a foreign surface on
+      the BACKGROUND layer composites at stacking index **[1]** — above the Plasma desktop
+      containment, below every app window and the panel — and that role is injectable directly on
+      UE's SDL3 `wl_surface` via `SDL_PROP_WINDOW_CREATE_WAYLAND_SURFACE_ROLE_CUSTOM`. Proven
+      end-to-end on hardware (rung 1: gtk4 layer-shell stand-in; rung 2: SDL3 custom-role + Vulkan
+      swapchain on a BACKGROUND surface) and **delivered live** (rung 3: the Indigo Channel running
+      as the desktop wallpaper). Effort re-scoped from "large engine/compositor fork" to a
+      **localized ~15-line `LinuxWindow.cpp` patch** (native path) or **zero engine changes**
+      (keep-below KWin rule). One structural cost: Plasma fuses the wallpaper and desktop icons into a
+      **single** containment surface, so any foreign wallpaper covers the icon grid — the user
+      **disposed (2026-06-20) to give up the desktop-icon grid** rather than demote UE to a texture.
+      The `org_kde_plasma_shell` *Desktop role* was ruled out (one desktop-surface per output, owned
+      by plasmashell, not SDL3-injectable). Evidence: `spikes/ue-probe/{wallpaper_role,sdl3_vulkan,ue_wallpaper}`.
+      See the resolved Open questions §A below for the remaining productionization choice.
     - **(B) The Remote Control server (`:30010`) is an unauthenticated local-code-exec hole** and
       must be locked down before the throttle channel ships. Routed to `security-reviewer`.
     - **(C) `capture_shot` offscreen self-verify is OVEREXPOSED** (SceneCapture2D self-auto-exposes,
       not yet exposure-matched to the `-game` runtime truth); and **motion auto-play in `-game` is
       pending live confirmation.** These are spike-verification gaps, not design decisions.
 
-- **The Phase-B throttle controller is currently PAUSED, by consequence.** Because Option A (the
-  authoritative UE wallpaper layer) is not yet built, there is **nothing to throttle yet**; the
-  procedural aurora shader **remains the live wallpaper today**. `Tier::Yielding` and the governor
-  are *designed* and wait on the Open §A probe. This is the honest "proposal-of-a-proposal" state:
-  the human disposes on a longer time-horizon than a normal feature.
+- **The Phase-B throttle controller is now UNBLOCKED (Open §A resolved 2026-06-20).** UE-as-wallpaper
+  is real, so there is finally something to throttle. The cheap end of the ladder is already
+  demonstrated: an FPS cap (`t.MaxFPS 30`) dropped a live Indigo-Channel wallpaper from **94% → 40%**
+  GPU util at ~1.2 GB. **The substrate decision core landed 2026-06-20** (`Tier::Yielding` +
+  `yield_decision` + the `governor` ladder/allowlist/plan — see the BUILT bullet above); what remains
+  before the throttle actually fires is the **hardened Remote Control client** (gated on the §B
+  lockdown) and the **lease-side coexistence model**. The procedural aurora shader **remains the
+  default live wallpaper** until those ship — UE-as-wallpaper is opt-in via
+  `spikes/ue-probe/ue_wallpaper/wallpaper_keepbelow.sh` today.
 
 - **Reuse, do not rebuild (ADR-0001 / ADR-0023 carry-forward).** The lease core + `AdoptScope`
   cgroup reclaim (the kill floor, built + verified); the brief contract + validator + locked palette
@@ -204,14 +228,22 @@ motion in build. This proves **UE-runs-live-on-Wayland** — but not the wallpap
 
 ## Open questions for the human (framed)
 
-1. **Wallpaper-layer probe — go/no-go on the one cheap test (Open §A).** Recommendation: **run the
-   input-less native-Wayland `-game` wallpaper-proc boot-test on your live console first** (cost:
-   ~hours, no architecture written). It is the single number that moves Option A from
-   "infeasible-today" to "tractable-but-large," and it must precede building `Tier::Yielding`.
-   *Cost of skipping:* writing the throttle architecture against an unproven layer — the exact
-   "ADR says so but no code under it" trap.
+1. **Wallpaper-layer probe — RESOLVED 2026-06-20 (passed emphatically).** UE runs as a stable
+   native-Wayland wallpaper at stacking [1]; the layer is no longer a question. The boot-survival
+   probe (65+ min input-less, stable, ~1.4 GB) plus rungs 1-3 close this. What's left is *which path
+   to productionize* — see Q3.
 
-2. **If the probe fails: A vs. C.** Option A (authoritative UE, your vision call) vs. Option C (UE
-   off-surface → aurora `dreamTex`, the council's 7.6 pick, retires the tx burden). Recommendation:
-   **hold for A** per your governance call, with **C as the explicit, documented fallback** — do not
-   silently let the higher feasibility score flip the vision without your re-disposition.
+2. **A vs. C — SETTLED to A (delivered, not just chosen).** Real UE, real Vulkan, a genuine separate
+   surface — not a texture. Option C (UE → `dreamTex`) survives only as the documented fallback if the
+   GPU-time budget ever proves unworkable. The council's feasibility worry behind C ("native layer is
+   a large fork") is **refuted** — it was a localized patch / a zero-build window rule.
+
+3. **NEW — which path to productionize, and the source-build gate.** Two working paths exist:
+   **(i) keep-below KWin window rule** — zero engine changes, works on the current *Installed* UE
+   build today (`spikes/ue-probe/ue_wallpaper/wallpaper_keepbelow.sh`, with an `t.MaxFPS` cap); not
+   yet truly input-passthrough (wants a persistent no-focus rule for polish). **(ii) native
+   `zwlr_layer_shell` BACKGROUND role** — the clean, input-less ADR design; the `LinuxWindow.cpp`
+   patch + `libagentos_layershell.so` helper are written and ready, but **`~/UnrealEngine` is an
+   Installed Build and cannot compile engine patches** (unlocking → UBT `RulesError`). Landing (ii)
+   needs a **source build of UE 5.8**. Recommendation: ship (i) now as the usable wallpaper; schedule
+   an overnight source-build of UE 5.8 to land (ii) as the production-grade, input-less version.

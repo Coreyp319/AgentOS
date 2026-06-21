@@ -37,15 +37,23 @@ use tokio::signal::unix::{signal, SignalKind};
 // Pure decision core (the `derive_feed` analog — unit-tested below).
 // ---------------------------------------------------------------------------
 
-/// Lease priority tiers (ADR-0010 §2). A strictly-higher tier PREEMPTS a lower one;
-/// `interactive/live inference > overnight batch > best-effort`. Declaration order
-/// IS the priority order — `derive(Ord)` ranks variants by position, so keep them
-/// ascending. The explicit discriminants are for logging only.
+/// Lease priority tiers (ADR-0010 §2, extended by ADR-0029 §3). A strictly-higher tier
+/// PREEMPTS a lower one; `interactive/live inference > overnight batch > best-effort >
+/// yielding (the UE wallpaper)`. Declaration order IS the priority order — `derive(Ord)`
+/// ranks variants by position, so keep them ascending. The explicit discriminants are for
+/// logging only (nothing serializes them — a tier crosses the wire as `as_str`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
-    BestEffort = 0,
-    Batch = 1,
-    Interactive = 2,
+    /// The live UE 5.8 dark-ride wallpaper (ADR-0029). LOWEST priority — it yields to every
+    /// other tier — but it yields by PROACTIVE THROTTLE (shrink to floor over UE Remote
+    /// Control), NOT the SIGKILL a Batch holder gets: a wallpaper must never go to black.
+    /// SIGKILL→relaunch-to-shader-floor is the backstop when the throttle can't free enough or
+    /// UE misbehaves (see `yield_decision`). Owned PID (a `Spawn` profile), so the backstop kill
+    /// is reachable.
+    Yielding = 0,
+    BestEffort = 1,
+    Batch = 2,
+    Interactive = 3,
 }
 
 impl Tier {
@@ -55,7 +63,10 @@ impl Tier {
             "interactive" | "live" => Ok(Tier::Interactive),
             "batch" | "overnight" => Ok(Tier::Batch),
             "best-effort" | "besteffort" | "idle" => Ok(Tier::BestEffort),
-            other => Err(format!("unknown tier `{other}` (interactive|batch|best-effort)")),
+            "yielding" | "wallpaper" | "ue" => Ok(Tier::Yielding),
+            other => {
+                Err(format!("unknown tier `{other}` (interactive|batch|best-effort|yielding)"))
+            }
         }
     }
 
@@ -65,6 +76,7 @@ impl Tier {
             Tier::Interactive => "interactive",
             Tier::Batch => "batch",
             Tier::BestEffort => "best-effort",
+            Tier::Yielding => "yielding",
         }
     }
 
@@ -171,6 +183,54 @@ pub fn arbitrate(current: Option<Holder>, req: Tier) -> LeaseDecision {
         None => LeaseDecision::Grant,
         Some(h) if req > h.tier => LeaseDecision::Preempt,
         Some(_) => LeaseDecision::Queue,
+    }
+}
+
+/// How a higher-tier request preempts the live UE wallpaper (`Tier::Yielding`, ADR-0029 §3).
+/// Because UE crashes rather than degrades under VRAM pressure, the coordinator shrinks it
+/// PROACTIVELY — before the new job allocates — and prefers a non-destructive throttle to a kill:
+/// a wallpaper must never go to black.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YieldOutcome {
+    /// Throttling UE to its floor frees enough VRAM to admit the request — UE stays resident at its
+    /// floor and the new job COEXISTS with it (the curated-coexistence goal, ADR-0029 D4). The
+    /// governor only ASKS UE to shrink (over Remote Control); the lease never kills on this path.
+    ThrottleAndCoexist,
+    /// Even at its floor UE can't free enough — the lease SIGKILLs the owned UE PID and relaunches
+    /// the procedural shader floor (ADR-0004 / ADR-0029 D1), then admits the request against the
+    /// reclaimed VRAM. The destructive backstop the throttle exists to avoid.
+    KillToShaderFloor,
+}
+
+/// Decide how a higher-tier request preempts the live UE wallpaper (ADR-0029 §3 — proactive
+/// throttle-not-kill, with kill→shader-floor as the backstop). PURE + saturating: the two-number-
+/// footprint admission (D4) computed against UE's THROTTLED floor, never its full footprint.
+///
+/// * `free_now`     — measured free VRAM with UE at its CURRENT (full) footprint.
+/// * `ue_full_mib` / `ue_floor_mib` — UE's two-number footprint (full vs throttled floor; the
+///   Phase-A numbers were ~1.2 GB / ~1.0 GB on a trivial scene — re-measure per tableau, D4).
+/// * `est_mib` / `headroom_mib` — the incoming request's predicted footprint + safety headroom.
+///
+/// Throttling UE full→floor frees `ue_full - ue_floor`; if that admits the request, COEXIST. Else the
+/// throttle cannot free enough and the lease must kill. A wild estimate KILLS (saturates, never
+/// panics). NB this only decides throttle-vs-kill; whether the request fits *after a kill* is a
+/// separate `admit` the governor runs against the post-kill free VRAM — a kill is the backstop the
+/// lease owns, never something this function performs.
+pub fn yield_decision(
+    free_now: u64,
+    ue_full_mib: u64,
+    ue_floor_mib: u64,
+    est_mib: u64,
+    headroom_mib: u64,
+) -> YieldOutcome {
+    // Defensive: a floor mistakenly recorded above full would make `saturating_sub` 0 (no throttle
+    // gain) rather than underflow — fail toward the kill backstop, never toward a phantom free.
+    let freed_by_throttle = ue_full_mib.saturating_sub(ue_floor_mib);
+    let free_after_throttle = free_now.saturating_add(freed_by_throttle);
+    if admit(free_after_throttle, est_mib, headroom_mib).granted() {
+        YieldOutcome::ThrottleAndCoexist
+    } else {
+        YieldOutcome::KillToShaderFloor
     }
 }
 
@@ -435,6 +495,101 @@ mod tests {
         assert!(Tier::Interactive > Tier::Batch);
         assert!(Tier::Batch > Tier::BestEffort);
         assert!(Tier::Interactive > Tier::BestEffort);
+    }
+
+    // --- Tier::Yielding — the live UE wallpaper (ADR-0029 §3) ---
+
+    #[test]
+    fn yielding_is_the_lowest_tier_yields_to_everything() {
+        // The UE wallpaper sits BELOW best-effort: every real workload outranks it.
+        assert!(Tier::BestEffort > Tier::Yielding);
+        assert!(Tier::Batch > Tier::Yielding);
+        assert!(Tier::Interactive > Tier::Yielding);
+        // so any other tier PREEMPTS a yielding holder...
+        for req in [Tier::BestEffort, Tier::Batch, Tier::Interactive] {
+            assert_eq!(arbitrate(Some(Holder { tier: Tier::Yielding }), req), LeaseDecision::Preempt);
+        }
+        // ...and a yielding request waits behind any non-free holder (never displaces a real job),
+        // but takes a free lease (the wallpaper runs when nothing else needs the card).
+        for held in [Tier::BestEffort, Tier::Batch, Tier::Interactive, Tier::Yielding] {
+            assert_eq!(arbitrate(Some(Holder { tier: held }), Tier::Yielding), LeaseDecision::Queue);
+        }
+        assert_eq!(arbitrate(None, Tier::Yielding), LeaseDecision::Grant);
+    }
+
+    #[test]
+    fn yielding_tier_round_trips_through_from_arg_and_as_str() {
+        assert_eq!(Tier::from_arg("yielding"), Ok(Tier::Yielding));
+        assert_eq!(Tier::from_arg("wallpaper"), Ok(Tier::Yielding));
+        assert_eq!(Tier::from_arg("UE"), Ok(Tier::Yielding)); // case-insensitive
+        assert_eq!(Tier::Yielding.as_str(), "yielding");
+        assert_eq!(Tier::from_arg(Tier::Yielding.as_str()), Ok(Tier::Yielding));
+    }
+
+    #[test]
+    fn an_agent_requesting_yielding_stays_yielding() {
+        // clamp_agent caps at Batch; Yielding is already below it, so min() leaves it untouched —
+        // an agent can run the (harmless, most-preemptable) wallpaper tier without being raised.
+        assert_eq!(CallerClass::Agent.clamp(Tier::Yielding), Tier::Yielding);
+    }
+
+    // --- yield_decision(): proactive throttle-not-kill vs the kill backstop (ADR-0029 D3/D4) ---
+
+    #[test]
+    fn throttle_alone_frees_enough_so_ue_coexists() {
+        // UE full 1200 / floor 1000 → throttling frees 200. With 7000 free, a 7000-est gen needs
+        // 7000+512; 7000 free is short, but 7000+200=7200 ≥ 7512? no — pick numbers that DO fit:
+        // free 8000, throttle frees 200 → 8200; a 7500-est + 512 headroom = 8012 ≤ 8200 → coexist.
+        assert_eq!(
+            yield_decision(8_000, 1_200, 1_000, 7_500, 512),
+            YieldOutcome::ThrottleAndCoexist
+        );
+    }
+
+    #[test]
+    fn throttle_insufficient_falls_through_to_kill() {
+        // Same UE footprint, but the gen is too big to fit even with UE at floor: free 8000 + 200
+        // throttled = 8200, but 9000-est + 512 = 9512 > 8200 → the lease must SIGKILL UE + relaunch
+        // the shader floor (the backstop the throttle exists to avoid).
+        assert_eq!(
+            yield_decision(8_000, 1_200, 1_000, 9_000, 512),
+            YieldOutcome::KillToShaderFloor
+        );
+    }
+
+    #[test]
+    fn yield_decision_admits_against_the_throttled_floor_not_full() {
+        // The D4 invariant made concrete: a request that does NOT fit against UE-full but DOES fit
+        // once UE is throttled to floor must read as coexist. UE full 4000 / floor 1000 (frees 3000).
+        // free_now = 2000 (UE at full). Against full: 2000 free, est 4000+512 → would deny/kill.
+        // After throttle: 2000+3000 = 5000 ≥ 4000+512 = 4512 → coexist. Proves we admit against floor.
+        assert_eq!(
+            yield_decision(2_000, 4_000, 1_000, 4_000, 512),
+            YieldOutcome::ThrottleAndCoexist
+        );
+        // And a hair more demand tips it to a kill (the boundary is the throttled-floor admission).
+        assert_eq!(
+            yield_decision(2_000, 4_000, 1_000, 4_500, 512),
+            YieldOutcome::KillToShaderFloor
+        );
+    }
+
+    #[test]
+    fn yield_decision_is_saturating_and_defensive() {
+        // A pathological estimate kills, never panics on overflow.
+        assert_eq!(
+            yield_decision(8_000, 1_200, 1_000, u64::MAX, 512),
+            YieldOutcome::KillToShaderFloor
+        );
+        // A floor mistakenly recorded ABOVE full yields no throttle gain (saturating_sub → 0), so the
+        // decision falls toward the kill backstop rather than inventing free VRAM from an underflow.
+        assert_eq!(
+            yield_decision(1_000, 1_000, 9_999, 5_000, 512),
+            YieldOutcome::KillToShaderFloor
+        );
+        // Throttle gain exactly meeting the need is admissible (admit treats need==free as a grant).
+        // free 0, full 9000/floor 1000 frees 8000; est 7488 + 512 = 8000 == 8000 → coexist.
+        assert_eq!(yield_decision(0, 9_000, 1_000, 7_488, 512), YieldOutcome::ThrottleAndCoexist);
     }
 
     // --- CallerClass tier clamp (ADR-0021 GO-1): the core transform, not a shell check ---

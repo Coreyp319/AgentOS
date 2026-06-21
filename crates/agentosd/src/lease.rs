@@ -129,6 +129,15 @@ fn preempt_dwell() -> Duration {
     Duration::from_secs(s)
 }
 
+/// The UE wallpaper's throttled-FLOOR VRAM footprint (ADR-0029 D4) — the second of UE's two-number
+/// footprint, against which the governor admits a higher tier when deciding throttle-vs-kill
+/// (`coord::yield_decision`). The Phase-A packaged-runtime measurement on a trivial scene was ~1.0 GB
+/// at the FLOOR rung (~1.2 GB FULL); a richer tableau must be re-measured before the budget is locked.
+/// Tunable via `AGENTOSD_UE_FLOOR_MIB`.
+fn ue_floor_mib() -> u64 {
+    std::env::var("AGENTOSD_UE_FLOOR_MIB").ok().and_then(|s| s.parse().ok()).unwrap_or(1000)
+}
+
 /// C7: is `req` still in its post-preempt cooldown? Interactive is exempt — top priority must
 /// never be delayed. Pure + tested (the time source is injected).
 fn cooling_down(cooldown: Option<(Tier, Instant)>, req: Tier, now: Instant) -> bool {
@@ -793,6 +802,28 @@ impl Coordinator {
         // a Scope victim → cgroup.kill via its pinned fd, then backpressure the grant until VRAM frees.
         if let Some((label, reclaim, fit)) = evicted {
             self.perform_reclaim(label, reclaim, fit, free_opt.unwrap_or(0)).await;
+        }
+
+        // ADR-0029 §3: if the victim was the live UE wallpaper (`Tier::Yielding`), surface the
+        // governor's PROACTIVE throttle-not-kill decision (the two-number-footprint call, D4). NB the
+        // RC throttle TRANSPORT and the lease-side coexistence model are unbuilt (ADR-0029 Open §B +
+        // the reservation model), so a `Yielding` victim still took the SIGKILL backstop above — this
+        // logs the decision the governor WILL enact (throttle UE to floor + coexist, or kill) once the
+        // hardened Remote Control client lands. Computed off the lock from the pre-eviction footprints.
+        if prev_tier == Some(Tier::Yielding) {
+            let action = crate::governor::plan_preemption(crate::coord::yield_decision(
+                free_opt.unwrap_or(0),
+                prev_est,        // UE's current (full) footprint = its admitted estimate
+                ue_floor_mib(),  // UE's throttled-floor footprint (Phase-A ~1 GB; re-measure per tableau)
+                est,
+                headroom,
+            ));
+            eprintln!(
+                "coordd: ADR-0029 §3 — {} preempted the UE wallpaper; governor decision: {} \
+                 [RC throttle + coexistence GATED on ADR-0029 §B → SIGKILL backstop applied]",
+                tier.as_str(),
+                action.describe(),
+            );
         }
 
         // Publish the new arbitration state to the keyhole mirror — OFF the lock (ADR-0012 §3).
