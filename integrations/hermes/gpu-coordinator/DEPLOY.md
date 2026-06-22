@@ -164,6 +164,27 @@ systemctl --user restart hermes-gateway.service
   NOTE: api_server turns are slow (~110–210s on qwen3.6-27b, owing to a ~15k-token
   system prompt) — drive verification with `curl -m 240`.
 
+## Per-call tier (ADR-0041)
+
+The wrap now picks the lease tier **per call** instead of always `interactive`:
+
+- a **live** turn (cli/telegram/discord/… — a human waiting) → `interactive` (preempts the dream);
+- a **background** turn whose `platform` ∈ `AGENTOS_GPU_BATCH_PLATFORMS` (default `cron,subagent`) →
+  `batch` (queues behind live turns, shares the heavy lane with dreaming via the ADR-0041 arbiter).
+
+The default set is deliberately conservative — only platforms that are *never* a live human turn — so a
+live turn can never be mis-tagged `batch` (which would make the user yield to the dream). Tune it:
+
+```bash
+# extend/replace the background set (comma list); empty string ⇒ interactive-always (pre-ADR-0041)
+AGENTOS_GPU_BATCH_PLATFORMS=cron,subagent
+```
+
+Verify on-box which platform YOUR overnight/agentic inference actually carries (`grep "platform=" …`)
+and extend the set if needed — `platform` inherits the kanban submitter, so a task created from Telegram
+reads `telegram`, not `cron`. (NB: a per-call `task_id` is NOT a usable signal — Hermes fills a UUID for
+live turns, so it can't separate batch from live.)
+
 ## Kill-switch / rollback
 
 - **Disable without uninstalling** — set the env kill-switch so the hook becomes a
