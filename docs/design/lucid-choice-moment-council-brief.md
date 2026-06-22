@@ -1,6 +1,7 @@
 # Design-council brief — Lucid "choice moment" + eager-glimpse generator
 
-- Status: **Decided (composition SHIP) + Proposed (generator amendment, gated)**
+- Status: **Decided (composition SHIP) + Implemented (generator: still-preview on the warm lease, 2026-06-21
+  — GPU e2e + privacy consult OWED before Accepted; see ADR-0023 amendment)**
 - Date: 2026-06-19
 - Facilitator: design-discourse-mediator (neutral; reconciles, does not generate)
 - Relates to: [ADR-0014](../adr/0014-lucid-interactive-branching-dream-loop.md) (the loop;
@@ -278,6 +279,18 @@ lane. The amendment cannot move from `Proposed` until this consult lands (gap #9
 >   quality. Pin the VRAM estimate to active-quant; fix the stale `_est_mib()` docstring.
 
 The full ADR text is for code + the human to dispose; this brief proposes, it does not ratify.
+
+> **Disposition (2026-06-21).** The human chose to render real previews (option 1a). Shipped as a
+> **single still** (cheaper than the MIN_LEN motion glimpse) that **rides the existing warm batch lease
+> in-process** — NOT a new `Tier::Speculative` lease class (the deviation is recorded in the ADR-0023
+> amendment). All the gating guarantees above hold (dwell-windowed, one-at-a-time, cancel-on-pick, headroom-
+> gated, never-spawns, fail-open to the still).
+>
+> **Gate (b) — privacy consult — DONE 2026-06-21 (verdict SHIP WITH FIXES).** Q2 is resolved as
+> recommended: previews are **OFF by default** (opt-in toggle `Settings → Path previews`, client-side, with a
+> one-line disclosure), **never run in private mode** (server-enforced), leave **no un-taken-path residue**
+> (transient clip + VHS sidecar deleted), and `LUCID_PREVIEWS=0` is a server kill-switch. **Gate (a) — the
+> cancel→VRAM-free on-box measurement — remains the only thing owed before Accepted** (resource-safety lane).
 
 ---
 

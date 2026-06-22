@@ -156,3 +156,57 @@ the review added these binding amendments:
 - **Painterly is not yet delivered (recorded dissent).** The art-director holds the stylization reads as a
   posterize filter, not brushwork; Phase-0 ships the calm/legible procedural look — the painterly artifact
   iterates (scorecard P2) before this is called done on the visual axis.
+
+## Amendment (2026-06-21) — Lucid per-choice "potential path" preview generator (supersedes the §9 stub)
+
+- Status: **Implemented (still-preview, warm-lease) + privacy-hardened (consult done 2026-06-21). The GPU e2e
+  on-box measurement (the cancel→VRAM-free / no-admission-delay numbers) is the LAST gate before Accepted.**
+  This realizes the generator the
+  [choice-moment council brief](../design/lucid-choice-moment-council-brief.md) held at `Proposed` (§1b, §9).
+  The human disposed in favour of rendering real previews (the brief's option 1a) over the recommended
+  still-default-only (1b): the gutter choice cards were all showing the **same seed image**, and "render the
+  potential paths" was the explicit ask.
+- **What shipped.** During the decision **dwell** (clip ended, choices shown — never during playback), the
+  server renders ONE still preview per gutter beat, SERIALLY, and the page's `/api/beats` poll swaps each card
+  from the seed conditioning still to its own preview as it lands (progressive fill-in; a card that never gains
+  one stays on the seed still — a legitimate resting state). The preview is the cheapest faithful render: a
+  `MIN_LEN` draft i2v from the node's conditioning frame on the (gated) beat prompt + a deterministic
+  per-(node,beat) seed, whose last frame is extracted; the transient clip is deleted (a preview is a still,
+  never a chain node). Content-addressed by `blake2b(label\0prompt)` → idempotent (a held menu re-renders
+  nothing).
+- **Deviation from the §9 stub — NO new `Tier::Speculative` lease class.** Rather than a new lowest-tier lease,
+  the preview runs **inside the existing warm batch lease, in-process**, reusing the shipped
+  [ADR-0032](0032-lucid-click-to-segment-spatial-markup.md) `/api/segment` pattern: it never `Acquire`s a
+  second lease (no self-preemption), never **Spawns** a lease just to preview (skips when cold — fail-open to
+  the still), is serialized to one render at a time (`_PREVIEW_SEM`), refused while a real beat/hero is in
+  flight (`TURN["phase"]=="dreaming"`), bails if ComfyUI is busy, and gates on a free-VRAM headroom floor. A
+  dedicated `PREVIEW_EPOCH` cancels the queue on pick / `/api/dream` / `/api/hero` / start·delete·burn (folded
+  into the lease teardown) / a new dwell node; `PREVIEW_ACTIVE` spares an in-flight preview from the idle
+  reaper. The §3 "No concurrency, ever" / ADR-0004 kill-not-yield posture is preserved: previews are serial
+  with the real beat, never concurrent.
+- **The one kill metric (satisfied structurally; on-box measurement still owed).** *A glimpse must never delay
+  the real beat's admission, nor cause any OOM/preempt.* The worker holds no arbitration lock, never spawns,
+  re-checks the live-beat phase + cancel epoch before every render, and is cancelled the instant the user
+  picks — so the real beat always wins. The four-number on-box measurement (cancel→VRAM-free, no admission
+  delay) the brief required is the remaining gate.
+- **Privacy posture — consult DONE 2026-06-21 (verdict: SHIP WITH FIXES; all three should-fixes applied).**
+  Preview PNGs are written through `lucid_store.frame_ref`, so a private dream seals them in
+  `.lucid-priv-<session>/` and `burn()`/`purge_persistent` wipe them with the session
+  ([ADR-0028](0028-lucid-save-reopen-and-encrypted-private-stash.md)/ADR-0016). The
+  `responsible-ai-privacy-skeptic` named the right concern — "rendering paths you won't take, on a box you live
+  on" — and three fixes closed it: **(1) OFF by default + a one-line disclosure** — an opt-in toggle
+  (`Settings → Path previews`, client-side `localStorage`, never written into a dream); the page never fires
+  the trigger unless the user opted in, and `LUCID_PREVIEWS=0` is a server kill-switch. **(2) Hard-off in
+  private mode** — previews NEVER run for a private/incognito dream, server-enforced in `/api/beat-previews`
+  **and** the worker regardless of the toggle (private mode is the strongest "minimize this" signal). **(3) No
+  un-taken-path residue** — the transient render clip's whole stem family (the `.mp4` **and** any VHS metadata
+  sidecar `.png` carrying the un-chosen prompt) is deleted after extraction, with `purge_persistent`'s
+  `{session}_` sweep as a crash backstop. The serve/validate path (`_valid_preview_ref`, loopback + CSRF,
+  per-`cur_session()` anchor) was reviewed clean. Residual deferred to **resource-safety-reviewer**: the
+  cancel→VRAM-free kill-metric *measurement* (= the GPU-e2e gate above).
+- **Surface.** Backend `lucid_linear.generate_beat_preview` / `decorate_beats` / `_beat_key` /
+  `_valid_preview_ref`; web `_run_previews` worker + `POST /api/beat-previews` + `key`/`preview` on
+  `/api/beats` + the validated `preview=` param on `/api/frame`; frontend `Beat.{key,preview}`, `previewUrl`,
+  `useStartBeatPreviews`, the dwell trigger + the seed→preview thumb swap with the non-colour "this path"
+  eyebrow tell. Tests: `test_lucid_preview.py` (24). Draft lane reused from
+  [ADR-0033](0033-lucid-quality-two-tier-and-identity-carry.md).
