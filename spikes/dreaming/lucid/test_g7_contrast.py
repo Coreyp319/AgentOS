@@ -81,6 +81,26 @@ def test_known_fallbacks_clear_aa():
     assert g.contrast_ratio(g.INST_MUTED, g.GLASS_CARD_EFF) >= 4.5
 
 
+def _composite(fg_rgb, alpha, bg_rgb=(255, 255, 255)):
+    # composite an (r,g,b) at `alpha` over `bg` (default WHITE = the brightest possible dream frame),
+    # so we can test text that rides a translucent scrim/chip over an image we don't control.
+    return tuple(round(alpha * f + (1 - alpha) * b) for f, b in zip(fg_rgb, bg_rgb))
+
+
+def test_lib_scrim_text_clears_aa_over_bright_frame():
+    # ADR-0028 a11y guard: the saved/sealed dream tiles put text on a translucent scrim/chip over a
+    # GENERATED frame that can be fully bright. The earlier (.5 / .64 alpha) values failed AA over a
+    # white frame; the fix deepens the scrim + raises the chip fills to >=.82 (+ text-shadow). Lock it
+    # in: every tile text must clear AA against the worst case (scrim/chip composited over white).
+    scrim = (7, 8, 14)                       # rgba(7,8,14,*) — the .lib-cap scrim + .lib-frames/.lib-del chips
+    band = _composite(scrim, 0.82)           # the opaque text band the name/sub sit in
+    assert g.contrast_ratio("#eef1f8", band) >= 4.5, ".lib-name over bright frame must clear AA"
+    assert g.contrast_ratio("#c9cdd8", band) >= 4.5, ".lib-sub over bright frame must clear AA"
+    chip = _composite(scrim, 0.82)           # .lib-frames + .lib-del button fill
+    assert g.contrast_ratio("#e6e9f0", chip) >= 4.5, "frame-count / Remove text must clear AA"
+    assert g.contrast_ratio("#f29494", chip) >= 4.5, ".lib-del danger 'Delete' must clear AA"
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0
