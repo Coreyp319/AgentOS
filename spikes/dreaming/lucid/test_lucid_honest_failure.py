@@ -231,5 +231,38 @@ class RunTurnHonestyTest(unittest.TestCase):
         self.assertEqual(self._phase()[0], "refused")
 
 
+class InterruptOnWarmFailureTest(unittest.TestCase):
+    """A substantive failure under a WARM lease interrupts the orphaned ComfyUI job so it stops burning
+    the held GPU (audit 3.1); a genuine preempt does not (the job is already gone)."""
+    def setUp(self):
+        self._env = os.environ.pop("LUCID_GEN_CMD", None)
+        self._save = (L.S.force_evict, L.ST.is_private, L.wait_ready, L.E.run_beat,
+                      L._coord_holder_tier, L.E.cc.interrupt)
+        L.S.force_evict = lambda m: True
+        L.ST.is_private = lambda s: False
+        L.wait_ready = lambda: True
+        L._coord_holder_tier = lambda: None
+        self.interrupts = []
+        L.E.cc.interrupt = lambda: (self.interrupts.append(1), True)[1]
+
+    def tearDown(self):
+        if self._env is not None:
+            os.environ["LUCID_GEN_CMD"] = self._env
+        (L.S.force_evict, L.ST.is_private, L.wait_ready, L.E.run_beat,
+         L._coord_holder_tier, L.E.cc.interrupt) = self._save
+
+    def test_warm_substantive_failure_interrupts_the_orphaned_job(self):
+        L.E.run_beat = lambda *a, **k: (_ for _ in ()).throw(TimeoutError("did not finish in 1800s"))
+        with self.assertRaises(L.GenerationError):
+            L.generate_video("t", "p", "a.png", external_lease=True, raise_errors=True)
+        self.assertEqual(len(self.interrupts), 1)
+
+    def test_preempt_does_not_interrupt(self):
+        L._coord_holder_tier = lambda: "interactive"
+        L.E.run_beat = lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError("Connection refused"))
+        self.assertIsNone(L.generate_video("t", "p", "a.png", external_lease=True, raise_errors=True))
+        self.assertEqual(self.interrupts, [])
+
+
 if __name__ == "__main__":
     unittest.main()

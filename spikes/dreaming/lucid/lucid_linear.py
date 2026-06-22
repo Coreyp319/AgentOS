@@ -771,6 +771,14 @@ def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=F
         if _classify_generation_failure(e) == "preempt":
             log(f"beat yielded — interactive work preempted the dream; ComfyUI was reclaimed ({e})")
             return None                               # a real preempt: the dream yields, calm fail-open
+        # Substantive failure under a WARM lease: stop the (possibly still-running) job so a timed-out/errored
+        # render doesn't keep burning the held ComfyUI — the next beat shouldn't queue behind a dead one (audit
+        # 3.1). Best-effort; the per-call Spawn/Release path reclaims via SIGKILL anyway, so only warm needs it.
+        if external_lease:
+            try:
+                E.cc.interrupt()
+            except Exception:                         # noqa: BLE001 — never let cleanup mask the real error
+                pass
         log(f"generation FAILED ({type(e).__name__}: {e}) — surfacing as an error, not a skip")
         raise GenerationError(_human_gen_error(e), cause=str(e)) from e
     finally:

@@ -540,6 +540,18 @@ def generate_image(api_prompt, timeout=300):
     return files, hist
 
 
+def interrupt():
+    """Best-effort: tell ComfyUI to stop the currently-running prompt (POST /interrupt). Returns True on a
+    2xx. Used to stop an ORPHANED render — e.g. one that timed out or errored — from burning the warm lease's
+    ComfyUI (audit 3.1). The lease is single-exclusive, so the running prompt IS ours."""
+    req = urllib.request.Request(BASE + "/interrupt", data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return 200 <= r.status < 300
+    except Exception:
+        return False
+
+
 def free_vram():
     """Unload models + free VRAM. The /free endpoint returns an empty body,
     so we don't parse JSON — just require a 2xx."""
