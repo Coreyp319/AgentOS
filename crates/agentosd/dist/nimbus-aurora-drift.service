@@ -1,0 +1,17 @@
+[Unit]
+Description=AgentOS Style Charter drift producer — writes drift.json → nimbus-aurora feed (ADR-0034 Tier-2 ambient cue → ADR-0030)
+# Oneshot driven by nimbus-aurora-drift.timer. Computes the live desktop's distance from its kept
+# Style Charter (a deterministic config-vs-charter diff) and atomically writes the bounded drift
+# scalar the `scene` disposer folds into the wallpaper's Desat. Read-mostly, no network, no GPU.
+# NOTE: heavier sandboxing (PrivateNetwork / ProtectSystem=strict / RestrictAddressFamilies) was
+# tried and HANGS kreadconfig6 (KDE CLIs need the session env + sockets); the real safety property —
+# this job can never touch the lease/SIGKILL path — holds by process isolation regardless (it owns no
+# lease state, no VRAM handle). So we keep the cheap bounds and skip the namespace lockdown.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.hermes/skills/devops/kde-plasma-customization/scripts/ui-audit-style.py emit-drift
+Nice=10
+NoNewPrivileges=yes
+# Bound a wedged kreadconfig6 probe so the unit can't sit "activating" forever (resource-safety).
+TimeoutStartSec=60

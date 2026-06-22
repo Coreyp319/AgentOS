@@ -129,6 +129,16 @@ const BACKLIGHT_BUSY_MAX: f64 = 1.15; // reduce-motion busy = a static brightnes
 const WARM_MAX: f64 = 1.0; // far-end warm-amber inscatter; idle = 0 (D8 — warm reserved for needs_you)
 const DESAT_MAX: f64 = 0.6; // snag desaturate — the NON-color-redundant pair to fog-thicken (accessibility)
 
+/// Drift-from-kept-identity desaturate FLOOR (ADR-0034 Tier-2 ambient cue). The Style Charter's
+/// `drift` signal (live desktop config vs the kept charter, ∈[0,1]) folds into the SAME desat lever
+/// as snag — a faint "the room is quietly not-quite-itself" cool/desaturate, NEVER warmth (warm is
+/// `needs_you`'s monopoly, D8) and NEVER a notification. Capped well BELOW `DESAT_MAX` so a real snag
+/// (fog-thicken + full desat) always reads stronger than a drift haze (desat-only, subtle); combined
+/// via MAX so drift is a quiet FLOOR a snag can override, not an additive pile-on. drift=0 ⇒ 0 ⇒ the
+/// idle anchor is byte-identical (D4). Drift is a LOCAL, always-readable signal (like wind), so it
+/// applies even when the FLEET feed is stale/blind — the desktop still has an identity to drift from.
+const DRIFT_DESAT_MAX: f64 = 0.25;
+
 // Axis compile-time clamp floor/ceiling (defensive — the eased value can never leave this).
 const MOTION_MIN: f64 = 0.0;
 const MOTION_MAX: f64 = 1.6;
@@ -164,6 +174,18 @@ impl Freshness {
         matches!(self, Freshness::Fresh)
     }
 }
+
+/// The LOCAL, always-trustworthy signals — separate from the (untrustable) fleet mood. Both are
+/// real, locally-produced facts: `gust` is the user's own window-drag (`wind.json`), `drift` is the
+/// live desktop's distance from its kept Style Charter (`drift.json`). Bundling them in ONE named
+/// struct (rather than two adjacent `f64` params) closes the transposition footgun the rust review
+/// flagged — `read_world` returns this by name, so wind and drift can never be silently swapped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LocalSignals {
+    pub gust: f64,
+    pub drift: f64,
+}
+
 
 /// Validated, clamped agent mood — the `feed.rs` `{busy,warm,snag}` scalars after untrusting.
 /// `state` is informational and intentionally NOT consumed (the scalars drive everything, per the
@@ -256,9 +278,12 @@ impl SceneState {
     /// eased upstream), the feed freshness, and the user's reduce-motion preference. PURE — no I/O,
     /// no clock. This is where the whole mood/throttle-disjoint, warm-monopoly, stale≠serene, and
     /// reduce-motion-static-tone grammar lives (ADR-0030 D3/D4/D8/D9 + the accessibility fallback).
-    pub fn apply(&mut self, mood: MoodInput, gust: f64, freshness: Freshness, reduce_motion: bool) {
+    pub fn apply(&mut self, mood: MoodInput, sig: LocalSignals, freshness: Freshness, reduce_motion: bool) {
         let m = mood.sanitized();
-        let gust = if gust.is_finite() { gust.clamp(0.0, 1.0) } else { 0.0 };
+        let gust = if sig.gust.is_finite() { sig.gust.clamp(0.0, 1.0) } else { 0.0 };
+        // Drift is a LOCAL, always-trustworthy signal (like wind): a faint desat FLOOR, never warm.
+        // Non-finite → 0 (calm), never a hold. Folded into each path's t_desat via MAX below.
+        let drift_desat = if sig.drift.is_finite() { sig.drift.clamp(0.0, 1.0) } else { 0.0 } * DRIFT_DESAT_MAX;
         self.freshness = freshness;
         self.reduce_motion = reduce_motion;
 
@@ -266,12 +291,13 @@ impl SceneState {
             // STALE / BLIND (D9): a feed we can't trust is NOT the calm idle. Fold the (untrusted)
             // mood to calm and show the DISTINCT quieter-than-idle look — drift slows further than
             // idle, the backlight dims a step — "I can't see," calmer than idle, never snag/alarm.
-            // Wind is a SEPARATE, local, trustworthy producer (a real drag), so AIR stays live.
+            // Wind AND charter-drift are SEPARATE, local, trustworthy producers, so AIR + the drift
+            // desat-floor stay live even when the fleet feed is dark.
             self.t_motion = MOTION_STALE;
             self.t_backlight = BACKLIGHT_STALE;
             self.t_fog = FOG_REST;
             self.t_warm = 0.0;
-            self.t_desat = 0.0;
+            self.t_desat = drift_desat;
             self.t_air = if reduce_motion { 0.0 } else { gust };
             return;
         }
@@ -290,7 +316,7 @@ impl SceneState {
             self.t_motion = MOTION_FROZEN;
             self.t_backlight = BACKLIGHT_REST + m.busy * (BACKLIGHT_BUSY_MAX - BACKLIGHT_REST);
             self.t_fog = FOG_REST + m.snag * (FOG_SNAG_MAX - FOG_REST);
-            self.t_desat = m.snag * DESAT_MAX;
+            self.t_desat = (m.snag * DESAT_MAX).max(drift_desat); // drift floor folds in (MAX, never additive)
             self.t_warm = m.warm * WARM_MAX;
             self.t_air = 0.0;
             return;
@@ -303,7 +329,7 @@ impl SceneState {
         self.t_motion = MOTION_REST + m.busy * (MOTION_BUSY_MAX - MOTION_REST);
         self.t_backlight = BACKLIGHT_REST;
         self.t_fog = FOG_REST + m.snag * (FOG_SNAG_MAX - FOG_REST);
-        self.t_desat = m.snag * DESAT_MAX;
+        self.t_desat = (m.snag * DESAT_MAX).max(drift_desat); // drift floor folds in (MAX, never additive)
         self.t_warm = m.warm * WARM_MAX;
         self.t_air = gust;
     }
@@ -439,6 +465,19 @@ struct WindFile {
     gust: f64,
 }
 
+/// `drift.json`'s on-disk shape — the Style Charter's drift producer (`ui-audit-style.py emit-drift`,
+/// ADR-0034 Tier-2). `amount` ∈ [0,1] is how far the live desktop has moved from the kept charter.
+/// The `schema` IS checked; a future/incompatible drift schema reads as no drift (calm), not a misread.
+#[derive(Deserialize)]
+struct DriftFile {
+    #[serde(default)]
+    schema: u32,
+    #[serde(default)]
+    amount: f64,
+    #[serde(default)]
+    updated_at: f64,
+}
+
 /// A heartbeat file's shape — a single producer-liveness timestamp, written unconditionally each tick
 /// by `feed::write_heartbeat` (ADR-0030 D9). Still OPTIONAL by construction: if `heartbeat.json` is
 /// absent (the `feed` producer isn't running), there is simply no staleness signal → the feed reads
@@ -489,6 +528,21 @@ fn read_wind(path: &Path) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Read + untrust `drift.json` → `(amount ∈ [0,1], updated_at)`, or `None` (absent / symlink /
+/// oversized / wrong-schema / parse-fail). A LOCAL signal — unlike the fleet feed it is read
+/// regardless of `agent.json` freshness (the desktop has a kept identity to drift from even when
+/// Hermes is unreachable). The CALLER staleness-gates on `updated_at` (a dead producer must fade the
+/// haze to calm, not freeze it — `read_world`), the one freshness contract this signal would
+/// otherwise miss (resource-safety review).
+fn read_drift(path: &Path) -> Option<(f64, f64)> {
+    let d: DriftFile = read_capped(path).and_then(|s| serde_json::from_str(&s).ok())?;
+    if d.schema != 1 {
+        return None;
+    }
+    let amount = if d.amount.is_finite() { d.amount.clamp(0.0, 1.0) } else { 0.0 };
+    Some((amount, d.updated_at))
+}
+
 /// Read the OPTIONAL producer heartbeat → its `updated_at` epoch, or `None` if no heartbeat file
 /// exists (then the reader never emits `Stale`; see `HeartbeatFile`).
 fn read_heartbeat(path: &Path) -> Option<f64> {
@@ -503,22 +557,36 @@ fn read_heartbeat(path: &Path) -> Option<f64> {
 /// producer is noticed within a few seconds.
 const STALE_SECS: f64 = 8.0;
 
+/// Drift staleness TTL. The `drift.json` producer (`ui-audit-style.py emit-drift`) refreshes on every
+/// charter mutation AND a 3-min `--user` timer. Past this, a present drift value is treated as a dead
+/// producer and folded to 0 — the haze FADES to calm rather than freezing a stale value forever (the
+/// freshness contract drift would otherwise miss, both substrate reviews). Comfortably above the 3-min
+/// timer cadence (a missed tick is not "dead"), tight enough that a stopped producer clears within ~10 min.
+const DRIFT_STALE_SECS: f64 = 600.0;
+
 /// Resolve `(mood, freshness)` from the feed dir at time `now`. The honest-UNKNOWN core (D9) —
 /// `agent.json` unreadable/garbage/symlink/oversized reads **Blind** + neutral mood; present+valid
 /// with a heartbeat past `STALE_SECS` reads **Stale** (mood kept but untrusted — `apply` folds it to
 /// the quieter look); present+valid with no-heartbeat-or-fresh-heartbeat reads **Fresh**.
 /// A live-but-idle producer (which stops rewriting `agent.json`, so its mtime goes old) correctly
 /// reads **Fresh**, never Stale — that's why staleness is heartbeat-gated, not agent.json-mtime-gated.
-fn read_world(dir: &Path, now: f64) -> (MoodInput, f64, Freshness) {
+fn read_world(dir: &Path, now: f64) -> (MoodInput, LocalSignals, Freshness) {
     let gust = read_wind(&dir.join("wind.json"));
+    // Drift is a LOCAL signal (read regardless of fleet freshness) but it has its OWN staleness gate:
+    // a present-but-stale value (dead producer / deleted charter) folds to 0 so the haze fades to calm.
+    let drift = match read_drift(&dir.join("drift.json")) {
+        Some((amount, updated_at)) if now - updated_at <= DRIFT_STALE_SECS => amount,
+        _ => 0.0,
+    };
+    let sig = LocalSignals { gust, drift };
     match read_agent(&dir.join("agent.json")) {
-        None => (MoodInput::NEUTRAL, gust, Freshness::Blind),
+        None => (MoodInput::NEUTRAL, sig, Freshness::Blind),
         Some(mood) => {
             let fresh = match read_heartbeat(&dir.join("heartbeat.json")) {
                 Some(hb) if now - hb > STALE_SECS => Freshness::Stale,
                 _ => Freshness::Fresh,
             };
-            (mood, gust, fresh)
+            (mood, sig, fresh)
         }
     }
 }
@@ -572,17 +640,18 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut state = SceneState::default();
 
     if once {
-        let (mood, gust, fresh) = read_world(&dir, now_epoch());
-        state.apply(mood, gust, fresh, reduce_motion);
+        let (mood, sig, fresh) = read_world(&dir, now_epoch());
+        state.apply(mood, sig, fresh, reduce_motion);
         state.settle();
         write_scene(&dir, &state.to_json(now_epoch()))?;
         println!(
-            "[{}] once: fresh={:?} motion={} fog={} warm={} air={}",
+            "[{}] once: fresh={:?} motion={} fog={} warm={} desat={} air={}",
             crate::now_hms(),
             fresh,
             round3(state.motion),
             round3(state.fog),
             round3(state.warm),
+            round3(state.desat),
             round3(state.air),
         );
         return Ok(());
@@ -601,8 +670,8 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
         let dt = (now - last_now).clamp(0.0, 1.0);
         last_now = now;
 
-        let (mood, gust, fresh) = read_world(&dir, now);
-        state.apply(mood, gust, fresh, reduce_motion);
+        let (mood, sig, fresh) = read_world(&dir, now);
+        state.apply(mood, sig, fresh, reduce_motion);
         state.tick(dt);
 
         let body = state.body();
@@ -640,11 +709,15 @@ mod tests {
         MoodInput { busy, warm, snag }
     }
 
+    fn sig(gust: f64, drift: f64) -> LocalSignals {
+        LocalSignals { gust, drift }
+    }
+
     /// Settle a fresh, full-motion scene to its target for `mood` (no easing) — the steady-state
     /// the disposer eases toward, for asserting the pure mapping.
     fn settled(m: MoodInput) -> SceneState {
         let mut s = SceneState::default();
-        s.apply(m, 0.0, Freshness::Fresh, false);
+        s.apply(m, sig(0.0, 0.0), Freshness::Fresh, false);
         s.settle();
         s
     }
@@ -675,7 +748,7 @@ mod tests {
         let mut s2 = SceneState::default();
         let b0 = s2.body();
         for _ in 0..600 {
-            s2.apply(MoodInput::NEUTRAL, 0.0, Freshness::Fresh, false);
+            s2.apply(MoodInput::NEUTRAL, sig(0.0, 0.0), Freshness::Fresh, false);
             s2.tick(TICK_DT);
         }
         assert_eq!(s2.body(), b0, "an idle scene's frame body is byte-identical across ticks");
@@ -733,7 +806,7 @@ mod tests {
         assert_eq!(settled(mood(0.0, 9.0, 0.0)).warm, WARM_MAX, "finite over-range warm clamps to max");
         // A NaN gust reads as no air, never a hold.
         let mut g = SceneState::default();
-        g.apply(MoodInput::NEUTRAL, f64::NAN, Freshness::Fresh, false);
+        g.apply(MoodInput::NEUTRAL, sig(f64::NAN, 0.0), Freshness::Fresh, false);
         g.settle();
         assert_eq!(g.air, 0.0);
     }
@@ -743,13 +816,13 @@ mod tests {
         // From a busy+snag state, drop to idle: every mood axis must SNAP to its EXACT rest (D4),
         // not asymptote. (~10 s of ticks at 30 Hz is well past the slow spring's settle.)
         let mut s = SceneState::default();
-        s.apply(mood(1.0, 0.0, 1.0), 0.0, Freshness::Fresh, false);
+        s.apply(mood(1.0, 0.0, 1.0), sig(0.0, 0.0), Freshness::Fresh, false);
         for _ in 0..120 {
             s.tick(TICK_DT);
         }
-        s.apply(MoodInput::NEUTRAL, 0.0, Freshness::Fresh, false);
+        s.apply(MoodInput::NEUTRAL, sig(0.0, 0.0), Freshness::Fresh, false);
         for _ in 0..400 {
-            s.apply(MoodInput::NEUTRAL, 0.0, Freshness::Fresh, false);
+            s.apply(MoodInput::NEUTRAL, sig(0.0, 0.0), Freshness::Fresh, false);
             s.tick(TICK_DT);
         }
         assert_eq!(s.motion, MOTION_REST, "motion snaps to EXACT rest");
@@ -764,7 +837,7 @@ mod tests {
         // an output more than its per-tick slew ceiling. Drive busy 0→1 and assert the FIRST tick's
         // motion delta is bounded by MOOD_MAX_SLEW·dt (a strobe would jump the whole range at once).
         let mut s = SceneState::default();
-        s.apply(mood(1.0, 0.0, 0.0), 0.0, Freshness::Fresh, false);
+        s.apply(mood(1.0, 0.0, 0.0), sig(0.0, 0.0), Freshness::Fresh, false);
         let before = s.motion;
         s.tick(TICK_DT);
         let delta = (s.motion - before).abs();
@@ -775,7 +848,7 @@ mod tests {
         );
         // The AIR channel is faster but STILL bounded (a wind producer restart can't strobe the fog).
         let mut a = SceneState { air: 1.0, ..SceneState::default() }; // pretend a gust was up
-        a.apply(MoodInput::NEUTRAL, 0.0, Freshness::Fresh, false); // wind.json now reads 0 (restart)
+        a.apply(MoodInput::NEUTRAL, sig(0.0, 0.0), Freshness::Fresh, false); // wind.json now reads 0 (restart)
         let air_before = a.air;
         a.tick(TICK_DT);
         assert!(
@@ -811,7 +884,7 @@ mod tests {
         let json = settled(mood(-0.0, -0.0, -0.0)).to_json(1750000000.0);
         assert!(!json.contains("-0"), "a -0.0 mood must not serialize as -0: {json}");
         let mut g = SceneState::default();
-        g.apply(MoodInput::NEUTRAL, -0.0, Freshness::Fresh, false); // a -0.0 gust on the air axis
+        g.apply(MoodInput::NEUTRAL, sig(-0.0, 0.0), Freshness::Fresh, false); // a -0.0 gust on the air axis
         g.settle();
         assert!(!g.to_json(1.0).contains("-0"), "a -0.0 gust must not serialize as -0");
     }
@@ -823,11 +896,11 @@ mod tests {
         // motion delta is bounded by the slew cap and the axis is mid-transition (not already at stale).
         let mut s = SceneState::default();
         for _ in 0..120 {
-            s.apply(mood(1.0, 0.0, 0.0), 0.0, Freshness::Fresh, false);
+            s.apply(mood(1.0, 0.0, 0.0), sig(0.0, 0.0), Freshness::Fresh, false);
             s.tick(TICK_DT);
         }
         assert!(s.motion > 1.4, "ramped into a quickened busy drift");
-        s.apply(MoodInput::NEUTRAL, 0.0, Freshness::Blind, false); // the fleet feed goes dark
+        s.apply(MoodInput::NEUTRAL, sig(0.0, 0.0), Freshness::Blind, false); // the fleet feed goes dark
         let before = s.motion;
         s.tick(TICK_DT);
         assert!(
@@ -837,7 +910,7 @@ mod tests {
         assert!(s.motion < before && s.motion > MOTION_STALE, "...and is mid-transition, not yet at stale");
         // And it does eventually settle at the exact stale value (no asymptote churn).
         for _ in 0..400 {
-            s.apply(MoodInput::NEUTRAL, 0.0, Freshness::Blind, false);
+            s.apply(MoodInput::NEUTRAL, sig(0.0, 0.0), Freshness::Blind, false);
             s.tick(TICK_DT);
         }
         assert_eq!(s.motion, MOTION_STALE, "the stale look settles to its EXACT target (byte-stable)");
@@ -852,7 +925,7 @@ mod tests {
         let mut s = SceneState::default();
         let target = MOTION_REST + 0.005 * (MOTION_BUSY_MAX - MOTION_REST); // 1.003
         for _ in 0..600 {
-            s.apply(mood(0.005, 0.0, 0.0), 0.0, Freshness::Fresh, false);
+            s.apply(mood(0.005, 0.0, 0.0), sig(0.0, 0.0), Freshness::Fresh, false);
             s.tick(TICK_DT);
         }
         assert!(s.motion > MOTION_REST, "a small live busy is NOT swallowed to rest");
@@ -865,10 +938,10 @@ mod tests {
         // After ONE tick from idle with a full gust, air has moved far MORE than motion would for a
         // full busy input — the two are visibly different timescales.
         let mut air = SceneState::default();
-        air.apply(mood(0.0, 0.0, 0.0), 1.0, Freshness::Fresh, false);
+        air.apply(mood(0.0, 0.0, 0.0), sig(1.0, 0.0), Freshness::Fresh, false);
         air.tick(TICK_DT);
         let mut mot = SceneState::default();
-        mot.apply(mood(1.0, 0.0, 0.0), 0.0, Freshness::Fresh, false);
+        mot.apply(mood(1.0, 0.0, 0.0), sig(0.0, 0.0), Freshness::Fresh, false);
         mot.tick(TICK_DT);
         let air_frac = air.air / 1.0; // fraction of full range covered in one tick
         let mot_frac = (mot.motion - MOTION_REST) / (MOTION_BUSY_MAX - MOTION_REST);
@@ -880,7 +953,7 @@ mod tests {
         // D9: a stale feed is NOT the calm idle. Drift slows BELOW idle and the backlight dims a
         // step; mood is NOT shown (untrusted), but it never reads as snag/alarm.
         let mut s = SceneState::default();
-        s.apply(mood(1.0, 1.0, 1.0), 0.0, Freshness::Stale, false); // a busy+warm+snag feed, but stale
+        s.apply(mood(1.0, 1.0, 1.0), sig(0.0, 0.0), Freshness::Stale, false); // a busy+warm+snag feed, but stale
         s.settle();
         assert_eq!(s.motion, MOTION_STALE, "stale drift is slower than idle");
         assert!(s.motion < MOTION_REST, "...strictly slower than idle (calmer, 'I can't see')");
@@ -897,7 +970,7 @@ mod tests {
         // toward FLOOR (D9 — the governor's read, not an action this disposer takes; there is no
         // throttle field here).
         let mut s = SceneState::default();
-        s.apply(mood(0.5, 0.0, 0.5), 0.0, Freshness::Blind, false);
+        s.apply(mood(0.5, 0.0, 0.5), sig(0.0, 0.0), Freshness::Blind, false);
         s.settle();
         assert_eq!(s.freshness, Freshness::Blind);
         assert_eq!(s.freshness.code(), 2);
@@ -911,7 +984,7 @@ mod tests {
         // busy → a static backlight step (held under bloom); snag → static fog+desaturate;
         // needs_you → a held warm lobe. And the canvas/air are frozen.
         let mut busy = SceneState::default();
-        busy.apply(mood(1.0, 0.0, 0.0), 1.0, Freshness::Fresh, true);
+        busy.apply(mood(1.0, 0.0, 0.0), sig(1.0, 0.0), Freshness::Fresh, true);
         busy.settle();
         assert_eq!(busy.motion, MOTION_FROZEN, "reduce-motion freezes the drift");
         assert_eq!(busy.air, 0.0, "and freezes the wind/air impulse");
@@ -919,14 +992,14 @@ mod tests {
         assert!(busy.backlight <= BACKLIGHT_MAX, "held under the compile-time ceiling");
 
         let mut snag = SceneState::default();
-        snag.apply(mood(0.0, 0.0, 1.0), 0.0, Freshness::Fresh, true);
+        snag.apply(mood(0.0, 0.0, 1.0), sig(0.0, 0.0), Freshness::Fresh, true);
         snag.settle();
         assert_eq!(snag.motion, MOTION_FROZEN);
         assert_eq!(snag.fog, FOG_SNAG_MAX, "snag survives as a static fog-thicken");
         assert_eq!(snag.desat, DESAT_MAX, "+ a static desaturate (non-color cue)");
 
         let mut warm = SceneState::default();
-        warm.apply(mood(0.0, 1.0, 0.0), 0.0, Freshness::Fresh, true);
+        warm.apply(mood(0.0, 1.0, 0.0), sig(0.0, 0.0), Freshness::Fresh, true);
         warm.settle();
         assert_eq!(warm.warm, WARM_MAX, "needs_you survives as a held (non-breathing) warm lobe");
         assert!(warm.reduce_motion, "and the frame flags reduce_motion so the applier holds it steady");
@@ -945,7 +1018,7 @@ mod tests {
                             let m = mood(bi as f64 / 4.0, wi as f64 / 4.0, si as f64 / 4.0);
                             let mut s = SceneState::default();
                             for _ in 0..200 {
-                                s.apply(m, 1.0, fresh, rm);
+                                s.apply(m, sig(1.0, 0.0), fresh, rm);
                                 s.tick(TICK_DT);
                                 assert!((MOTION_MIN..=MOTION_MAX).contains(&s.motion));
                                 assert!((FOG_MIN..=FOG_MAX).contains(&s.fog));
@@ -986,6 +1059,114 @@ mod tests {
         assert_plain_value::<SceneState>();
         assert_plain_value::<MoodInput>();
         assert_plain_value::<Freshness>();
+    }
+
+    // ---- charter drift → desat floor (ADR-0034 Tier-2 ambient cue) ----
+
+    /// Settle a fresh, full-motion scene with a charter `drift` (no fleet mood).
+    fn settled_drift(drift: f64) -> SceneState {
+        let mut s = SceneState::default();
+        s.apply(MoodInput::NEUTRAL, sig(0.0, drift), Freshness::Fresh, false);
+        s.settle();
+        s
+    }
+
+    #[test]
+    fn drift_raises_only_desat_never_warm_or_motion() {
+        // The drift cue is a faint DESAT floor and NOTHING else: never warm (D8 monopoly), never
+        // motion/fog/backlight. A quietly-not-quite-itself haze, not an alarm.
+        let s = settled_drift(1.0);
+        assert!((s.desat - DRIFT_DESAT_MAX).abs() < 1e-9, "full drift = the (subtle) desat floor");
+        assert!(s.desat < DESAT_MAX, "the drift floor is well below a real snag's desat");
+        assert_eq!(s.warm, 0.0, "drift NEVER injects warm (needs_you monopoly)");
+        assert_eq!(s.motion, MOTION_REST, "drift does not touch motion");
+        assert_eq!(s.fog, FOG_REST, "drift does not thicken fog (that's snag)");
+        assert_eq!(s.backlight, BACKLIGHT_REST);
+        assert!((settled_drift(0.5).desat - 0.5 * DRIFT_DESAT_MAX).abs() < 1e-9, "proportional");
+        assert_eq!(settled_drift(0.0).desat, 0.0, "drift 0 = no desat");
+    }
+
+    #[test]
+    fn drift_zero_is_exactly_idle() {
+        // drift=0 ⇒ the idle anchor is byte-identical (D4) — the cue costs nothing at rest.
+        let mut s = SceneState::default();
+        for _ in 0..400 {
+            s.apply(MoodInput::NEUTRAL, sig(0.0, 0.0), Freshness::Fresh, false);
+            s.tick(TICK_DT);
+        }
+        assert!(s.is_idle(), "no drift, no mood ⇒ exactly the resting tableau");
+    }
+
+    #[test]
+    fn snag_desat_overrides_a_drift_floor() {
+        // Combined via MAX, not additive: a real snag (full desat 0.6) dominates the drift floor,
+        // and the combination never exceeds DESAT_MAX.
+        let mut s = SceneState::default();
+        s.apply(mood(0.0, 0.0, 1.0), sig(0.0, 1.0), Freshness::Fresh, false); // full snag AND full drift
+        s.settle();
+        assert_eq!(s.desat, DESAT_MAX, "snag desat (0.6) > drift floor (0.25) ⇒ MAX picks snag");
+        let mut w = SceneState::default();
+        w.apply(mood(0.0, 0.0, 0.1), sig(0.0, 1.0), Freshness::Fresh, false); // weak snag, full drift
+        w.settle();
+        assert!((w.desat - DRIFT_DESAT_MAX).abs() < 1e-9, "the drift floor lifts a weak snag");
+    }
+
+    #[test]
+    fn drift_floor_survives_a_blind_fleet_feed() {
+        // Drift is a LOCAL signal: the desktop still has a kept identity to drift from even when the
+        // fleet feed is dark. So the drift desat-floor shows in Stale/Blind too (like wind/air).
+        let mut s = SceneState::default();
+        s.apply(MoodInput::NEUTRAL, sig(0.0, 1.0), Freshness::Blind, false);
+        s.settle();
+        assert!((s.desat - DRIFT_DESAT_MAX).abs() < 1e-9, "drift desat shows even when blind");
+        assert_eq!(s.motion, MOTION_STALE, "...alongside the blind look (slower drift)");
+        assert_eq!(s.warm, 0.0, "still no warm");
+    }
+
+    #[test]
+    fn drift_desat_eases_and_is_bounded() {
+        // The cue eases on the SLOW spring (no strobe) and stays within the desat clamp.
+        let mut s = SceneState::default();
+        s.apply(MoodInput::NEUTRAL, sig(0.0, 1.0), Freshness::Fresh, false);
+        let before = s.desat;
+        s.tick(TICK_DT);
+        assert!((s.desat - before).abs() <= MOOD_MAX_SLEW * TICK_DT + 1e-9, "drift desat is slew-limited");
+        for _ in 0..400 {
+            s.apply(MoodInput::NEUTRAL, sig(0.0, 1.0), Freshness::Fresh, false);
+            s.tick(TICK_DT);
+        }
+        assert!((0.0..=DESAT_MAX).contains(&s.desat));
+        assert!((s.desat - DRIFT_DESAT_MAX).abs() < 1e-9, "settles to the exact drift floor");
+    }
+
+    #[test]
+    fn read_drift_honors_schema_and_clamps() {
+        let p = std::env::temp_dir().join(format!("agentos_scene_{}_drift.json", std::process::id()));
+        std::fs::write(&p, r#"{"schema":1,"amount":0.7,"updated_at":1.0}"#).unwrap();
+        let (a, t) = read_drift(&p).expect("schema-1 parses");
+        assert!((a - 0.7).abs() < 1e-9 && (t - 1.0).abs() < 1e-9);
+        std::fs::write(&p, r#"{"schema":1,"amount":9.0}"#).unwrap();
+        assert_eq!(read_drift(&p).unwrap().0, 1.0, "over-range amount clamps");
+        std::fs::write(&p, r#"{"schema":2,"amount":0.9}"#).unwrap();
+        assert!(read_drift(&p).is_none(), "wrong schema → None");
+        let _ = std::fs::remove_file(&p);
+        assert!(read_drift(&p).is_none(), "absent → None");
+    }
+
+    #[test]
+    fn drift_staleness_gate_fades_a_dead_producer_to_calm() {
+        // A present-but-stale drift.json (dead producer / deleted charter) must FADE to calm, not
+        // freeze a permanent haze — the freshness contract drift would otherwise miss (resource-safety).
+        let dir = tmp("drift_stale.d");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("agent.json"), r#"{"busy":0,"warm":0,"snag":0}"#).unwrap();
+        std::fs::write(dir.join("drift.json"), r#"{"schema":1,"amount":0.8,"updated_at":1000.0}"#).unwrap();
+        let (_m, sig, _f) = read_world(&dir, 1000.0);
+        assert!((sig.drift - 0.8).abs() < 1e-9, "a fresh drift value is applied");
+        let (_m2, sig2, _f2) = read_world(&dir, 1000.0 + DRIFT_STALE_SECS + 1.0);
+        assert_eq!(sig2.drift, 0.0, "a stale drift producer fades to calm, never a frozen haze");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- untrusted-input readers ----
@@ -1052,21 +1233,21 @@ mod tests {
         let dir = tmp("world_blind.d");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let (m, _g, f) = read_world(&dir, 1000.0);
+        let (m, _s, f) = read_world(&dir, 1000.0);
         assert_eq!(f, Freshness::Blind);
         assert_eq!(m, MoodInput::NEUTRAL);
         // A present agent.json with NO heartbeat reads Fresh (a live-but-idle producer is not stale).
         std::fs::write(dir.join("agent.json"), r#"{"busy":0.7,"warm":0,"snag":0}"#).unwrap();
-        let (m2, _g2, f2) = read_world(&dir, 1_000_000.0);
+        let (m2, _s2, f2) = read_world(&dir, 1_000_000.0);
         assert_eq!(f2, Freshness::Fresh, "present + no heartbeat = Fresh, never Stale on mtime");
         assert_eq!(m2, mood(0.7, 0.0, 0.0));
         // Add a STALE heartbeat → Stale (the feed is present but the producer went quiet).
         std::fs::write(dir.join("heartbeat.json"), r#"{"updated_at":100.0}"#).unwrap();
-        let (_m3, _g3, f3) = read_world(&dir, 1_000_000.0);
+        let (_m3, _s3, f3) = read_world(&dir, 1_000_000.0);
         assert_eq!(f3, Freshness::Stale, "present feed + past-gate heartbeat = Stale");
         // A FRESH heartbeat → Fresh again.
         std::fs::write(dir.join("heartbeat.json"), r#"{"updated_at":999999.0}"#).unwrap();
-        let (_m4, _g4, f4) = read_world(&dir, 1_000_000.0);
+        let (_m4, _s4, f4) = read_world(&dir, 1_000_000.0);
         assert_eq!(f4, Freshness::Fresh);
         let _ = std::fs::remove_dir_all(&dir);
     }

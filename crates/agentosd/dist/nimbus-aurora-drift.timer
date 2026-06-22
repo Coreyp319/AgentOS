@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh the Style Charter drift signal for the reactive wallpaper (ADR-0034 Tier-2)
+# Catches DESKTOP-config drift between charter edits (a charter mutation refreshes drift.json
+# immediately via ui-audit-style.py's emit-drift; this timer covers the rest). The TTL in the
+# `scene` consumer (DRIFT_STALE_SECS) is set above this cadence so a missed tick is not "stale".
+
+[Timer]
+OnStartupSec=30s
+OnUnitActiveSec=3min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

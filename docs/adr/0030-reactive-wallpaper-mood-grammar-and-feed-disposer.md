@@ -210,6 +210,16 @@ fall-to-floor is fail-open (ADR-0003), not a tx. Routed to `motion-designer` + `
 
 ## Consequences
 
+- **2026-06-21 — a fourth producer feed: `drift.json` (ADR-0034 Tier-2).** The Style Charter's
+  drift-from-kept-identity signal joins `agent.json`/`wind.json`/`audio.json` as a bounded, untrusted,
+  schema-gated producer feed read by the `scene.rs` disposer. It folds a gentle `DRIFT_DESAT_MAX=0.25`
+  floor into the `Desat` mood axis (via MAX with the snag-desat, never warm — the D8 monopoly holds),
+  so a desktop that has drifted from its kept aesthetic reads as a faint "quietly not-quite-itself"
+  haze. Same disposer, same grammar (D1): drift is a LOCAL signal (read even when the fleet feed is
+  stale/blind, like wind), drift=0 ≡ the byte-identical idle anchor (D4), eased on the slow spring.
+  Producer = `ui-audit-style.py emit-drift` + `nimbus-aurora-drift.timer`. Still PAUSED with the rest of
+  the stack (actuation needs the gated `scene`/`rc` services running). See ADR-0034.
+
 - **Honest record.** This ADR is *Proposed* and **PAUSED**, marked like `Tier::Yielding` itself:
   **all live-on-the-wallpaper reactivity is GATED on ADR-0029 Open §A** — the UE wallpaper *LAYER* is
   unbuilt (no native-Wayland wallpaper host exists; live-windowed proves UE-runs-on-Wayland, not the
