@@ -263,8 +263,17 @@ architecture (promoted here to the *primary* update model).
   `burn`, no `canon*` residue anywhere; (3) the ledger pass logs metadata only (no synopsis/fact text);
   (4) the L2 child writes no file for a private frame; (5) `save_session` seals canon as ciphertext and
   does NOT add the synopsis to the stash index row.
-- **`/api/state` canon-egress decision** — strip-from-serializer vs explicit-rule (see Reviews §). Must
-  be decided before any surface ships canon.
+- **`/api/state` canon-egress decision — DECIDED 2026-06-22: STRIP canon entirely from the serializer**
+  (Corey's call). `state()` never returns `canon`, for any session — canon stays pure internal steering
+  on the server (zero egress/residue risk, fully reversible; no consumer exists today). Implemented at
+  integration as a 1-line shallow-copy redaction (`{k:v for k,v in chain.items() if k!="canon"}`, never
+  mutating the live chain). When the S1 "editable canon voice" surface is actually built it gets its own
+  deliberate endpoint that serves a private dream's line from the in-memory session only.
+- **Privacy tests — scoped 2026-06-22.** Two satisfied BY DESIGN (confirmed pre-wiring): `lucid_ground`
+  logs no content (its only prints are the cv2 child emitting one JSON number), and the L2 child writes
+  no file (reads paths, prints the number). The rest are AT-INTEGRATION (need canon actually written via
+  `step()`/`save_chain`): single-sink private-ephemeral, no `canon*` after `burn`, stash seals canon as
+  ciphertext and keeps the synopsis out of the index row.
 - **Palette-threshold sanity pass** — known-drift vs known-clean frame pairs; calibrate so an
   *intentional* cut (cut-to-night, new location) doesn't false-positive.
 - **Contrast measurement** of the amber chip + serif canon line over a worst-case midframe (HARD
