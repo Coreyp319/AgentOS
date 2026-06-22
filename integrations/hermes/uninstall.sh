@@ -14,4 +14,11 @@ echo "✓ removed plugin dir + needs_you.json"
 if systemctl --user is-active --quiet hermes-gateway.service 2>/dev/null; then
   systemctl --user restart hermes-gateway.service && echo "✓ hermes-gateway restarted"
 fi
-echo "note: if you enabled it by editing config.yaml, also remove '$NAME' from plugins.enabled there"
+
+# Reverse the config.yaml append, if install.sh made it (and we have the pre-edit snapshot).
+CFG="$HERMES_HOME/config.yaml"
+if [ -f "$CFG.agentos-bak" ]; then
+  mv -f "$CFG.agentos-bak" "$CFG" && echo "✓ restored $CFG from backup (plugins append removed)"
+else
+  echo "note: if you enabled it by editing config.yaml, also remove '$NAME' from plugins.enabled there"
+fi

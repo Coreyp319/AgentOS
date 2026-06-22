@@ -26,12 +26,40 @@ boots stay silent; the keyhole tray carries the calm). Its catalog is editable �
 agentosd interactive VRAM lease around Hermes inference so live AI preempts the
 overnight dream/batch lane (ADR-0006/0010).
 
-## Bring up everything not yet running
+## Install / uninstall — the component driver
+Every capability is a row in **`components.conf`** (the single source of truth) driven by
+`install.sh` / `uninstall.sh`. Each is opt-in/opt-out, idempotent, and independently reversible:
+
 ```
-./apply-all.sh        # installs dashboard + ComfyUI + Lucid + status-panel services (idempotent)
+./install.sh                 # interactive checklist (default-on preselected)
+./install.sh --list          # show the registry (id / tier / default / root / description)
+./install.sh --defaults      # the default local stack, non-interactive
+./install.sh --only lucid,share-hub
+./install.sh --without comfyui
+./install.sh --all
+./uninstall.sh [same flags]  # the aggregate reverse (reverse order)
+./apply-all.sh               # thin back-compat wrapper = install.sh --defaults
 ```
-The Hermes gateway and Ollama are already installed and enabled, so `apply-all.sh`
-leaves them alone and just ensures the remaining pieces are up.
+
+The driver **stays user-scope and never escalates**: a component whose `root` is `sudo`
+(the Firefox policy pin) or `manual` (tailscale exposure) is **printed at the end** for you to
+run, not executed. A component that fails logs and the run continues (no half-applied abort).
+Add/retire/re-default a capability by editing one line in `components.conf` — no driver change.
+The Hermes gateway and Ollama are already enabled, so the drivers leave them alone.
+
+### Desktop right-click → Lucid ("Create Video from Image")
+Two `no`-root components install the local halves — **`dolphin-create`** (ServiceMenu `.desktop`,
+a static file → survives all restarts) and **`browser-host`** (native messaging host installed to
+`~/.local/share/agentos/` + per-browser manifests → persistent). The Firefox **extension** survives
+a Firefox restart only via the **`firefox-pin`** component: an **AMO-signed XPI** (committed at
+`browser-create-video/signed/`, with a `.sha256` sidecar) staged to a **root-owned**
+`/usr/local/lib/agentos/` and **merged** into `/etc/firefox/policies/policies.json`
+(`force_installed`). That's the lone root step, so it's printed:
+```
+sudo browser-create-video/policy/apply-policy.sh     # signature-verified, idempotent, merge-safe
+```
+Re-signing is a rare developer step (`browser-create-video/sign.sh`, only on an extension change).
+Full rationale + Chromium notes: `browser-create-video/README.md`.
 
 ## VRAM note
 ComfyUI is a heavy VRAM consumer, but idle it loads no weights (just the CUDA context),

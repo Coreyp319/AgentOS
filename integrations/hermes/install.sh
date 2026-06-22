@@ -28,8 +28,13 @@ else
   elif grep -qE '^plugins:' "$CFG" 2>/dev/null; then
     echo "! a 'plugins:' block already exists in $CFG — add '$NAME' to plugins.enabled by hand"
   else
+    # Snapshot the pre-edit config ONCE *before* mutating, and abort the append if the backup fails —
+    # never mutate state we can't reverse.
+    if [ ! -e "$CFG.agentos-bak" ]; then
+      cp -a "$CFG" "$CFG.agentos-bak" || { echo "✗ could not back up $CFG — not appending; add '$NAME' by hand" >&2; exit 1; }
+    fi
     printf '\nplugins:\n  enabled:\n    - %s\n' "$NAME" >> "$CFG"
-    echo "✓ added plugins.enabled: [$NAME] → $CFG"
+    echo "✓ added plugins.enabled: [$NAME] → $CFG (backed up → $CFG.agentos-bak)"
   fi
 fi
 
