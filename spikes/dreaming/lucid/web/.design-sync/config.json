@@ -1,0 +1,40 @@
+{
+  "projectId": "853c6ef9-9fcf-43b5-88cd-748bc7efb892",
+  "shape": "package",
+  "pkg": "web",
+  "globalName": "AgentOSLucid",
+  "entry": ".design-sync/ds-entry.ts",
+  "srcDir": "src",
+  "cssEntry": "src/theme.css",
+  "extraFonts": ["node_modules/@fontsource-variable/fraunces/index.css"],
+  "extraEntries": ["./.design-sync/lucid-preview-env.tsx"],
+  "provider": { "component": "LucidPreviewEnv" },
+  "readmeHeader": ".design-sync/conventions.md",
+  "componentSrcMap": {
+    "App": null,
+    "Start": null,
+    "Dreaming": null,
+    "Chain": null,
+    "QueuePanel": null,
+    "Nav": "src/components.tsx",
+    "EngineToggle": "src/components.tsx",
+    "PreviewToggle": "src/components.tsx",
+    "ReadyChip": "src/components.tsx",
+    "ReadinessCard": "src/components.tsx",
+    "PrivateCard": "src/components.tsx",
+    "LibraryCard": "src/components.tsx",
+    "StashPanel": "src/Library.tsx",
+    "DreamGallery": "src/Library.tsx"
+  },
+  "dtsPropsFor": {
+    "Nav": "/** Active section key: 'dream' (the live dream), 'new', 'library', 'stash', or 'settings'. */\nactive: string;\n/** When true, the live dream leads the nav as its own item with an \"up\" dot. */\nhasDream: boolean;\n/** Display name of the live dream; falls back to \"Current dream\". */\ndreamName?: string | null;\n/** Called with the chosen section key when the user navigates. */\nonNavigate: (v: string) => void;",
+    "EngineToggle": "/** The i2v backend selection. The control renders nothing when this is absent or has no options. */\nengine?: {\n  /** Active engine id, e.g. \"wan\" or \"10eros\". */\n  active: string;\n  /** Selectable engine ids. */\n  options: string[];\n};",
+    "PreviewToggle": "/** This component takes no props. */",
+    "ReadyChip": "/** Live readiness of the dreaming pipeline. */\nr: {\n  /** Graphics turn-taking (GPU coordinator) is up. */\n  coordinator: boolean;\n  /** Video generator (ComfyUI) is up. */\n  comfyui: boolean;\n  /** Story-suggestion model (Ollama) is up. */\n  ollama: boolean;\n  /** All required pieces are up and Lucid can dream. */\n  can_dream: boolean;\n  /** Human-readable reasons dreaming is paused (empty when ready). */\n  why: string[];\n};",
+    "ReadinessCard": "/** Live readiness of the dreaming pipeline. When can_dream is false, the card explains which piece is missing. */\nr: {\n  coordinator: boolean;\n  comfyui: boolean;\n  ollama: boolean;\n  can_dream: boolean;\n  why: string[];\n};",
+    "PrivateCard": "/** Encrypted private-stash status; drives whether the card offers \"Save to stash\" or a create/unlock prompt. */\nstash?: {\n  exists: boolean;\n  unlocked: boolean;\n  /** Stash id this dream is currently saved as, if any (offers \"Update\" vs \"Save\"). */\n  saved_id?: string | null;\n};\n/** Navigate to the Stash section to create or unlock the encrypted stash. */\nonGoStash?: () => void;",
+    "LibraryCard": "/** Current dream name; seeds the inline rename field. */\nname?: string | null;",
+    "StashPanel": "/** Initial stash status; the panel also reads live status itself. */\nstash?: {\n  exists: boolean;\n  unlocked: boolean;\n  saved_id?: string | null;\n};\n/** Called after a sealed dream is opened (the parent returns to the dream view). */\nonOpened?: () => void;",
+    "DreamGallery": "/** Called after a saved dream is opened (the parent returns to the dream view). */\nonOpened?: () => void;"
+  }
+}
