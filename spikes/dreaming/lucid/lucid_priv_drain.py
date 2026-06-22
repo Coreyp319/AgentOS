@@ -234,8 +234,13 @@ def _governed_private_runner(rec):
         gated = S.gate_prompt(frozen.get("prompt") or MOTION_PROMPT)   # frozen prompt; constant only for legacy
         if gated is None:                              # defensive: the neutral motion prompt should pass
             return "prompt-blocked"
+        # ADR-0041: park behind the cross-workflow VRAM-demand queue so a deferred PRIVATE dream drains
+        # the instant the lease frees. best-effort + fully fail-open (a down/absent arbiter or timeout
+        # just proceeds; L.step's None → "gpu-busy" re-hold still governs). No privacy leak: WaitTurn
+        # carries only (tier, est) — never the prompt, seed, or session content.
+        L.wait_turn(tier="best-effort", est=frozen.get("est_mib"))
         node = L.step(session, gated, label="animate", tier="best-effort")
-        if node is None:                               # generate_video fell open (GPU busy / preempted)
+        if node is None:                               # still busy after our turn (raced) / preempted → re-hold
             return "gpu-busy"
         return "done"
     except Exception as e:                             # fail-open: surface a cause, never raise out of here

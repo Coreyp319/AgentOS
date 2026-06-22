@@ -301,6 +301,7 @@ class _FakeLinear:
         self.start_raises = start_raises
         self.start_calls = []
         self.step_calls = []
+        self.wait_turn_calls = []
 
     def start(self, session, image, private=False, _trusted_seed=False, **kw):
         self.start_calls.append({"session": session, "image": image,
@@ -308,6 +309,11 @@ class _FakeLinear:
         if self.start_raises:
             raise RuntimeError("simulated lease/start blowup")
         return {"session": session, "nodes": [{"id": 0}]}
+
+    def wait_turn(self, tier=None, est=None):
+        # ADR-0041: the private drainer parks on the arbiter before step (best-effort, fail-open).
+        self.wait_turn_calls.append({"tier": tier, "est": est})
+        return True
 
     def step(self, session, prompt, label=None, tier=None):
         self.step_calls.append({"session": session, "prompt": prompt, "label": label, "tier": tier})
@@ -348,6 +354,9 @@ check("governed private runner: B2 not re-run (_trusted_seed=True, no consent ed
 check("governed private runner: drains on a best-effort lease (fail-open by construction)",
       fl.step_calls[0]["tier"] == "best-effort")
 check("governed private runner: steps with the GATED motion prompt", fl.step_calls[0]["prompt"] == "gated-motion")
+# ADR-0041: the private drainer also parks behind the cross-workflow VRAM queue (best-effort) before acquiring.
+check("governed private runner: parks on the arbiter (WaitTurn) before stepping",
+      len(fl.wait_turn_calls) == 1 and fl.wait_turn_calls[0]["tier"] == "best-effort")
 
 out, _ = _run_governed(_grec, step_returns=None)
 check("governed private runner: step returns None -> gpu-busy (fail-open)", out == "gpu-busy")

@@ -99,8 +99,13 @@ def _governed_runner(rec):
         gated = S.gate_prompt(frozen.get("prompt") or MOTION_PROMPT)   # frozen prompt; constant only for a legacy record
         if gated is None:                        # defensive: the neutral motion prompt should pass
             return "prompt-blocked"
+        # ADR-0041: park behind the cross-workflow VRAM-demand queue so this deferred dream drains the
+        # INSTANT the lease frees, instead of racing-and-requeuing on a busy GPU. best-effort, so it
+        # never delays the desktop; fully fail-open — a down/absent arbiter or a timeout just proceeds,
+        # and L.step's own fail-open (None → "gpu-busy" → requeue below) still governs the outcome.
+        L.wait_turn(tier="best-effort", est=frozen.get("est_mib"))
         node = L.step(session, gated, label="animate", tier="best-effort")
-        if node is None:                         # generate_video fell open (GPU busy / preempted)
+        if node is None:                         # still busy after our turn (raced) / preempted → requeue
             return "gpu-busy"
         return "done"
     except Exception as e:                       # fail-open: surface a cause, never raise out of here

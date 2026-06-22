@@ -48,6 +48,14 @@ import lucid_b2 as B2      # noqa: E402  (seed-image likeness guard — ADR-0017
 
 COORD_NAME = "org.agentos.Coordinator1"
 COORD_PATH = "/org/agentos/Coordinator1"
+# ADR-0041 cross-workflow VRAM-demand arbiter (a SEPARATE process from the coordinator). The drainer
+# parks here on a busy lease so a deferred dream drains the instant the GPU frees, instead of
+# failing-open-and-requeuing. Optional: absent → wait_turn() fails open and the dream proceeds as before.
+QUEUE_NAME = "org.agentos.Queue1"
+QUEUE_PATH = "/org/agentos/Queue1"
+# busctl timeout for a WaitTurn park — must EXCEED the arbiter's server-side wait window (default 30s)
+# so we don't cut a legitimate wait short; it's only a backstop against a wedged arbiter (→ fail-open).
+QUEUE_WAIT_TIMEOUT = int(os.environ.get("LUCID_QUEUE_WAIT_SECS", "40"))
 PROFILE = os.environ.get("LUCID_PROFILE", "comfyui")
 # Params appended to the daemon-owned profile argv (dream.sh DREAM_PARAMS parity). The real
 # `comfyui` profile takes none; the `sleep` stand-in profile takes a duration (smoke-testing).
@@ -151,6 +159,33 @@ def lease_release(token):
     if token and token != "0":
         _coord("Release", "t", token)
         log(f"released lease {token} — agentosd SIGKILLs ComfyUI, VRAM reclaimed")
+
+
+def wait_turn(tier="best-effort", est=None):
+    """ADR-0041: park behind the cross-workflow VRAM-demand queue (org.agentos.Queue1) until it's our
+    turn — so a deferred dream drains the INSTANT the lease frees, instead of failing-open-and-requeuing
+    on a busy GPU. Returns True if the arbiter granted a turn (the lease is free; go acquire), False
+    otherwise. FAIL-OPEN by construction: an absent/down arbiter, a timeout, a non-zero return, or any
+    error all return False and the caller proceeds EXACTLY as if there were no queue — its own lease
+    fail-open + the drainer's requeue still apply, so the dream is never blocked or dropped by the queue.
+    Uses the AGENT verb (clamps tier to {best-effort, batch}); only a BACKGROUND drainer should call it —
+    the interactive loop must never block on a turn (the user is waiting)."""
+    est = _est_mib() if est is None else int(est)
+    try:
+        r = subprocess.run(
+            ["busctl", "--user", "call", QUEUE_NAME, QUEUE_PATH, QUEUE_NAME,
+             "WaitTurnAgent", "su", tier, str(est)],
+            capture_output=True, text=True, timeout=QUEUE_WAIT_TIMEOUT)
+    except Exception as e:                  # noqa: BLE001 — the arbiter is OPTIONAL; never raise into a drain
+        log(f"queue WaitTurn unreachable ({e}) — proceeding without a turn (fail-open, ADR-0041)")
+        return False
+    if r.returncode != 0:
+        return False                       # no arbiter / bus error → fail open (no queue, proceed)
+    parts = r.stdout.split()               # "bs true your_turn" | "bs false timeout|queue_full|…"
+    granted = len(parts) >= 2 and parts[1] == "true"
+    if granted:
+        log("queue: our turn — the lease should be free; proceeding to acquire")
+    return granted
 
 
 def wait_ready():
