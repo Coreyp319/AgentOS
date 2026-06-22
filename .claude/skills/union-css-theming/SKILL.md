@@ -48,6 +48,24 @@ mkdir -p ~/.config/environment.d
 printf 'UNION_STYLE_NAME=%s\n' "$STYLE" > ~/.config/environment.d/union-style.conf   # effective next login
 ```
 
+## Safe edits — `css-tx.py` (checkpoint / revert, with a validated gate)
+The reversible apply/rollback rail for the manual loop (mirrors the ADR-0034 audit's
+`backup_once`/`do_revert`, adds a deterministic gate). Edit `agentos/*.css` freely, then:
+```sh
+SKILL=~/Documents/AgentOS/.claude/skills/union-css-theming
+python3 $SKILL/css-tx.py verify       # the gate: union-ruleinspector loads the style? (no throw)
+python3 $SKILL/css-tx.py status       # valid? dirty vs last checkpoint? which files changed?
+python3 $SKILL/css-tx.py diff         # unified diff: working tree vs last checkpoint
+python3 $SKILL/css-tx.py checkpoint --note "round corners + lavender focus"   # REFUSES if invalid
+python3 $SKILL/css-tx.py revert        # restore the last good checkpoint (or --to <run_id>)
+python3 $SKILL/css-tx.py history       # the append-only ledger
+```
+The whole point: `checkpoint` runs the `union-ruleinspector` gate first and **refuses to bless a
+state that doesn't load** (code disposes), so `revert` always lands on a validated checkpoint — no
+opaque shadow-write, no login-revert "lie" (ADR-0034). Checkpoints + ledger live in
+`~/.local/share/union/css/.tx/`; each snapshots both the style dir and the required `defaults/`.
+Style defaults to `$UNION_STYLE_NAME` or `agentos`.
+
 ## Non-negotiable gotchas
 - **Mirror `defaults/` into the user data root.** A style under `~/.local/share/union/css/styles/<name>/`
   makes Union resolve `defaults/default.css` relative to *that* data root
