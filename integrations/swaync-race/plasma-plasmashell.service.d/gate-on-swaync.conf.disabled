@@ -1,0 +1,46 @@
+# Nimbus/AgentOS — STAGED, INACTIVE. Deterministic gate: hold plasmashell's
+# startup until swaync actually owns org.freedesktop.Notifications.
+#
+# ── Why this exists ────────────────────────────────────────────────────────
+# KDE has NO supported way to disable Plasma's built-in notification server
+# (confirmed 2026-06-18 — Nate Graham/ngraham, KDE Discuss "Override built-in
+# notification daemon": notifications are a built-in component of plasmashell,
+# not a separable service; the only method is "run your notification service
+# BEFORE plasmashell starts"). The sibling drop-in `after-swaync.conf` plus
+# swaync's `Type=dbus` already implement that — BUT systemd ordering has a leak:
+# `After=swaync.service` is satisfied when swaync's start job *finishes*, success
+# OR failure. If swaync hard-fails before acquiring the name, plasmashell is
+# released and grabs org.freedesktop.Notifications, and swaync can't reclaim it
+# (it requests the name without replacement). This gate closes that leak.
+#
+# ── What it does ───────────────────────────────────────────────────────────
+# Adds an ExecStartPre that blocks plasmashell's start until swaync is the
+# *actual owner* of the name (not merely "someone owns it"). This enforces
+# ngraham's rule deterministically: plasmashell only initialises its own
+# notification engine after swaync holds the name, so it defers every time.
+#
+# ── Fail-open / fail-slow tradeoff ─────────────────────────────────────────
+# Bounded 30s wait, then `exit 0` REGARDLESS — so a genuinely dead swaync can
+# never blank the desktop; plasmashell starts and reclaims notifications (the
+# fail-open fallback).
+#
+# ── This is STAGED, not active ─────────────────────────────────────────────
+# systemd only reads `*.conf` drop-ins, so this `.conf.disabled` file is IGNORED.
+# Only enable it if the reboot test shows swaync STILL losing the race AFTER the
+# portal fix in swaync.service.d/nimbus-race.conf (the v2 root-cause fix). Note
+# this gate's 30s wait does NOT cover a 25s+ portal hang on its own — it is a
+# complement to the portal fix, not a substitute. Don't stack unvalidated fixes.
+#
+#   ACTIVATE:  mv gate-on-swaync.conf.disabled gate-on-swaync.conf   (in
+#                 ~/.config/systemd/user/plasma-plasmashell.service.d/)
+#              systemctl --user daemon-reload      # takes effect next login
+#
+#   REVERT:    mv gate-on-swaync.conf gate-on-swaync.conf.disabled   (or rm it)
+#              systemctl --user daemon-reload
+#
+# Complementary to `after-swaync.conf` (keep both): that one pulls swaync into
+# plasmashell's transaction (Wants=) and orders it (After=); this one makes the
+# handoff deterministic.
+
+[Service]
+ExecStartPre=/usr/bin/bash -c 'for i in $(seq 1 60); do /usr/bin/busctl --user status org.freedesktop.Notifications 2>/dev/null | /usr/bin/grep -q "Comm=swaync" && exit 0; sleep 0.5; done; exit 0'

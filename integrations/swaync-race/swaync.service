@@ -1,0 +1,16 @@
+[Unit]
+Description=Swaync notification daemon (Nimbus: claims the bus before plasmashell)
+Documentation=https://github.com/ErikReider/SwayNotificationCenter
+ConditionEnvironment=WAYLAND_DISPLAY
+After=plasma-kwin_wayland.service plasma-ksmserver.service
+Before=plasma-plasmashell.service
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.Notifications
+ExecStart=/usr/bin/swaync
+ExecReload=/usr/bin/swaync-client --reload-config ; /usr/bin/swaync-client --reload-css
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
