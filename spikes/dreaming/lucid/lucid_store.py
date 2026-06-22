@@ -388,15 +388,27 @@ def make_download_workdir(private):
 
 
 def clear_download_scratch():
-    """Remove the WHOLE tmpfs download-scratch root — every entry is a transient stitch workdir,
-    nothing worth keeping. Run at startup and on stop so a crash/SIGKILL mid-download can't leave a
-    stitched (possibly PRIVATE) MP4 lingering in tmpfs with no reaper — closing the same gap the
-    per-session reap closes for clips. Symlink-refusing. True iff a dir was actually cleared."""
+    """Reap every transient download-stitch workdir, in BOTH sinks:
+      * the tmpfs lucid-dl root (PRIVATE downloads — the cardinal case: a stitched private MP4 must not
+        linger in RAM with no reaper), and
+      * orphaned `lucid-dl-*` dirs in the OS temp dir (NON-private downloads — make_download_workdir
+        puts those in tempfile.gettempdir(), which the tmpfs sweep never touches; a SIGKILL mid-stitch
+        would otherwise leave a full-dream MP4 on disk with no other cleaner).
+    Run at startup and on stop, closing the same crash-orphan gap the per-session reap closes for clips.
+    Every target is symlink-refusing + owned-by-us (so a foreign path sharing the prefix is never
+    rmtree'd). True iff anything was actually cleared."""
+    cleared = False
     root = _download_scratch_root()
     if _own_real_dir(root) is True:
         shutil.rmtree(root, ignore_errors=True)
-        return not os.path.exists(root)
-    return False
+        cleared = not os.path.exists(root)
+    import glob as _glob
+    import tempfile as _tempfile
+    for d in _glob.glob(os.path.join(_tempfile.gettempdir(), "lucid-dl-*")):
+        if _own_real_dir(d) is True:
+            shutil.rmtree(d, ignore_errors=True)
+            cleared = cleared or not os.path.exists(d)
+    return cleared
 
 
 def reap_orphans():

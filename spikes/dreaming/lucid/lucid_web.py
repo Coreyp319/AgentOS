@@ -468,11 +468,16 @@ def chain_or_none(session=None):
 
 
 def _download_filename(chain, sess):
-    """A safe, friendly download name from the dream's library label (or session id). Slugged to
-    [A-Za-z0-9._-] so it drops into Content-Disposition with no quoting / header-injection risk."""
-    raw = (chain.get("name") or sess or "dream").strip()
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-_.") or "dream"
-    return slug[:60] + ".mp4"
+    """A safe, friendly download name: the dream's library label, then the session id, then a literal
+    fallback. Slugged to [A-Za-z0-9._-] so it drops into Content-Disposition with no quoting /
+    header-injection risk. The strip is re-run AFTER the 60-char cut so a boundary that lands on a
+    separator can't leave a trailing '-'/'.' before the extension; falling through to the session id
+    (not straight to 'dream') keeps two punctuation-only-named dreams from colliding on one filename."""
+    for raw in ((chain.get("name") or "").strip(), (sess or "").strip(), "dream"):
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-_.")[:60].strip("-_.")
+        if slug:
+            return slug + ".mp4"
+    return "dream.mp4"
 
 
 def _synthetic_opening():
@@ -1025,15 +1030,29 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(503, "video stitching unavailable (ffmpeg not found)", "text/plain")
         if not _DOWNLOAD_SEM.acquire(blocking=False):   # one stitch at a time — never oversubscribe cores
             return self._send(503, "a download is already being prepared — try again in a moment", "text/plain")
-        workdir = L.ST.make_download_workdir(private)   # tmpfs (sealed) for private; OS temp otherwise
-        out = os.path.join(workdir, "dream.mp4")
+        # EVERYTHING after the acquire lives under the finally that releases the permit — INCLUDING
+        # make_download_workdir, which CAN raise (a full tmpfs, or the sealed-dir path refusing a planted
+        # symlink). If it raised outside the try the permit would leak and every later download would 503
+        # "already being prepared" FOREVER, until the process restarts (resource-safety review: the safety
+        # serialization must not be able to wedge the feature it guards). _send_file deliberately stays
+        # OUTSIDE the inner excepts: a client disconnect mid-stream raises an OSError, and we must let it
+        # propagate (the finally still cleans up) rather than catch it and try to write a 500 to a socket
+        # that's already closed.
+        workdir = None
         try:
-            STCH.stitch(paths, out)
+            try:
+                workdir = L.ST.make_download_workdir(private)   # tmpfs (sealed) for private; OS temp otherwise
+            except OSError:
+                return self._send(500, "could not prepare the download (no scratch space)", "text/plain")
+            out = os.path.join(workdir, "dream.mp4")
+            try:
+                STCH.stitch(paths, out)
+            except STCH.StitchError as e:
+                return self._send(500, f"could not stitch the dream: {e}", "text/plain")
             self._send_file(out, "video/mp4", _download_filename(chain, sess))
-        except STCH.StitchError as e:
-            return self._send(500, f"could not stitch the dream: {e}", "text/plain")
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            if workdir:
+                shutil.rmtree(workdir, ignore_errors=True)
             _DOWNLOAD_SEM.release()
 
     def _json200(self, obj):

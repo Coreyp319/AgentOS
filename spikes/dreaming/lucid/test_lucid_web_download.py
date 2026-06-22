@@ -12,6 +12,7 @@ Needs ffmpeg + ffprobe. Run: python3 test_lucid_web_download.py
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -148,6 +149,100 @@ try:
     # 6) unknown session -> 404
     st6, _, _ = get("/api/download?session=nope-zzzzzz")
     check("unknown session -> 404", st6 == 404)
+
+    # 7) concurrent download -> 503 (the one-stitch-at-a-time guard). Hold the permit ourselves and
+    #    assert a request sees a clean 503, not an oversubscribed second ffmpeg.
+    got = W._DOWNLOAD_SEM.acquire(blocking=False)
+    check("test could grab the download permit", got)
+    st7, _, b7 = get(f"/api/download?session={sess}")
+    check("concurrent download -> 503", st7 == 503 and b"already being prepared" in b7)
+    W._DOWNLOAD_SEM.release()
+    # and the permit is healthy afterward — a normal download still works.
+    st7b, _, b7b = get(f"/api/download?session={sess}")
+    check("download works again after the permit is released", st7b == 200 and len(b7b) > 0)
+
+    # 8) REGRESSION (semaphore leak): if make_download_workdir raises (full tmpfs / sealed-dir refusal),
+    #    the route must NOT leak the permit. Force it to raise, assert a clean 500, then prove a later
+    #    download still succeeds (a leaked permit would 503 forever).
+    _orig_mkwd = ST.make_download_workdir
+    try:
+        def _boom_mkwd(private):
+            raise OSError("simulated: no space left on device")
+        ST.make_download_workdir = _boom_mkwd
+        st8, _, _ = get(f"/api/download?session={sess}")
+        check("workdir creation failure -> clean 500 (not a dropped connection)", st8 == 500)
+    finally:
+        ST.make_download_workdir = _orig_mkwd
+    st8b, _, b8b = get(f"/api/download?session={sess}")
+    check("download still works after a workdir failure (permit was released, no leak)",
+          st8b == 200 and len(b8b) > 0)
+
+    # 9) StitchError -> 500, and the permit is released (next download works).
+    _orig_stitch = STCH.stitch
+    try:
+        def _boom_stitch(*a, **k):
+            raise STCH.StitchError("simulated encode failure")
+        STCH.stitch = _boom_stitch
+        st9, _, b9 = get(f"/api/download?session={sess}")
+        check("StitchError -> 500 with the reason", st9 == 500 and b"could not stitch" in b9)
+    finally:
+        STCH.stitch = _orig_stitch
+    st9b, _, _ = get(f"/api/download?session={sess}")
+    check("download works after a StitchError (permit released)", st9b == 200)
+
+    # 10) ffmpeg absent -> 503 (the route checks have_ffmpeg before spawning anything).
+    _orig_have = STCH.have_ffmpeg
+    try:
+        STCH.have_ffmpeg = lambda: False
+        st10, _, b10 = get(f"/api/download?session={sess}")
+        check("ffmpeg absent -> 503", st10 == 503 and b"ffmpeg" in b10)
+    finally:
+        STCH.have_ffmpeg = _orig_have
+
+    # 11) a dream whose tip carries hero_clip (ADR-0033) downloads the HERO render, not the draft.
+    hsess = "herodream-h1h2h3"
+    ST.ensure_session(hsess, False)
+    draft = mkclip(os.path.join(_TMP, "hero_draft.mp4"), 320, 240, 10, 1)   # 1s draft
+    heroc = mkclip(os.path.join(_TMP, "hero_keep.mp4"), 320, 240, 10, 2)    # 2s hero (distinguishable)
+    ST.save_chain(hsess, False, {"session": hsess, "private": False, "name": "Hero",
+        "nodes": [{"id": 0, "parent": None, "clip": None, "out_frame": "ho.png"},
+                  {"id": 1, "parent": 0, "clip": draft, "hero_clip": heroc, "out_frame": "hn1.png"}]})
+    st11, _, b11 = get(f"/api/download?session={hsess}")
+    outh = os.path.join(_TMP, "hero_dl.mp4"); open(outh, "wb").write(b11)
+    check("hero_clip dream downloads the hero render (~2s, not the 1s draft)",
+          st11 == 200 and STCH._is_valid_mp4(outh) and abs(probe_dur(outh) - 2.0) < 0.5)
+
+    # 12) a PRIVATE dream that fails mid-stitch must STILL clean its tmpfs scratch (no private leftover).
+    _orig_stitch2 = STCH.stitch
+    try:
+        def _boom_stitch2(*a, **k):
+            raise STCH.StitchError("simulated private encode failure")
+        STCH.stitch = _boom_stitch2
+        st12, _, _ = get(f"/api/download?session={psess}")
+        check("private StitchError -> 500", st12 == 500)
+    finally:
+        STCH.stitch = _orig_stitch2
+    import time as _t2
+    for _ in range(50):
+        leftover12 = os.listdir(dl_base) if os.path.isdir(dl_base) else []
+        if not leftover12:
+            break
+        _t2.sleep(0.1)
+    check("private StitchError still sweeps the tmpfs scratch (no leftover)", leftover12 == [])
+
+    # 13) _download_filename slugging edge cases (header-safety + friendliness), tested directly.
+    check("filename: punctuation-only name falls back to the session id, not a shared 'dream'",
+          W._download_filename({"name": "!!!@@@###"}, "sessabc123") == "sessabc123.mp4")
+    fn_uni = W._download_filename({"name": "Réve éveillé 夢"}, "s")
+    check("filename: unicode name slugs to ASCII-only [A-Za-z0-9._-]",
+          fn_uni.endswith(".mp4") and re.fullmatch(r"[A-Za-z0-9._-]+", fn_uni) is not None)
+    fn_long = W._download_filename({"name": "x" * 200}, "s")
+    check("filename: long name capped to 60 + .mp4", len(fn_long) <= 64 and fn_long.endswith(".mp4"))
+    check("filename: None name falls back to the session id",
+          W._download_filename({"name": None}, "abc123") == "abc123.mp4")
+    fn_trail = W._download_filename({"name": "a" * 59 + "----tail"}, "s")
+    check("filename: 60-char cut never leaves a trailing separator before .mp4",
+          not fn_trail[:-4].endswith(("-", "_", ".")))
 finally:
     srv.shutdown()
 

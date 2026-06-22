@@ -27,6 +27,7 @@ SECURITY / PRIVACY
 import json
 import os
 import subprocess
+import sys
 from shutil import which
 
 FFMPEG = "ffmpeg"
@@ -40,6 +41,11 @@ MAX_CLIPS = 200
 
 # lucid's default portrait format — the re-encode fallback's last resort if probing yields nothing.
 _DEFAULT_W, _DEFAULT_H, _DEFAULT_FPS = 720, 1280, 16
+
+# Cap libx264 so a download can't grab every core: the box also runs the inference + live desktop the
+# substrate exists to protect, and a long re-encode at full thread count would starve them. CPU-only
+# either way (the GPU lease is never touched). Leave a couple of cores free; floor of 1 on a tiny box.
+_ENCODE_THREADS = max(1, (os.cpu_count() or 4) - 2)
 
 
 class StitchError(RuntimeError):
@@ -203,6 +209,7 @@ def _reencode(paths, out_path, timeout, target):
              # The per-input fps filter already makes it CFR; -fps_mode cfr + -r pin it so no player
              # sees a variable-rate tail (the "won't play at the end of a clip" failure).
              "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
+             "-threads", str(_ENCODE_THREADS),   # leave cores for inference/desktop (resource-safety)
              "-preset", "veryfast", "-crf", "20", "-fps_mode", "cfr", "-r", str(fps),
              "-movflags", "+faststart", out_path]
     subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout)
@@ -220,10 +227,28 @@ def stitch(clip_paths, out_path, timeout=600, prefer_copy=False):
     """
     if not have_ffmpeg():
         raise StitchError("ffmpeg/ffprobe not found")
-    paths = [os.path.abspath(p) for p in clip_paths if p and os.path.isfile(p)][:MAX_CLIPS]
+    paths = [os.path.abspath(p) for p in clip_paths if p and os.path.isfile(p)]
+    if len(paths) > MAX_CLIPS:
+        # A dream is naturally short; >MAX_CLIPS is a pathological/corrupt chain. Keep the NEWEST beats
+        # (the tip — what "download my dream" most likely wants), drop the oldest, and SAY SO rather than
+        # silently shipping a file that ends partway through the story (resource-safety + correctness).
+        print(f"lucid_stitch: dream has {len(paths)} clips; capping to the newest {MAX_CLIPS}",
+              file=sys.stderr, flush=True)
+        paths = paths[-MAX_CLIPS:]
     if not paths:
         raise StitchError("no clips to stitch")
     probes = [_probe(p) for p in paths]
+    # A present-but-undecodable clip (a truncated/corrupt file) would otherwise make the re-encode
+    # filter_complex fail and sink the WHOLE download — contradicting clip_spine's "skip a bad beat,
+    # keep the rest" contract (which only covers files MISSING at spine-build time). Drop clips whose
+    # probe failed and stitch the rest. Floor: if EVERY probe failed (ffprobe itself broken, not the
+    # clips) keep them all and let the encode be the final judge rather than refusing a maybe-fine dream.
+    decodable = [(p, pr) for p, pr in zip(paths, probes) if pr is not None]
+    if decodable and len(decodable) < len(paths):
+        print(f"lucid_stitch: skipping {len(paths) - len(decodable)} undecodable clip(s)",
+              file=sys.stderr, flush=True)
+        paths = [p for p, _ in decodable]
+        probes = [pr for _, pr in decodable]
 
     if prefer_copy and _uniform(probes):
         try:
