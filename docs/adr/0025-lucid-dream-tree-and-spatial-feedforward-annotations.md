@@ -174,3 +174,110 @@ LTX-only, additive, fail-open; Wan keeps its VLM-decomposed prompt. (e) Coords a
 auto-reclaims only via `ollama stop`, never the wallpaper/UE. So ComfyUI-under-lease starves whenever a live
 graphics holder squats VRAM; the manual `systemctl` stop above stands in for the eviction the coordinator
 should perform. That integration is the next substrate step (relates to ADR-0004/0023).
+
+## Amendment (2026-06-21): the fuse-review surface + per-region text — annotations become a *visible, editable* part of the prompt
+
+The user's ask: "ensure the UX/UI of adding annotations to be a part of the overall prompt prior to sending
+to start the next segment — think deep on how we represent that information." A 6-perspective design pass
+(interaction / content / applied-AI / UX / visual / delight) converged on one finding and one fix.
+
+**The finding.** Annotations *did* feed the prompt — but **invisibly**. At a choice moment Lucid committed
+four hidden authors into the rendered prompt: the typed line, the notes (silently rewritten by the VLM
+`decompose_notes`, or the deterministic `_steering_suffix` fallback), the persistent **subject** prefix
+(`_with_subject`), and a possibly-relocated **anchor** frame — then spent minutes of GPU on a string the user
+never saw or could correct. That is the one place "model proposes, code disposes" was broken: the one model
+output that actually drives the render was the one output never surfaced or gated *before the user committed*.
+
+**The fix (built + tested, this commit).**
+
+1. **The Shot Card readback ("how Lucid reads this").** When the selected beat carries notes, the compose
+   card grows: the notes render as composite rows, and a readback tier shows the **exact prompt the next beat
+   will run** (notes decomposed + the subject folded *in*), editable before "Dream it." With no notes none of
+   it mounts — the type-and-go fast path is byte-for-byte unchanged.
+   - `lucid_linear.fuse_direction(session, parent_id, prompt)` assembles that exact gated string with **no
+     ComfyUI lease and no heavy admission** — but it is **not free**: it runs one local VLM pass that **loads
+     and evicts** the 3B narrator (`keep_alive:0`, `lucid_engine.py`), the *same residency profile as a menu
+     roll* (a transient load/evict, **not** standing residency). The real, unmeasured cost is **load/evict
+     thrash under eager debounced re-firing**, bounded by the TURN-phase backpressure below. It returns
+     `{ok, fused, subject, source ('decompose'|'suffix'), rows, notes_digest}`; `_collect_note_frames` is
+     shared with `step()` so the readback shows the *same* decomposition the render uses. A red-lined model
+     fusion falls back to the deterministic suffix and re-gates (the readback is never an ungated string).
+   - `POST /api/fuse` (no lease/turn/chain write) serves it, **cached** by `(session, parent, notes_digest,
+     prompt)` so reopening — or committing right after — is instant and stable. Fired eagerly during the
+     dwell from a debounced copy of the typed line (never per-keystroke). **TURN-phase backpressure** (council
+     P1.6): while a beat is generating, `_fuse_cached` returns the deterministic *suffix* reading
+     (`allow_model=False`, uncached) so an eager fuse never competes with the in-flight render for the
+     narrator slot; the `_FUSE_LOG` hit/miss/backpressured counters + a per-miss wall-time log instrument the
+     cost on real typing (the on-box p50/p95 stays Owed).
+2. **Edit-wins, gated, staleness-checked.** `/api/dream` accepts an optional `fused_edited` + `notes_digest`.
+   When present, `step(..., fused_edited=...)` runs it **verbatim** — no re-decompose, no subject re-prefix
+   (so what the user saw is what renders) — while the LTX guides + hold-anchor still derive from the notes
+   (a text edit never disables a mask). The edit is re-gated by the red-line (entry + step), and a
+   **notes-only** `_notes_digest` refuses an edit reviewed against a since-changed note set. The digest is
+   deliberately *prompt-independent* (editing your words can't false-trigger the staleness gate); the fuse
+   *cache* keys on the prompt separately so the readback still updates as you type.
+3. **The subject author is surfaced, not silently re-added.** `_with_subject` now folds the persistent
+   identity *into* the shown/editable text in the `fused_edited` path, closing the hole where a user would
+   review one prompt and run another (the prefix used to be re-applied after the edit).
+4. **Honest across engines.** `decompose_notes` authors the prompt for *both* engines, so the readback is
+   truthful as "the prompt" for both; the only engine difference — surfaced per row, never as plumbing — is
+   whether a placed region *also* steers pixels: **10eros** = "steers the picture here" (the LTX attention
+   guide), **wan** = "shapes the words" (decomposition only). A `hold` reads "grows from here" on both.
+5. **Per-region text (honesty-gated).** A note's text now binds to the region it was placed on: a coarse,
+   deterministic location phrase (`_region_phrase`, a 3×3 grid) is threaded into `decompose_notes`
+   (`SYS_DECOMPOSE` updated) and into `_steering_suffix`, so "make it brighter" applies to *the upper-left*,
+   not the whole frame. Built on the SAM2 segmentation that already exists (ADR-0032). Object **captioning**
+   ("the lantern") is deliberately deferred — it needs a caption pass; the on-frame **numbered pin** is the
+   precise spatial referent instead, so we never speak an object name the pipeline wasn't told.
+6. **The spatial↔textual link is a number.** Notes that carry a place get a 1-based pin ①②③ on the frame,
+   echoed as the leading badge of their composite row; hovering either side lights the pair. A number
+   survives a same-hue frame, colour-blindness, and a screen reader — unlike a colour.
+7. **Vocabulary collapse (labels only; the `tag` enum is unchanged, no migration).** "Tag a moment" → **Note
+   this moment**; Hold here/More like this/Less of this/Change this → **Keep this / More of it / Less of it /
+   Change it**; "Save tag" → **Save note**; "Notes → next beat" → **Your notes for the next moment**. The
+   four directions each gain a grayscale-safe shape glyph (◆ hold / ▲ more / ▼ less / ✎ change).
+
+**Invariants kept.** Fast path untouched (no notes ⇒ no Shot Card, no `/api/fuse`, legacy `step`). Fail-open
+total (`/api/fuse` degrades to the deterministic suffix reading on an unreachable narrator OR a red-lined
+fusion; a missing/stale reading just sends the bare line and lets `step` fuse). No ComfyUI lease / no heavy
+admission on the review path (the one local narrator load/evict is throttled, above). Every string that
+reaches the renderer still passes `gate_prompt` — model-authored, deterministic-fallback, or user-edited.
+Private unchanged (fuse reads the user's own notes; transient frames seal via the store API).
+
+**Honesty invariants (council 2026-06-21, the iterate-round).** The readback is the value-prop surface, so it
+may not over-claim: (a) the `'…steer the picture…'` footer phrasing is gated on a real region/mask note —
+frame-wide notes read `'…guide the picture…'`, never a spatial steer that isn't happening; (b) the
+deterministic *floor* reading gets a **plain, instant** appearance (no `sc-settle`) — the "Lucid composed
+this" settle is reserved for a genuine model fusion, so the gesture *means* authorship; (c) the floor
+disclosure is **cause-agnostic** ("a plain reading — kept to your exact notes"), never "offline" (false on
+the red-line branch); (d) a stale-against-current-notes edit cannot be committed — "Dream it" is disabled
+while the reading recomputes, pre-empting the server notes-digest refusal client-side.
+
+**Silence invariant.** The Shot Card adds **no completion sound or haptic**. The honest completion signal
+belongs to the desktop `agent.json` `warm` edge (ambient layer), not this surface — no future contributor
+should add a commit `ding`. (Recorded at `sound-designer`'s request; the council scored the silence a 9.)
+
+**Surfaces.** `lucid_linear` (`fuse_direction`, `_collect_note_frames`, `_notes_digest`, `_region_phrase`,
+`_steering_suffix` localization, `step(fused_edited=…)`), `lucid_engine` (`decompose_notes` region line +
+`SYS_DECOMPOSE`), `lucid_web` (`/api/fuse`, `_fuse_cached`, `/api/dream` edit+staleness gate, `_run_turn`
+threading), `web/src/{api.ts,Chain.tsx,theme.css}` (the Shot Card, numbered pins, readback, vocabulary).
+**Tests:** `test_lucid_linear` (fuse_direction decompose/suffix/red-line/no-notes, notes-only digest,
+`fused_edited` runs-verbatim/skips-subject, region phrase + localized suffix — 39), `test_lucid_web_fuse`
+(cache hit/miss + notes-only token — 4); full backend sweep + `tsc`/`vite build` green.
+
+**Council verdict (2026-06-21).** Design discourse mean 8.3; rating panel **7.6 → ITERATE** (target 9), no
+hard cap fired. The flagged un-fired AA cap was **measured and clears** (readback ink 12.1:1, `.sc-txt`
+muted over the worst bright-spill-plus-warm card 5.3:1, effect label 5.5:1 — all ≥ 4.5; the gutter scrim
+keeps the card dark enough). The iterate-round edits (honesty-surface P0, trust/cost P1, token P2) are
+**applied this commit**; market-fit's structurally-correct 6 (spike-local UX, touches no substrate moat) and
+the headline e2e are the standing gaps. Full brief: `docs/design/0025-lucid-shot-card-FINAL-council-brief.md`.
+
+**Owed.** On Corey's GPU box: the live end-to-end of an edited reading rendering to screen; the on-box
+eager-fuse cost number (the `_FUSE_LOG` p50/p95 + load/evict-per-compose count — the seam is instrumented,
+the number is GPU-gated). Decision-deferred (carried, not dropped): the engine-toggle-mid-compose honesty
+seam (a wan↔10eros flip should re-derive the footer/effect copy); the subject-uncaptured-at-first-beat
+consistency test; deterministic-path span provenance; the object-caption follow-up (path A) **only if** the
+3×3 location phrase proves too coarse in real use (a wrong object name breaks honest-mapping faster than
+honest vagueness — do not rush it). Human-disposed: §9.2 (is deep Lucid-lane design investment serving the
+substrate doctrine or scope-drifting — recommend treating the Shot Card as a sanctioned *doctrine demo* of
+the reversibility wedge, consult `ai-product-reviewer` before any external use of the 10-second clip).

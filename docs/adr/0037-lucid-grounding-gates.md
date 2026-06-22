@@ -274,8 +274,19 @@ architecture (promoted here to the *primary* update model).
   no file (reads paths, prints the number). The rest are AT-INTEGRATION (need canon actually written via
   `step()`/`save_chain`): single-sink private-ephemeral, no `canon*` after `burn`, stash seals canon as
   ciphertext and keeps the synopsis out of the index row.
-- **Palette-threshold sanity pass** — known-drift vs known-clean frame pairs; calibrate so an
-  *intentional* cut (cut-to-night, new location) doesn't false-positive.
+- **Palette-threshold sanity pass — DONE 2026-06-22 (`calibrate_palette.py`, CPU-only on the 30 on-disk
+  beat-frames). NEGATIVE RESULT: keep L2 OFF; the raw HSV-histogram metric is not discriminative on real
+  dream content.** A dream's OWN beat-to-beat palette correlation (vs-parent: median 0.31, p10 0.03;
+  vs-opening: median 0.20) spans the whole [0,0.94] range and overlaps the cross-dream "unrelated palettes"
+  floor (median ~0) — i.e. normal i2v evolution changes the palette about as much as two *unrelated* dreams
+  differ. There is no threshold that separates "steady" from "shifted": at 0.50 it flags 53% of a dream's
+  own normal beats; even at 0.20, 27%. So L2-as-wired (flag when corr < threshold, vs-parent) would be a
+  high-false-positive "consistency" chip. (Cross-dream is also contaminated — many dreams share the
+  synthetic placeholder opening → spurious 1.0 pairs.) **Decision: `LUCID_PALETTE` stays default-OFF.** A
+  useful L2 needs a rework, not a threshold: a perceptual/semantic similarity signal (not a raw color
+  histogram), and/or comparison scoped to the subject/anchor region rather than the whole frame, and/or
+  honest reframing as informational-only — or drop L2 from v1 and let L0 carry the grounding. (L0 is the
+  real fix and is unaffected.)
 - **Contrast measurement** of the amber chip + serif canon line over a worst-case midframe (HARD
   GATE on the surface shipping).
 - **Reviews discharged:** `ai-generation-reviewer` (HOLD-FOR-SPIKE) + `responsible-ai-privacy-skeptic`
@@ -289,10 +300,31 @@ architecture (promoted here to the *primary* update model).
   stripped at the boundary), `canon_to_context` (the line that replaces the labels join), and the L2
   `palette_drift`/`palette_verdict` (cv2-in-venv, fail-closed-None, writes no file). 19/19 unit tests
   (`test_lucid_ground_canon.py`) + live cv2 check (identical→steady, red/blue→shifted, missing→unknown).
-  **Integration into `lucid_linear` (`context_for`/`step`) is the next step.** The on-box
-  `--full --runs 20` gate is now CLEARED (2026-06-22, above); integration is therefore gated only on
-  the **`/api/state` egress decision + the private-ephemeral privacy tests** (both still owed).
-  Branch/revert pinned as O(spine) off-lease text passes (owed at integration).
+- **WIRED into the live server 2026-06-22 (uncommitted — `lucid_linear.py`/`lucid_web.py` carry heavy
+  parallel WIP, so a clean path-scoped commit is owed; behind kill-switches, fail-open):**
+  - L0: `_canon_for(chain, node, caption)` folds a PER-NODE canon (cached on `node["canon"]`, like
+    `beats`/`caption`, so a branch carries its own spine's canon — re-derive-O(spine) by construction) in
+    `roll_menu` after the caption is grounded+red-line-checked; `context_for` takes the fresh canon and
+    `canon_to_context` REPLACES the labels join (fail-open to labels). Kill-switch `LUCID_CANON` (default on).
+  - L2: `step()` stores a flag-only `node["palette"]` verdict after `extract_last_frame`. Kill-switch
+    `LUCID_PALETTE` **default OFF** (the gate is uncalibrated + its cv2 child runs in the leased turn —
+    opt in post-calibration); child timeout cut 30s→`LUCID_PALETTE_TIMEOUT_S` (10s).
+  - Egress: `lucid_web.state()` runs `_strip_canon` (RECURSIVE — chain, every node, and any nested `prev`
+    backup; copies, never mutates the live chain) so canon never reaches the phone (the §5.2 decision).
+  - **3-lens focused review 2026-06-22 (privacy SHIP / determinism ITERATE / resource ITERATE — no
+    Blocker) + must-fixes APPLIED:** (1) [resource HIGH] the per-roll canon LLM call now passes a
+    free-VRAM headroom gate (`CANON_HEADROOM_MIB`, skip-the-load-under-the-warm-lease → fail-open to
+    labels) so it can't OOM additively on a resident ComfyUI; (2) [determinism MEDIUM] the freshly-folded
+    canon is threaded into `context_for` (it re-reads from disk, so without this the canon was one beat
+    behind / inert on a node's first roll); (3) [robustness] `ledger_delta_llm` guards `prior.get("facts")`;
+    (4) recursive egress strip; (5) L2 default-off + short timeout. Tests: `test_lucid_canon_integration.py`
+    10/10 (per-node fold, branch isolation, cache-no-reroll, headroom-skip, fail-open, recursive strip,
+    no-mutation) + `test_lucid_linear.py` 43/43 regression green. Residuals (Low, documented): pre-seal
+    canon re-rolls are non-deterministic until sealed (self-stabilizes); L2 `unknown` conflates
+    no-measure causes (only matters if L2 is ever promoted from flag to gate).
+  - Branch/revert pinned as O(spine) off-lease text passes (the per-node cache makes a revert read the
+    sealed node's canon with no re-roll). **Owed: GPU e2e on a non-private dream + a clean commit once the
+    parallel WIP in `lucid_linear.py`/`lucid_web.py` settles.**
 
 ## Seams (verified against live code, 2026-06-21)
 - `lucid_linear.py:990` — `gate_prompt` red-line (safety authority; the ledger/flag are NOT this).
