@@ -76,6 +76,43 @@ class MergeContract(unittest.TestCase):
         self.assertEqual(c["facts"]["props"], ["a lantern"])
         self.assertTrue(any("ungrounded" in r for r in rej))
 
+    def test_scenery_subject_rerouted_to_props(self):
+        # qwen2.5vl mislabels weather/plants as subjects; code reroutes them to props (a "thing") so they
+        # can't squat the subject cap and starve a real character. The grounded character stays a subject.
+        cap = "thick fog and a grey cat drift past green vine under grey clouds"
+        c, rej = G.merge_canon(G.empty_canon(),
+                               {"add_subjects": ["thick fog", "a grey cat", "green vine", "grey clouds"]},
+                               evidence_text=cap)
+        self.assertEqual(c["facts"]["subjects"], ["a grey cat"])
+        for s in ("thick fog", "green vine", "grey clouds"):
+            self.assertIn(s, c["facts"]["props"])
+        self.assertTrue(any("scenery->props" in r for r in rej))
+
+    def test_scenery_reroute_frees_cap_for_real_subject(self):
+        # the real harm the reroute fixes: scenery filling the cap would drop the LAST (real) entrant.
+        cap = "fog, mist, clouds, and rain swirl as a lone wolf appears"
+        c, _ = G.merge_canon(G.empty_canon(),
+                             {"add_subjects": ["fog", "mist", "clouds", "rain", "a lone wolf"]},
+                             evidence_text=cap)
+        self.assertEqual(c["facts"]["subjects"], ["a lone wolf"])      # not starved by 4 scenery nouns
+
+    def test_modifier_only_subject_rejected(self):
+        # a bare adjective split off a scenery phrase ('thick' from 'thick fog') names nothing -> rejected
+        cap = "thick fog rolls across the cliff; a wolf appears"
+        c, rej = G.merge_canon(G.empty_canon(), {"add_subjects": ["thick", "a wolf"]}, evidence_text=cap)
+        self.assertEqual(c["facts"]["subjects"], ["a wolf"])
+        self.assertTrue(any("modifier-only" in r for r in rej))
+
+    def test_grounding_ratio_rejects_half_grounded_compound(self):
+        # the 0.6 ratio: a 2-of-4-token garbled compound is rejected; a clean grounded prop is kept.
+        cap = "a tall sailing ship appears on the dark horizon"
+        c, rej = G.merge_canon(G.empty_canon(),
+                               {"add_props": ["notable-thall-sailing-ship", "sailing ship"]},
+                               evidence_text=cap)
+        self.assertNotIn("notable-thall-sailing-ship", c["facts"]["props"])
+        self.assertIn("sailing ship", c["facts"]["props"])
+        self.assertTrue(any("ungrounded" in r for r in rej))
+
     def test_clause_as_prop_rejected(self):
         cap = "the keeper lifts a brass lantern on the cliff"
         c, rej = G.merge_canon(G.empty_canon(),

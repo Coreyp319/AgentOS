@@ -108,9 +108,29 @@ Every layer is **kill-switched, fail-open, deterministic, reversible, bounded**.
     iterations were required and are documented in the spike: nested→flat schema; example-values→
     all-empty schema, b/c the 3B echoed placeholder strings as canon; +tolerant coercion/grounding/
     dedup b/c the 3B emits bare-string list/set types.)
-  - **Still owed for the real gate** (on-box, free VRAM): `--full --runs 20` + `--lane` (0.6-vs-0.78)
-    + `--model qwen2.5vl:3b` (the production vision pass also sees the frame). And tighten the
-    token-overlap grounding guard further if longer fixtures leak clause-props.
+  - **GATE CLEARED on-box 2026-06-22 (`--full --runs 20`, both models).** The **production LLM half
+    (`qwen2.5vl:3b`, the model the `ground_frame` vision pass uses) is a clean GO**: subj_ret **0.97**,
+    enters_rate **0.90**, halluc **0.00**, valid **1.00**, change_tracked **0.97**, place 0.85
+    (best-effort). `hermes3:3b` is NO-GO *only* on `change_tracked` (0.62) — but that bar measures
+    pure-LLM when/feel, which the **hybrid replaces with the code extractor (code-A/B change_tracked
+    = 1.00)**; its who/what bars pass (subj_ret 0.93, enters 0.75). So the **shipped hybrid config
+    (qwen delta for who/what + code for when/feel) clears every bar**: subj_ret 0.97 · enters 0.90 ·
+    change_tracked 1.00 (code) · halluc 0.00 · valid 1.00. A/B stays decisive — the zero-LLM control is
+    0.00 on subjects AND entrances; the LLM beats it **+0.90** on new-subject capture. Lane 0.78 was
+    equal/worse as expected (subj_ret −0.02). **The N=20 enters_rate 0.90 (vs the polluted pre-fix run)
+    is owed to three dispose tightenings added 2026-06-22** (see below).
+  - **Three deterministic tightenings (2026-06-22, in `lucid_ground.py` + the spike), found by the
+    on-box smoke** — the *production* model `qwen2.5vl` failed differently from the `hermes3` the prior
+    verdict was measured on: (1) **scenery→props reroute** — a whole-phrase-scenery candidate
+    (weather/light/water/plant noun + modifiers) is demoted from `subjects` (who) to `props` (things),
+    so `fog`/`mist`/`vine`/`clouds` stop squatting the 4-subject cap and *starving a real character*
+    (`cat` was being dropped over-cap); reroute-not-drop keeps the entrance captured (`enters_rate`
+    counts subjects OR props). (2) **grounding ratio 0.5→0.6** — rejects a 2-of-4-token garbled compound
+    (`notable-thall-sailing-ship`) the lenient guard let through. (3) **modifier-only reject** — a bare
+    adjective (`thick`, split off "thick fog") names nothing and is never a subject/prop. Selftests
+    26/26 (spike) + 23/23 (`lucid_ground`). Residual (documented, no v1 fix): an *object* with a real
+    noun mislabeled as a subject (`oilskin coat`) — needs an animacy classifier, out of scope; cosmetic
+    (doesn't starve, subj_ret still passes).
 
 ### L2 — Palette gate, flag-only
 - Zero-install cv2 histogram correlation vs opening/parent frame, in a new `lucid_ground.py` that
@@ -231,14 +251,13 @@ architecture (promoted here to the *primary* update model).
 - We forgo the richer scene-graph world-state — a 3B populates it unreliably.
 
 ## Open / owed before Accepted
-- **Ledger-prompt spike — with a named go/no-go bar (build this FIRST).** Prove a 3B (on the 0.6
-  fidelity / next-turn-`ground_frame` lane, delta form, after code-merge) holds a stable ledger across
-  a scripted ~5-beat run. **Go bar:** stable-fact retention ≥90% over ≥20 runs · intended-change
-  (cut-to-night) tracked ≥90% with `subjects` held · synopsis growth sub-linear (else re-derive is
-  mandatory) · hallucinated facts <10% raw / 0% after the caption-substring guard · valid-delta parse
-  ≥95% · report the 0.6-vs-0.78 lane delta · **A/B vs a zero-LLM code-accumulated ledger — ship the
-  LLM only if it measurably wins.** If retention/change-tracking misses, L0 falls back to the no-LLM
-  accumulator.
+- **Ledger-prompt spike go-bar — CLEARED on-box 2026-06-22 (`--full --runs 20`, both models).** The
+  shipped hybrid (`qwen2.5vl` delta for who/what + code extractor for when/feel) clears every bar:
+  subj_ret 0.97 · enters 0.90 · change_tracked 1.00 (code) · halluc 0.00 · valid 1.00 · lane 0.78
+  equal/worse as expected · A/B decisive (+0.90 new-subject over the zero-LLM control). Required three
+  dispose tightenings the smoke surfaced (scenery→props reroute, grounding 0.5→0.6, modifier-only
+  reject — see L0 §MEASURED). **L0 does NOT fall back to the code-only accumulator** (that arm scores
+  0.00 on subjects/entrances).
 - **Privacy tests (BLOCK the build until green):** (1) single-sink — a private session's canon appears
   in the tmpfs chain and in NO file under the dreams cache / ComfyUI output / any temp dir; (2) after
   `burn`, no `canon*` residue anywhere; (3) the ledger pass logs metadata only (no synopsis/fact text);
@@ -261,9 +280,10 @@ architecture (promoted here to the *primary* update model).
   stripped at the boundary), `canon_to_context` (the line that replaces the labels join), and the L2
   `palette_drift`/`palette_verdict` (cv2-in-venv, fail-closed-None, writes no file). 19/19 unit tests
   (`test_lucid_ground_canon.py`) + live cv2 check (identical→steady, red/blue→shifted, missing→unknown).
-  **Integration into `lucid_linear` (`context_for`/`step`) is the next step — still GATED** on the
-  on-box `--full --runs 20` gate + the `/api/state` egress decision. Branch/revert pinned as O(spine)
-  off-lease text passes (owed at integration).
+  **Integration into `lucid_linear` (`context_for`/`step`) is the next step.** The on-box
+  `--full --runs 20` gate is now CLEARED (2026-06-22, above); integration is therefore gated only on
+  the **`/api/state` egress decision + the private-ephemeral privacy tests** (both still owed).
+  Branch/revert pinned as O(spine) off-lease text passes (owed at integration).
 
 ## Seams (verified against live code, 2026-06-21)
 - `lucid_linear.py:990` — `gate_prompt` red-line (safety authority; the ledger/flag are NOT this).

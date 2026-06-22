@@ -50,9 +50,10 @@ _SYS_DELTA = (
     "that are unchanged. Fill it ONLY with words from THIS beat's caption; copy NOTHING from these "
     "instructions.\n"
     "FIELDS (all optional; leave a field empty when nothing applies):\n"
-    "• add_subjects — list; ONLY a genuinely NEW person/animal that just ENTERED on screen. Never "
-    "re-list someone already in the canon; never use it to restate or 'change' an existing subject "
-    "(their identity is fixed).\n"
+    "• add_subjects — list; ONLY a genuinely NEW CHARACTER (a person or animal) that just ENTERED on "
+    "screen. NEVER weather, light, sky, water, plants, or scenery — those go in add_props or are the "
+    "place. Never re-list someone already in the canon; never use it to restate or 'change' an existing "
+    "subject (their identity is fixed).\n"
     "• add_props — list; notable things that newly APPEAR on screen.\n"
     "• set — an object of the single-valued facts that just TURNED: place (omit time_of_day and mood — "
     "those are handled elsewhere). Omit a key that did not change.\n"
@@ -66,7 +67,8 @@ _SYS_DELTA = (
 _SYS_SEED = (
     "You START a tiny CANON for a silent dream video from its OPENING shot. Read the one-line caption "
     "and list ALL the durable facts you can see, using ONLY words from the caption.\n"
-    "• add_subjects — every person/animal present.\n"
+    "• add_subjects — every CHARACTER (person or animal) present; NEVER weather, light, plants, or "
+    "scenery (those are add_props or the place).\n"
     "• add_props — the notable objects present.\n"
     "• set — the place if the caption states it (omit time_of_day and mood — handled elsewhere).\n"
     "• evidence — the caption itself (it is the proof).\n"
@@ -97,9 +99,10 @@ def _clean_str(x, cap=120):
     return x if S.red_line_ok(x) else None
 
 
-def _supported(value, caption_union, ratio=0.5):
+def _supported(value, caption_union, ratio=0.6):
     """Supported if >= `ratio` of the value's significant tokens appear in the caption union — majority
-    overlap, so a hallucinated CLAUSE sharing one common word fails the grounding guard."""
+    overlap, so a hallucinated CLAUSE sharing one common word fails the grounding guard. 0.6 (not 0.5) so a
+    2-of-4 garbled compound ('notable-thall-sailing-ship') is rejected (ADR-0037 on-box smoke 2026-06-22)."""
     if not value:
         return True
     toks = [t for t in re.findall(r"[a-z]+", value.casefold()) if len(t) > 3]
@@ -115,6 +118,50 @@ def _content_toks(s):
     """Significant tokens of a phrase, articles/preps stripped — so "a keeper" and "the keeper" both
     reduce to {keeper} and dedup against "lighthouse keeper" ({lighthouse, keeper})."""
     return {t for t in re.findall(r"[a-z]+", s.casefold()) if t not in _STOP}
+
+
+# A subject is a CHARACTER (who). A vision model (qwen2.5vl) mislabels caption-grounded weather/light/
+# water/plant nouns as subjects — they pass the grounding guard (they ARE in the caption) and then squat
+# the 4-subject cap, STARVING a real character (the ADR-0037 on-box smoke 2026-06-22 dropped "cat" because
+# fog/mist/clouds filled the slots). Code disposes: such a scenery phrase is REROUTED to props (a "thing",
+# the ADR's own taxonomy), not dropped — so an entrance like "vine" is still remembered, just not as "who".
+_SCENERY_NOUNS = {
+    "fog", "mist", "cloud", "rain", "snow", "wind", "smoke", "haze", "storm", "breeze", "drizzle",
+    "frost", "dew", "vapor", "vapour", "steam", "gust", "downpour",                       # weather/air
+    "sun", "moon", "star", "light", "beam", "ray", "shadow", "sky", "sunlight", "moonlight",
+    "glow", "glare", "darkness", "gloom",                                                 # light/sky
+    "sea", "ocean", "wave", "water", "river", "stream", "fire", "flame", "spark", "ember",
+    "tide", "surf", "spray", "foam",                                                      # water/fire
+    "vine", "leaf", "leaves", "flower", "petal", "branch", "root", "moss", "grass", "fern",
+    "blossom", "bud", "bloom", "ivy", "weed", "frond",                                    # plants
+}
+# Modifiers a scenery phrase may carry and still be wholly scenery ("green vine", "grey clouds", "thick fog").
+_SCENERY_MODIFIERS = {
+    "grey", "gray", "green", "dark", "white", "black", "red", "blue", "golden", "gold", "silver",
+    "pale", "brown", "yellow", "orange", "purple", "crimson", "azure", "emerald", "amber", "ashen", "rosy",
+    "thick", "thin", "soft", "bright", "dim", "faint", "heavy", "gentle", "cold", "warm", "wet", "damp",
+    "dry", "distant", "swirling", "drifting", "rolling", "gathering", "rising", "falling", "low", "high",
+}
+
+
+def _is_scenery_subject(phrase):
+    """True only when the WHOLE phrase is scenery (a scenery noun + optional modifiers) — so "green vine"/
+    "grey clouds"/"fog" reroute, but "grey cat"/"sea turtle"/"lighthouse keeper"/"keeper of the light"
+    stay subjects (a non-scenery content token anywhere keeps it a character). De-pluralized head match."""
+    toks = [t for t in re.findall(r"[a-z]+", phrase.casefold()) if t not in _STOP]
+    if not toks:
+        return False
+    def _scenery(t):
+        return t in _SCENERY_NOUNS or t.rstrip("s") in _SCENERY_NOUNS
+    return any(_scenery(t) for t in toks) and all(_scenery(t) or t in _SCENERY_MODIFIERS for t in toks)
+
+
+def _is_modifier_only(phrase):
+    """A candidate with no substantive noun — only adjectives/modifiers ('thick', 'grey') — names nothing
+    and is never a valid subject or prop. (hermes3 leaked the lone adjective 'thick', split off 'thick
+    fog', as a subject in the on-box smoke 2026-06-22.)"""
+    toks = [t for t in re.findall(r"[a-z]+", phrase.casefold()) if t not in _STOP]
+    return bool(toks) and all(t in _SCENERY_MODIFIERS for t in toks)
 
 
 def _coerce_list(v):
@@ -158,13 +205,22 @@ def merge_canon(prior, delta, *, accumulate_synopsis=True, evidence_text=None):
             joined = (new["synopsis"] + " " + suf).strip() if new["synopsis"] else suf
             new["synopsis"] = joined[-SYN_CAP:].lstrip()       # keep the tail (recent matters most)
 
-    for dkey, fkey, cap in (("add_subjects", "subjects", CAP_SUBJECTS),
-                            ("add_props", "props", CAP_PROPS)):
-        if dkey not in delta:
-            continue
-        vals = _coerce_list(delta.get(dkey))
-        if not vals and delta.get(dkey) not in (None, "", []):
-            rej.append(f"{dkey}:uncoercible")
+    sub_in = _coerce_list(delta.get("add_subjects")) if "add_subjects" in delta else []
+    prop_in = _coerce_list(delta.get("add_props")) if "add_props" in delta else []
+    if "add_subjects" in delta and not sub_in and delta.get("add_subjects") not in (None, "", []):
+        rej.append("add_subjects:uncoercible")
+    if "add_props" in delta and not prop_in and delta.get("add_props") not in (None, "", []):
+        rej.append("add_props:uncoercible")
+    # reroute scenery the model mislabeled as a subject -> props (frees the subject cap for real characters)
+    keep_subj, rerouted = [], []
+    for s in sub_in:
+        (rerouted if isinstance(s, str) and _is_scenery_subject(s) else keep_subj).append(s)
+    if rerouted:
+        rej.append("add_subjects:scenery->props")
+        prop_in = prop_in + rerouted
+
+    for dkey, fkey, vals, cap in (("add_subjects", "subjects", keep_subj, CAP_SUBJECTS),
+                                  ("add_props", "props", prop_in, CAP_PROPS)):
         for v in vals:
             cv = _clean_str(v, cap=60)
             if not cv:
@@ -172,6 +228,9 @@ def merge_canon(prior, delta, *, accumulate_synopsis=True, evidence_text=None):
                 continue
             if len(cv.split()) > 5:                            # a subject/prop is a phrase, not a clause
                 rej.append(f"{dkey}:too-long")
+                continue
+            if _is_modifier_only(cv):                          # a bare adjective ('thick') names nothing
+                rej.append(f"{dkey}:modifier-only")
                 continue
             if evidence_text is not None and not _supported(cv, evidence_text.casefold()):
                 rej.append(f"{dkey}:ungrounded")               # caption-grounding hallucination guard

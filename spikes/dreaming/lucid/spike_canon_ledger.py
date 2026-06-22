@@ -69,9 +69,10 @@ _SYS_LEDGER = (
     "that are unchanged. Fill it ONLY with words from THIS beat's caption; copy NOTHING from these "
     "instructions.\n"
     "FIELDS (all optional; leave a field empty when nothing applies):\n"
-    "• add_subjects — list; ONLY a genuinely NEW person/animal that just ENTERED on screen. Never "
-    "re-list someone already in the canon; never use it to restate or 'change' an existing subject "
-    "(their identity is fixed).\n"
+    "• add_subjects — list; ONLY a genuinely NEW CHARACTER (a person or animal) that just ENTERED on "
+    "screen. NEVER weather, light, sky, water, plants, or scenery — those go in add_props or are the "
+    "place. Never re-list someone already in the canon; never use it to restate or 'change' an existing "
+    "subject (their identity is fixed).\n"
     "• add_props — list; notable things that newly APPEAR on screen.\n"
     "• set — an object of the single-valued facts that just TURNED: any of time_of_day, place, mood "
     "(e.g. the light goes from day to night). Omit a key that did not change.\n"
@@ -90,7 +91,8 @@ _SYS_LEDGER = (
 _SYS_SEED = (
     "You START a tiny CANON for a silent dream video from its OPENING shot. Read the one-line caption "
     "and list ALL the durable facts you can see, using ONLY words from the caption.\n"
-    "• add_subjects — every person/animal present.\n"
+    "• add_subjects — every CHARACTER (person or animal) present; NEVER weather, light, plants, or "
+    "scenery (those are add_props or the place).\n"
     "• add_props — the notable objects present.\n"
     "• set — the place, and time_of_day and mood if the caption states them (omit a key not stated).\n"
     "• evidence — the caption itself (it is the proof).\n"
@@ -158,6 +160,50 @@ def _coerce_set(v, rej):
     return {}
 
 
+# A subject is a CHARACTER (who). A vision model (qwen2.5vl) mislabels caption-grounded weather/light/
+# water/plant nouns as subjects — they pass the grounding guard (they ARE in the caption) and then squat
+# the 4-subject cap, STARVING a real character (the on-box smoke 2026-06-22 dropped "cat" because
+# fog/mist/clouds filled the slots). Code disposes: such a scenery phrase is REROUTED to props (a "thing"),
+# not dropped — so an entrance like "vine" is still remembered (enters_rate counts subjects OR props).
+_SUBJ_STOP = {"a", "an", "the", "his", "her", "its", "their", "of", "on", "in", "at"}
+_SCENERY_NOUNS = {
+    "fog", "mist", "cloud", "rain", "snow", "wind", "smoke", "haze", "storm", "breeze", "drizzle",
+    "frost", "dew", "vapor", "vapour", "steam", "gust", "downpour",                       # weather/air
+    "sun", "moon", "star", "light", "beam", "ray", "shadow", "sky", "sunlight", "moonlight",
+    "glow", "glare", "darkness", "gloom",                                                 # light/sky
+    "sea", "ocean", "wave", "water", "river", "stream", "fire", "flame", "spark", "ember",
+    "tide", "surf", "spray", "foam",                                                      # water/fire
+    "vine", "leaf", "leaves", "flower", "petal", "branch", "root", "moss", "grass", "fern",
+    "blossom", "bud", "bloom", "ivy", "weed", "frond",                                    # plants
+}
+_SCENERY_MODIFIERS = {
+    "grey", "gray", "green", "dark", "white", "black", "red", "blue", "golden", "gold", "silver",
+    "pale", "brown", "yellow", "orange", "purple", "crimson", "azure", "emerald", "amber", "ashen", "rosy",
+    "thick", "thin", "soft", "bright", "dim", "faint", "heavy", "gentle", "cold", "warm", "wet", "damp",
+    "dry", "distant", "swirling", "drifting", "rolling", "gathering", "rising", "falling", "low", "high",
+}
+
+
+def _is_scenery_subject(phrase):
+    """True only when the WHOLE phrase is scenery (a scenery noun + optional modifiers) — so "green vine"/
+    "grey clouds"/"fog" reroute, but "grey cat"/"sea turtle"/"lighthouse keeper" stay subjects (any
+    non-scenery content token keeps it a character). De-pluralized scenery match."""
+    toks = [t for t in re.findall(r"[a-z]+", phrase.casefold()) if t not in _SUBJ_STOP]
+    if not toks:
+        return False
+    def _scenery(t):
+        return t in _SCENERY_NOUNS or t.rstrip("s") in _SCENERY_NOUNS
+    return any(_scenery(t) for t in toks) and all(_scenery(t) or t in _SCENERY_MODIFIERS for t in toks)
+
+
+def _is_modifier_only(phrase):
+    """A candidate with no substantive noun — only adjectives/modifiers ('thick', 'grey') — names nothing
+    and is never a valid subject or prop. (hermes3 leaked the lone adjective 'thick', split off 'thick
+    fog', as a subject in the on-box smoke 2026-06-22.)"""
+    toks = [t for t in re.findall(r"[a-z]+", phrase.casefold()) if t not in _SUBJ_STOP]
+    return bool(toks) and all(t in _SCENERY_MODIFIERS for t in toks)
+
+
 def merge_ledger(prior, delta, *, accumulate_synopsis=True, evidence_text=None):
     """Pure, deterministic. Returns (new_ledger, rejections). NEVER raises; any malformed input
     degrades to `prior` (fail-open steering). This is the contract the ADR pins; the selftest is
@@ -176,14 +222,23 @@ def merge_ledger(prior, delta, *, accumulate_synopsis=True, evidence_text=None):
             joined = (new["synopsis"] + " " + suf).strip() if new["synopsis"] else suf
             new["synopsis"] = joined[-SYN_CAP:].lstrip()   # keep the tail (recent matters most)
 
-    # adds: add_subjects / add_props -> append-dedup-cap (coerce sloppy string types; ground vs caption)
-    for dkey, fkey, cap in (("add_subjects", "subjects", CAP_SUBJECTS),
-                            ("add_props", "props", CAP_PROPS)):
-        if dkey not in delta:
-            continue
-        vals = _coerce_list(delta.get(dkey))
-        if not vals and delta.get(dkey) not in (None, "", []):
-            rej.append(f"{dkey}:uncoercible")
+    # adds: add_subjects / add_props -> append-dedup-cap (coerce sloppy string types; ground vs caption).
+    # scenery mislabeled as a subject is rerouted to props FIRST, so it can't squat the subject cap.
+    sub_in = _coerce_list(delta.get("add_subjects")) if "add_subjects" in delta else []
+    prop_in = _coerce_list(delta.get("add_props")) if "add_props" in delta else []
+    if "add_subjects" in delta and not sub_in and delta.get("add_subjects") not in (None, "", []):
+        rej.append("add_subjects:uncoercible")
+    if "add_props" in delta and not prop_in and delta.get("add_props") not in (None, "", []):
+        rej.append("add_props:uncoercible")
+    keep_subj, rerouted = [], []
+    for s in sub_in:
+        (rerouted if isinstance(s, str) and _is_scenery_subject(s) else keep_subj).append(s)
+    if rerouted:
+        rej.append("add_subjects:scenery->props")
+        prop_in = prop_in + rerouted
+
+    for dkey, fkey, vals, cap in (("add_subjects", "subjects", keep_subj, CAP_SUBJECTS),
+                                  ("add_props", "props", prop_in, CAP_PROPS)):
         for v in vals:
             cv = _clean_str(v, cap=60)
             if not cv:
@@ -191,6 +246,9 @@ def merge_ledger(prior, delta, *, accumulate_synopsis=True, evidence_text=None):
                 continue
             if len(cv.split()) > 5:                             # a subject/prop is a phrase, not a clause
                 rej.append(f"{dkey}:too-long")                  # (kills "seaglass glistens in his lantern's beam")
+                continue
+            if _is_modifier_only(cv):                           # a bare adjective ('thick') names nothing
+                rej.append(f"{dkey}:modifier-only")
                 continue
             if evidence_text is not None and not _supported(cv, evidence_text.casefold()):
                 rej.append(f"{dkey}:ungrounded")                # caption-substring hallucination guard
@@ -327,10 +385,11 @@ FIXTURES = [
 
 
 # ---------------- scoring ----------------
-def _supported(value, caption_union, ratio=0.5):
+def _supported(value, caption_union, ratio=0.6):
     """A fact value is supported if at least `ratio` of its significant tokens appear in the caption
     union (the caption-substring hallucination guard the reviewer proposed). Majority-overlap (not
-    any-token) so a hallucinated CLAUSE that merely shares one common word ("...lantern's beam") fails."""
+    any-token) so a hallucinated CLAUSE that merely shares one common word ("...lantern's beam") fails.
+    0.6 (not 0.5) so a 2-of-4 garbled compound ('notable-thall-sailing-ship') is rejected (smoke 2026-06-22)."""
     if not value:
         return True
     toks = [t for t in re.findall(r"[a-z]+", value.casefold()) if len(t) > 3]
@@ -545,6 +604,29 @@ def selftest():
                              evidence_text="the keeper lifts a brass lantern; scales of rust on the rail")
     check("glowing dragon scales" not in L9f3["facts"]["props"] and any("ungrounded" in r for r in rej),
           "majority-overlap rejects a phrase sharing only one caption word")
+    # 9f4. scenery mislabeled as subjects reroutes to props; the real character keeps its subject slot
+    capf4 = "thick fog and a grey cat drift past green vine under grey clouds"
+    L9f4, rej = merge_ledger(L, {"add_subjects": ["thick fog", "a grey cat", "green vine", "grey clouds"]},
+                             evidence_text=capf4)
+    check(L9f4["facts"]["subjects"] == ["a grey cat"]
+          and all(s in L9f4["facts"]["props"] for s in ("thick fog", "green vine", "grey clouds"))
+          and any("scenery->props" in r for r in rej),
+          "scenery subjects reroute to props, the character keeps its slot")
+    # 9f5. scenery reroute frees the cap so the LAST (real) entrant is not starved
+    L9f5, _ = merge_ledger(L, {"add_subjects": ["fog", "mist", "clouds", "rain", "a lone wolf"]},
+                           evidence_text="fog, mist, clouds, and rain swirl as a lone wolf appears")
+    check(L9f5["facts"]["subjects"] == ["a lone wolf"], "scenery reroute frees the subject cap")
+    # 9f5b. a bare adjective ('thick' split off 'thick fog') names nothing -> rejected from subjects
+    L9f5b, rej = merge_ledger(L, {"add_subjects": ["thick", "a wolf"]},
+                              evidence_text="thick fog rolls across the cliff; a wolf appears")
+    check(L9f5b["facts"]["subjects"] == ["a wolf"] and any("modifier-only" in r for r in rej),
+          "modifier-only subject ('thick') rejected, the character kept")
+    # 9f6. the 0.6 grounding ratio rejects a 2-of-4-token garbled compound, keeps a clean grounded prop
+    L9f6, rej = merge_ledger(L, {"add_props": ["notable-thall-sailing-ship", "sailing ship"]},
+                             evidence_text="a tall sailing ship appears on the dark horizon")
+    check("notable-thall-sailing-ship" not in L9f6["facts"]["props"]
+          and "sailing ship" in L9f6["facts"]["props"] and any("ungrounded" in r for r in rej),
+          "0.6 grounding rejects a half-grounded garbled compound")
     # 9g. caption-grounding on set: a value not in the caption is rejected
     L9g, rej = merge_ledger(L2, {"set": {"time_of_day": "night"}, "evidence": "x"},
                             evidence_text="the sun blazes at high noon")
