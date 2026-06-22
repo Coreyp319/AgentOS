@@ -571,12 +571,12 @@ a{ color:var(--inst-blue) }
 /* discoverability cue: fine-pointer desktop only, shown WHILE the choices are hidden, fades as they reveal —
    a hidden primary action without a cue is a trap (review). Touch/mobile show choices always → no cue. */
 .choices-hint{ display:none }
-@media (min-width:821px) and (hover:hover) and (pointer:fine){
+@media (min-width:821px) and (any-hover:hover) and (any-pointer:fine){
   .choices-hint{ display:block; position:absolute; left:50%; top:13px; transform:translateX(-50%); z-index:4;
     pointer-events:none; font-size:var(--fs-xs); color:rgba(230,233,240,.74); white-space:nowrap;
     background:rgba(9,11,17,.72); border:1px solid var(--hairline); padding:5px 13px; border-radius:999px;
     transition:opacity .3s ease }
-  .stage-wrap:hover .choices-hint, .stage-wrap:focus-within .choices-hint, .stage-wrap.revealed .choices-hint{ opacity:0 }
+  .stage-wrap:hover .choices-hint, .stage-wrap:has(.choices:focus-within) .choices-hint, .stage-wrap.revealed .choices-hint{ opacity:0 }
   @media (prefers-reduced-motion:reduce){ .choices-hint{ transition:none } }
 }
 /* connector lines from the clip to each gutter card — draw in ONCE, then settle to a static hairline
@@ -602,24 +602,26 @@ a{ color:var(--inst-blue) }
   .gchoice{ animation:none } .gchoice:hover:not(:disabled){ transform:none } .gchoice:hover:not(:disabled) .gthumb img{ transform:none }
   .gl-draw{ animation:none; stroke-dashoffset:0 } .stage.dwell .spill{ animation:none } }
 
-/* DESKTOP (mouse) reveal: gated to FINE-POINTER + hover devices, so the hide-while-playing affordance
-   tracks the INPUT DEVICE, not raw window width — a mouse desktop keeps the clip clean while it plays and
-   reveals the choices on hover / keyboard focus / the dwell / a still (`.revealed`); a TOUCH (coarse) wide
-   device and the mobile stack fall through to the always-visible base, so the primary action is always
-   reachable. (Closes the desktop/mobile model inversion + the touch-unreachable blocker in one gate.) */
-@media (min-width:821px) and (hover:hover) and (pointer:fine){
+/* DESKTOP reveal: gated to devices with a HOVERING POINTER (any-hover/any-pointer — so a touchscreen
+   laptop WITH a trackpad/mouse gets it too, not only a pure-mouse desktop; the old hover:hover/pointer:fine
+   keyed on the PRIMARY pointer, so any touch-primary device fell through and the choices showed always).
+   Keeps the clip clean while it plays; reveals the choices on hover, on keyboard-focus OF THE CHOICES
+   (`:has(.choices:focus-within)` — focusing the video no longer pins them open), or a clip-less still
+   (`.revealed`). A pure-touch device (no hovering pointer) + the mobile stack fall through to the
+   always-visible base, so the choices stay reachable. */
+@media (min-width:821px) and (any-hover:hover) and (any-pointer:fine){
   .choices, .gutter-links{ opacity:0; transition:opacity .35s ease }
   .choices .gchoice{ pointer-events:none }
   .gl-draw{ stroke-dashoffset:1400 }   /* undrawn at rest so the reveal can draw it in (base stays drawn for touch) */
-  .stage-wrap:hover .choices, .stage-wrap:focus-within .choices, .stage-wrap.revealed .choices,
-  .stage-wrap:hover .gutter-links, .stage-wrap:focus-within .gutter-links, .stage-wrap.revealed .gutter-links{ opacity:1 }
-  .stage-wrap:hover .choices .gchoice, .stage-wrap:focus-within .choices .gchoice,
+  .stage-wrap:hover .choices, .stage-wrap:has(.choices:focus-within) .choices, .stage-wrap.revealed .choices,
+  .stage-wrap:hover .gutter-links, .stage-wrap:has(.choices:focus-within) .gutter-links, .stage-wrap.revealed .gutter-links{ opacity:1 }
+  .stage-wrap:hover .choices .gchoice, .stage-wrap:has(.choices:focus-within) .choices .gchoice,
   .stage-wrap.revealed .choices .gchoice{ pointer-events:auto }
   /* hover/focus show the connector already-DRAWN (static); only the genuine choice-moment arrival
      (.revealed, below) ANIMATES the draw — so crossing the stage can't replay the 700ms gesture */
-  .stage-wrap:hover .gl-draw, .stage-wrap:focus-within .gl-draw{ stroke-dashoffset:0 }
+  .stage-wrap:hover .gl-draw, .stage-wrap:has(.choices:focus-within) .gl-draw{ stroke-dashoffset:0 }
   /* keyboard reveal is INSTANT so the focus ring is visible the frame focus lands (not mid-.35s fade) */
-  .stage-wrap:focus-within .choices, .stage-wrap:focus-within .gutter-links{ transition:none }
+  .stage-wrap:has(.choices:focus-within) .choices, .stage-wrap:has(.choices:focus-within) .gutter-links{ transition:none }
   @media (prefers-reduced-motion:reduce){ .choices, .gutter-links{ transition:none } .gl-draw{ stroke-dashoffset:0 } }
 }
 /* while tagging the current clip (.tag-draft open), the "what happens next" choices step BEHIND the draft
@@ -632,7 +634,7 @@ a{ color:var(--inst-blue) }
    NOT on every hover — a CSS animation restarts whenever its selector begins matching, so hover-triggering
    it replayed the 700ms "dream reaching out" gesture each pass (council spec: "draw in ONCE"). Hover/focus
    just reveal it already-drawn via the static rule above. Motion only when welcome. */
-@media (min-width:821px) and (hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference){
+@media (min-width:821px) and (any-hover:hover) and (any-pointer:fine) and (prefers-reduced-motion:no-preference){
   .stage-wrap.revealed .gl-draw{ animation:gldraw .7s ease forwards }
 }
 
