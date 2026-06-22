@@ -342,6 +342,124 @@ motion in build. This proves **UE-runs-live-on-Wayland** — but not the wallpap
   default live wallpaper** until those ship — UE-as-wallpaper is opt-in via
   `spikes/ue-probe/ue_wallpaper/wallpaper_keepbelow.sh` today.
 
+- **The concrete symptom the throttle cures — diagnosed 2026-06-21 (Lucid "first prompt resets,
+  second renders").** A user-reported Lucid bug traced NOT to the turn/epoch race it looked like but to
+  **cold-lease admission refused at the VRAM knife edge.** The journal (`agentos-lucid.service`) shows
+  admissions denied by as little as **1-49 MB** (`free 18061M vs est 17000 + headroom 1062 = 18062M`),
+  then granted on retry. Mechanism: only the FIRST beat of a session (or first after the 600 s idle-reap)
+  cold-spawns ComfyUI and runs `admit()`; the **live UE wallpaper's ~6 GB baseline** tips free VRAM just
+  under `est·17/16`, so `admit` denies → the beat fails open as `skipped` → the UI resets → the user
+  re-submits and the second try (free ticked up) renders. Once warm the held token is reused with no
+  re-admission, so only the first prompt flaps. **This is exactly what `Tier::Yielding` throttle-to-admit
+  exists to fix:** throttling UE full→floor frees ~200-300 MB — more than enough to clear a 1-49 MB
+  knife-edge shortfall — so `yield_decision` returns `ThrottleAndCoexist` and the dream admits on the
+  first try WITHOUT killing the wallpaper; only a heavy shortfall (>throttle gain) falls through to
+  `KillToShaderFloor`. Until the throttle ships, two interim mitigations landed (they MASK the symptom,
+  they do not free VRAM — the throttle remains the structural fix):
+  - **L1 — bounded retry before fail-open** (`spikes/dreaming/lucid/lucid_web.py`, `ADMIT_RETRIES`/
+    `ADMIT_BACKOFF` in `_ensure_lease`): a transient admission refusal is retried (abortable on
+    supersession) so the knife-edge flap self-heals on the first user action instead of surfacing a
+    bare `skipped`. Regression test `test_transient_refusal_retried_then_granted`.
+  - **L3 — est calibration VALIDATED, not shaved** (`lucid_linear.py` `_est_mib` doc): 80k
+    `telemetry.jsonl` samples show the ComfyUI footprint mode is **16-17 GB** (= Q4 `est 17000`) and the
+    card has hit **`free<1 GB`**, so est is correctly calibrated — lowering it to widen the margin would
+    risk OOM. The asymmetry is decisive: a false refusal is a now-retried annoyance, an under-estimate
+    is an OOM crash. Confirms the knife-edge is a real resource conflict (UE baseline vs a ~16-17 GB
+    model on a 24 GB card), not a bad number — i.e. it confirms the throttle, not a recalibration, is
+    the fix.
+
+- **Sequenced on-box build plan for the throttle (the "what remains," 2026-06-21).** Grounded in a
+  read-only wiring audit of the live daemon + UE RC. Steps B1-B3 are net-new/additive (no live-daemon
+  risk); B4 is the safety-critical change; B5 is the gate.
+  - **B1 — register UE as a `Tier::Yielding` OWNED holder** (`est = UE_FULL ≈ 1300`, so `yield_decision`
+    sees UE's full footprint and `ue_floor_mib()` its floor — the D4 two-number invariant). Sufficient
+    ALONE to stop the denial: `arbitrate(Yielding, Batch) → Preempt` installs the requester WITHOUT
+    consulting `admit()` (the denial lives only in the `Grant` branch, `lease.rs` `acquire_with`). Two
+    options: a new `ue-wallpaper` entry in the `PROFILES` allowlist (`lease.rs`) + `nimbus-ue-wallpaper`
+    calling `Spawn yielding <est> ue-wallpaper` instead of `setsid -f`; OR a new PID-based `AdoptPid`
+    verb (parallel to `AdoptScope`, which can't take UE — it's a bare process, not a flatpak scope) that
+    adopts the running UE PID with a `/proc/<pid>/cmdline` allowlist match on `AgentOSBlank.uproject`.
+    Caveat: `spawn_owned`'s `process_group(0)` + group-SIGKILL must reach UE's watchdog/detach model.
+  - **B2 — author the UE project-C++ `UAgentOSThrottle::ApplyRung(int32 idx)` UFUNCTION** (idx∈{0,1,2}→
+    `Full|Reduced|Floor` cvar set via `IConsoleManager` in C++; the Floor rung's cvars per `governor.rs`
+    — `sg.GlobalIlluminationQuality`, `r.Streaming.PoolSize`/`LimitPoolSizeToVRAM`, `t.MaxFPS`). **Project
+    C++ compiles against the Installed build — NO source-build gate** (that gate is only the layer-shell
+    wallpaper-delivery patch, a separate concern). Harden `DefaultRemoteControl.ini`: params-only
+    allowlist `{SetScalarParameterValue, SetVectorParameterValue, UAgentOSThrottle::ApplyRung}`,
+    `bAllowConsoleCommandRemoteExecution=false`.
+  - **B3 — author the Rust RC throttle client** — a SEPARATE sink from `rc.rs` (whose header forbids
+    mixing the mood and throttle channels): reuse its loopback-literal guard + 250 ms timeout + redirect-
+    none + structured `CallBody`, but PUT `ApplyRung(idx)` not `SetScalarParameterValue`. Client-side
+    `Rung→idx` map is `governor::is_allowed_in_rung` as defense-in-depth.
+  - **B4 — lease-side COEXISTENCE (the safety-critical change).** The single-exclusive holder model
+    (`lease.rs`, one `holder`) cannot represent "UE resident-at-floor AND a gen holding the primary
+    lease." Add a reservation/second-class-holder representation so the throttle path does NOT hit the
+    unconditional `perform_reclaim` SIGKILL (`lease.rs:1080-1082`); wire `plan_preemption(Throttle)` to
+    actuate B3, and fall through to `KillToShaderFloor` ONLY on `GovernorAction::Kill` OR a failed/timed-
+    out throttle PUT. **Cardinal-sin guard (already noted in §B): never admit a gen against VRAM the
+    throttle reported freeing but did not — coexistence lands WITH the throttle, never before.**
+  - **B5 — `[VERIFY-LIVE]` on the box:** the throttle frees the measured ~200-300 MB, the first dream
+    beat admits without a retry, UE stays at floor (never black), and the kill→shader-floor backstop
+    fires when the throttle is insufficient. Closes the ADR-0030 D1 params-only-RC `[VERIFY-LIVE]`.
+
+- **Throttle build — progress 2026-06-21 (the actuation half is built; the lease integration remains).**
+  - **B3 BUILT + TESTED** — `crates/agentosd/src/rc_throttle.rs`: a SEPARATE RC sink from the mood
+    `rc.rs` (per §B), PUTing `ApplyRung(idx)` to UE's loopback RC server. Mirrors `rc.rs`'s loopback-
+    literal guard + redirect-none + 250 ms timeout (its OWN copy, so neither channel can silently weaken
+    the other), sends a rung INDEX never a cvar (`governor::Rung::index()` is the wire contract), and
+    surfaces an honest `ThrottleOutcome` so the B4 cardinal-sin guard can refuse to admit on a non-`Applied`.
+    6 unit tests + full suite 203/203, clippy-clean. Dormant until B4 calls it.
+  - **B2 AUTHORED (box-compile gated)** — `spikes/ue-probe/throttle/`: the `UAgentOSThrottleLibrary::
+    ApplyRung(int)` UFUNCTION (rung idx → fixed cvar set via `IConsoleManager` INSIDE the engine, so
+    `ExecuteConsoleCommand` stays disabled), the minimal C++ game module to host it on the
+    blueprint-only project, the `.uproject`/`.ini` patches, and `install_throttle_module.sh`. cvars
+    mirror `governor.rs::Rung::cvars()`. Compile + the four-step live verify are the on-box gate (per the
+    REFERENCE note, project C++ compiles against the Installed engine — only engine patches need a source
+    build; that's the one assumption B2's verify confirms).
+  - **B4 DESIGN — admission-side throttle, NOT a holder rearchitecture (refines §3's mechanism).** The
+    single-exclusive lease (`LeaseState.holder: Option<Held>`) can't represent "UE resident-at-floor AND
+    a gen holding the lease" as two holders. Rather than rearchitect the GPU arbiter (high-risk surgery),
+    register UE as a *throttleable wallpaper* (PID + full/floor + RC endpoint) and add a **throttle-
+    before-deny** step to the admission shell, reusing the existing `reclaim.rs` reclaim-before-deny
+    pattern: when a gen's admit would fail and `yield_decision == ThrottleAndCoexist`, call `rc_throttle`
+    to drop UE to Floor, re-measure free VRAM, and only then admit (the cardinal-sin guard: never admit
+    against VRAM a non-`Applied` throttle didn't free); restore UE to Full on the gen's Release;
+    `KillToShaderFloor` keeps today's SIGKILL backstop. This achieves §D4 (admission against UE's
+    throttled floor) and §3's throttle-not-kill **outcome** without touching `holder`/`arbitrate`/`Held`.
+    B1 (a `ue-wallpaper` Spawn profile + a foreground launcher so the daemon owns the real UE PID) feeds
+    the registration. **B1 + B4 touch the live lease daemon + the live wallpaper launch → to be built
+    gated-inactive, routed through resource-safety + determinism review, and `[VERIFY-LIVE]`'d on the box
+    before activation.**
+
+- **B1 + B4 BUILT + TRIPLE-REVIEWED, gated-inactive (2026-06-21).** Implemented in `lease.rs` (+289):
+  a pure `wallpaper_throttle_eligible` gate (heavy-lane + would-deny + min-gain + `yield_decision ==
+  ThrottleAndCoexist`, unit-tested), a throttle-before-deny block in `do_acquire` mirroring the
+  `warm_reclaim` choreography (peek-lock → claim under the lock → OFF-lock `spawn_blocking(apply_rung
+  Floor)` → conservative poll re-measure → locked `admit` as the SOLE gate), the `RegisterWallpaper`/
+  `UnregisterWallpaper` verbs, and `Inner` throttle state. **B1 = `nimbus-ue-wallpaper` Register/
+  Unregister (repo-side, dormant — the live `~/.local/bin` copy is untouched until deployed at
+  activation), NOT a Spawn-owned holder** (Option-X needs no PID ownership for the throttle). A
+  **design** review (3 lenses) caught two BLOCKERS in the naïve token-keyed restore — and reshaped it:
+    1. **Restore is an INVARIANT, not token-keyed.** The supervisor restores UE to Full whenever the
+       lease is FREE for `WALLPAPER_RESTORE_FREE_TICKS` (≈3 s anti-strobe). This catches EVERY release
+       path (explicit/natural-exit/TTL/peer-disconnect/preempt-eviction/denied-leak) — a preempt keeps
+       UE floored (the preemptor holds the lease) by construction. Closes the stuck-at-floor cardinal sin.
+    2. **Poll-don't-single-shot re-measure** (`poll_free_settled` = min of the settled tail) + the
+       cardinal-sin guard (raise `free_opt` only on `Applied` AND a higher settled read) — UE sheds VRAM
+       over frames, so a single read could over-admit and OOM. Closes the OOM cardinal sin.
+    Plus a lock-claimed in-flight flag (serializes the two off-lock actuations) carrying a claim INSTANT
+    so the supervisor self-heals a flag leaked by a dropped future (cancellation backstop). A **code**
+    re-review (resource-safety + determinism + rust) verified BOTH BLOCKERS **CLOSED** in the shipped
+    code, no lock held across any `await`, dormancy byte-identical until `RegisterWallpaper`; **204 tests,
+    clippy clean.** Verdict GO (gated-inactive). The §3 preempt-LOG block (`lease.rs` ~1269) is now
+    **legacy** for this surface (Option-X never makes UE a `Tier::Yielding` holder), kept only for a
+    hypothetical owned-UE Spawn. **Remaining = the on-box activation gate (B2 compile + B5 `[VERIFY-LIVE]`,
+    then deploy the B1 launcher): compile `spikes/ue-probe/throttle`, re-measure UE full/floor per the
+    real tableau (set `AGENTOS_UE_FULL/FLOOR_MIB`; a full−floor below `MIN_THROTTLE_GAIN_MIB` keeps it
+    inert), confirm `ApplyRung` over RC drops/restores the rung, then copy the launcher to `~/.local/bin`
+    to activate.** Pre-activation polish (Low, from the review): a self-healing inflight already landed;
+    the legacy §3 log's floor source could read the registration; an optional dedicated throttle-dwell knob.
+
 - **Reuse, do not rebuild (ADR-0001 / ADR-0023 carry-forward).** The lease core + `AdoptScope`
   cgroup reclaim (the kill floor, built + verified); the brief contract + validator + locked palette
   + SemVer schema (the coherence gate); the tracked-path spline + raycast clip validator (the ride

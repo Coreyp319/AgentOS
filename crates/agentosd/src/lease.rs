@@ -168,6 +168,41 @@ fn ue_floor_mib() -> u64 {
     std::env::var("AGENTOSD_UE_FLOOR_MIB").ok().and_then(|s| s.parse().ok()).unwrap_or(1000)
 }
 
+/// ADR-0029 §3 — a registered throttleable wallpaper (UE). The daemon does NOT own its PID (UE launches
+/// itself, the keep-below pattern); `pid` is recorded for liveness + a future kill backstop, while
+/// `full_mib`/`floor_mib` are UE's two-number footprint (D4) feeding the throttle-vs-skip decision.
+/// Registered via the `RegisterWallpaper` verb; `None` (the live default) makes the whole throttle path
+/// dormant. `Copy` so it's read out of `Inner` without a clone and never reaches a `spawn_blocking`.
+#[derive(Debug, Clone, Copy)]
+struct Wallpaper {
+    #[allow(dead_code)] // recorded for the deferred kill-to-shader-floor backstop + a liveness check.
+    pid: u32,
+    full_mib: u64,
+    floor_mib: u64,
+}
+
+/// Minimum VRAM a full→floor throttle must free to be worth a (visible) wallpaper rung change. On a
+/// trivial UE scene full≈floor — the throttle lever there is GPU-TIME, not VRAM (ADR-0029 Phase-A) — so
+/// without this gate a heavy admission would flicker the wallpaper for ~0 MB of benefit. Tunable.
+fn min_throttle_gain_mib() -> u64 {
+    std::env::var("AGENTOSD_MIN_THROTTLE_GAIN_MIB").ok().and_then(|s| s.parse().ok()).unwrap_or(512)
+}
+
+/// Poll count + interval for the post-throttle free-VRAM re-measure (the §3 OOM guard). UE sheds VRAM
+/// over several frames AFTER the RC call returns (the streaming pool drains, render targets resize) and
+/// can briefly show a transient high before settling — so a single read can over-admit and OOM the card
+/// (UE crashes, not degrades). Poll across ~1.5 s and take the conservative settled minimum.
+const WALLPAPER_THROTTLE_POLLS: u32 = 6;
+const WALLPAPER_THROTTLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Consecutive supervisor ticks (750 ms each) the lease must be FREE before UE is restored to full —
+/// the anti-strobe dwell on the RESTORE edge, so chained dream sessions don't flicker UE full↔floor. 4
+/// ≈ 3 s: long enough for the next beat/session to re-grab the lease (keeping UE floored) if it's coming.
+const WALLPAPER_RESTORE_FREE_TICKS: u32 = 4;
+/// A wallpaper-throttle in-flight claim older than this is STALE — its actuation can't legitimately take
+/// this long (a 250 ms RC PUT + a ~1.5 s re-measure poll), so a claim still set past it leaked from a
+/// dropped future and the supervisor clears it (the cancellation backstop, so a leak can't pin UE floored).
+const WALLPAPER_INFLIGHT_STALE: Duration = Duration::from_secs(30);
+
 /// C7: is `req` still in its post-preempt cooldown? Interactive is exempt — top priority must
 /// never be delayed. Pure + tested (the time source is injected).
 fn cooling_down(cooldown: Option<(Tier, Instant)>, req: Tier, now: Instant) -> bool {
@@ -192,6 +227,63 @@ fn warm_reclaim_dwell() -> Duration {
 fn warm_reclaim_eligible(tier: Tier, free_opt: Option<u64>, est: u64, headroom: u64) -> bool {
     matches!(tier, Tier::Batch | Tier::BestEffort)
         && matches!(free_opt, Some(free) if !admit(free, est, headroom).granted())
+}
+
+/// ADR-0029 §3 throttle-before-deny gate (the PURE half — unit-tested). Should a request that's about
+/// to be VRAM-denied first ask the registered wallpaper to throttle to its FLOOR rung so the gen can
+/// COEXIST on the freed VRAM? Eligible iff: a wallpaper is registered; the request is the heavy lane
+/// that fails closed (`Batch`/`BestEffort` — `Interactive` fails open and must never be delayed by an
+/// RC round-trip); free is READABLE and the request would DENY at it; the full→floor gain meets the
+/// worthwhile floor (no flicker for ~0 MB); and `yield_decision` (the pure two-number-footprint call)
+/// says the gen would then coexist (not need a kill). Runtime state — already-throttled, in-flight, the
+/// anti-strobe dwell — is checked under the lock by the caller, NOT here (mirrors `warm_reclaim_eligible`).
+fn wallpaper_throttle_eligible(
+    tier: Tier,
+    free_opt: Option<u64>,
+    est: u64,
+    headroom: u64,
+    wp: Option<Wallpaper>,
+    min_gain: u64,
+) -> bool {
+    let Some(wp) = wp else { return false };
+    if !matches!(tier, Tier::Batch | Tier::BestEffort) {
+        return false;
+    }
+    let Some(free) = free_opt else { return false }; // unreadable NVML → never throttle blind
+    if admit(free, est, headroom).granted() {
+        return false; // wouldn't deny → nothing to throttle for
+    }
+    if wp.full_mib.saturating_sub(wp.floor_mib) < min_gain {
+        return false; // negligible VRAM gain (a trivial scene) → not worth a visible rung change
+    }
+    matches!(
+        crate::coord::yield_decision(free, wp.full_mib, wp.floor_mib, est, headroom),
+        crate::coord::YieldOutcome::ThrottleAndCoexist
+    )
+}
+
+/// Re-measure free VRAM after a wallpaper throttle, CONSERVATIVELY (the §3 OOM guard). UE sheds VRAM
+/// over several frames AFTER the RC call returns and can briefly show a transient high mid-resize before
+/// settling, so a single read can over-admit and OOM the card. Poll across the window and return the
+/// MINIMUM of the SETTLED tail (the latter half of the readings — UE has had the first half to shed), so
+/// a transient peak can never over-admit; a too-low read just denies (safe) and the caller's retry
+/// re-admits once UE has settled. Mirrors `reclaim.rs`'s poll-don't-predict discipline. `None` if NVML
+/// stays unreadable (→ the locked `admit` denies — never admit blind).
+async fn poll_free_settled(nvml: &Arc<Nvml>) -> Option<u64> {
+    let mut reads: Vec<u64> = Vec::new();
+    for i in 0..WALLPAPER_THROTTLE_POLLS {
+        if i > 0 {
+            tokio::time::sleep(WALLPAPER_THROTTLE_POLL_INTERVAL).await;
+        }
+        if let Some(f) = free_mib(nvml).await {
+            reads.push(f);
+        }
+    }
+    if reads.is_empty() {
+        return None;
+    }
+    let tail = &reads[reads.len() / 2..];
+    tail.iter().copied().min()
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +565,25 @@ struct Inner {
     /// start, under the lock). Its dwell (`warm_reclaim_dwell`) blocks back-to-back `ollama stop`
     /// storms — the warm-eviction anti-strobe the review panel required (ADR-0018 #6). `None` = never.
     last_warm_reclaim: Option<Instant>,
+    /// ADR-0029 §3 — a registered throttleable wallpaper (UE), or `None` (the live default → the whole
+    /// throttle path is dormant). The daemon does NOT own its PID. Set/cleared by Register/Unregister.
+    throttleable_wallpaper: Option<Wallpaper>,
+    /// True while UE is held at its FLOOR rung by the daemon so a gen coexists on the freed VRAM. The
+    /// supervisor restores UE to full (clears this) the moment NO gen holds the lease — the INVARIANT
+    /// restore that catches every release path (explicit/natural-exit/TTL/peer-disconnect/preempt/deny).
+    wallpaper_throttled: bool,
+    /// `Some(when)` while a throttle OR restore RC call is in flight (claimed at `when`). Serializes the
+    /// two off-lock actuations so a throttle (do_acquire) and a restore (supervisor) can never race UE
+    /// into an indeterminate rung. Carries the claim INSTANT so the supervisor can self-heal a flag that
+    /// leaked because its `do_acquire` future was dropped mid-throttle (cancellation) — a stale claim
+    /// past `WALLPAPER_INFLIGHT_STALE` is cleared, so a dropped future can't pin UE at floor forever.
+    wallpaper_throttle_inflight: Option<Instant>,
+    /// When the last wallpaper throttle was *attempted* (the anti-strobe dwell on the THROTTLE edge,
+    /// mirroring `last_warm_reclaim`). `None` = never.
+    last_wallpaper_throttle: Option<Instant>,
+    /// Consecutive supervisor ticks the lease has been FREE while UE is throttled — the restore-edge
+    /// anti-strobe (a chained session re-grabs the lease before `WALLPAPER_RESTORE_FREE_TICKS` elapses).
+    wallpaper_free_ticks: u32,
 }
 
 impl Inner {
@@ -486,6 +597,11 @@ impl Inner {
             holder_ttl: None,
             cooldown: None,
             last_warm_reclaim: None,
+            throttleable_wallpaper: None,
+            wallpaper_throttled: false,
+            wallpaper_throttle_inflight: None,
+            last_wallpaper_throttle: None,
+            wallpaper_free_ticks: 0,
         }
     }
 }
@@ -853,6 +969,76 @@ impl Coordinator {
                 // admission below is the gate, now reading the post-reclaim number.
                 if !out.stopped.is_empty() {
                     free_opt = Some(out.free_after);
+                }
+            }
+        }
+
+        // ADR-0029 §3 — THROTTLE THE WALLPAPER BEFORE DENYING (the second reclaim source, after the warm
+        // pool). If a heavy request would STILL be VRAM-denied and a throttleable wallpaper (UE) is
+        // registered, ask it to shrink to its FLOOR rung over Remote Control, RE-MEASURE free VRAM
+        // (conservatively — poll, never predict), then fall through to the locked `admit` (the SOLE
+        // gate). UE STAYS resident at floor (coexist); the supervisor restores it to full the instant no
+        // gen holds the lease (the INVARIANT restore). DORMANT until a wallpaper REGISTERS:
+        // `throttleable_wallpaper` is None by default, so this whole block is a no-op on the live setup.
+        // Mirrors the warm-reclaim choreography (peek-lock → mark intent → drop → OFF-lock blocking RC
+        // via spawn_blocking → re-measure → locked admit), so NO MutexGuard is ever held across an await.
+        let wp_now = {
+            let g = self.inner.lock().await;
+            g.throttleable_wallpaper // Copy — guard dropped at this brace, nothing held across an await
+        };
+        if wallpaper_throttle_eligible(tier, free_opt, est, headroom, wp_now, min_throttle_gain_mib()) {
+            // Claim the throttle under the lock — serializes concurrent acquires (one throttles; a second
+            // that finds it already throttled/in-flight admits against the already-floored free) and
+            // applies the anti-strobe dwell. Re-reads the registration under the lock so a concurrent
+            // Unregister/crash between the eligible-peek and here aborts the claim.
+            let now = Instant::now();
+            let claim = {
+                let mut g = self.inner.lock().await;
+                let cooling = g.last_wallpaper_throttle.is_some_and(|t| now < t + warm_reclaim_dwell());
+                if g.throttleable_wallpaper.is_some()
+                    && !g.wallpaper_throttled
+                    && g.wallpaper_throttle_inflight.is_none()
+                    && !cooling
+                {
+                    g.wallpaper_throttle_inflight = Some(now); // claimed; cleared off-lock after the RC call
+                    g.last_wallpaper_throttle = Some(now);
+                    true
+                } else {
+                    false
+                }
+            }; // guard dropped BEFORE the blocking RC call
+            if claim {
+                // OFF-lock blocking PUT (250 ms-bounded). A JoinError (the blocking task panicked) degrades
+                // to Unreachable = "did not take" — never a panic on the arbitration path (ADR-0003).
+                let outcome = tokio::task::spawn_blocking(|| {
+                    crate::rc_throttle::apply_rung(crate::governor::Rung::Floor)
+                })
+                .await
+                .unwrap_or(crate::rc_throttle::ThrottleOutcome::Unreachable);
+                let took = outcome.took();
+                // Poll-don't-single-shot: take the conservative settled free, only when the throttle took.
+                let settled = if took { poll_free_settled(&self.nvml).await } else { None };
+                {
+                    let mut g = self.inner.lock().await;
+                    g.wallpaper_throttle_inflight = None;
+                    if took {
+                        g.wallpaper_throttled = true; // the supervisor's invariant restore now owns the undo
+                    }
+                }
+                // Cardinal-sin guard: ONLY raise free_opt to the re-measured settled free, and ONLY on a
+                // real Applied throttle — NEVER admit against VRAM a Rejected/Unreachable throttle did not
+                // free. The locked `admit` below stays the SOLE gate, now reading the freed number.
+                if took {
+                    if let Some(f) = settled {
+                        if f > free_opt.unwrap_or(0) {
+                            free_opt = Some(f);
+                        }
+                    }
+                    eprintln!(
+                        "coordd: ADR-0029 §3 throttle UE full→floor for {} (est {est}M): free now {:?}M; coexist",
+                        tier.as_str(),
+                        free_opt,
+                    );
                 }
             }
         }
@@ -1402,6 +1588,39 @@ impl Coordinator {
         }
     }
 
+    /// ADR-0029 §3 — REGISTER the live UE wallpaper as a throttleable resident. A heavy gen that would be
+    /// VRAM-denied first asks UE (over Remote Control) to shrink to its FLOOR rung so the two COEXIST,
+    /// instead of denying. `full_mib`/`floor_mib` are UE's two-number footprint (D4); `pid` is recorded
+    /// for liveness + a future kill backstop (the daemon does NOT own the PID — UE launches itself). A
+    /// degenerate footprint (`floor > full`, or zero full) is rejected. Called by `nimbus-ue-wallpaper`
+    /// on launch; `UnregisterWallpaper` on stop. Trust: a control-plane verb on the session bus, like
+    /// `Spawn` (the trusted local/CLI path; no agent verb reaches it). A LYING registration can only
+    /// cause a needless throttle/deny — NEVER an OOM, because admission is gated on the RE-MEASURED free,
+    /// not on these self-reported numbers (the cardinal-sin guard).
+    async fn register_wallpaper(&self, pid: u32, full_mib: u64, floor_mib: u64) -> bool {
+        if floor_mib > full_mib || full_mib == 0 {
+            eprintln!("coordd: RegisterWallpaper rejected — bad footprint (full {full_mib}M, floor {floor_mib}M)");
+            return false;
+        }
+        let mut g = self.inner.lock().await;
+        g.throttleable_wallpaper = Some(Wallpaper { pid, full_mib, floor_mib });
+        println!("coordd: ADR-0029 §3 wallpaper registered (pid {pid}, full {full_mib}M / floor {floor_mib}M)");
+        true
+    }
+
+    /// ADR-0029 §3 — UNREGISTER the throttleable wallpaper (UE stopped / a different wallpaper selected).
+    /// Clears the registration so no further request throttles it. If UE is currently throttled, the
+    /// `wallpaper_throttled` flag is LEFT for the supervisor's invariant restore to resolve once the lease
+    /// frees (Applied if UE is still up, Unreachable-clears it if UE is gone) — never strand the flag.
+    async fn unregister_wallpaper(&self) -> bool {
+        let mut g = self.inner.lock().await;
+        let was = g.throttleable_wallpaper.take().is_some();
+        if was {
+            println!("coordd: ADR-0029 §3 wallpaper unregistered");
+        }
+        was
+    }
+
     /// `(held, tier, token, free_mib)` — current lease + live free VRAM.
     async fn status(&self) -> (bool, String, u64, u32) {
         let free = free_mib(&self.nvml).await.unwrap_or(0) as u32;
@@ -1512,6 +1731,66 @@ async fn supervise(inner: Arc<Mutex<Inner>>, mirror: Option<PathBuf>, conn: zbus
             println!("coordd: lease TTL expired → auto-release token {tok} (ADR-0013 B5)");
             release_token(&inner, mirror.as_deref(), tok, None).await; // authoritative (B5 TTL)
         }
+
+        // 4. ADR-0029 §3 INVARIANT RESTORE: restore UE to full once NO gen holds the lease. The throttle
+        //    is justified only while a heavy holder needs the VRAM; keying the restore on this invariant
+        //    (lease-free), NOT on the throttling token, catches EVERY release path — explicit Release,
+        //    natural-exit reap, TTL expiry, peer-disconnect, preempt-eviction, and a speculative throttle
+        //    whose grant was denied — with one sweep no per-path hook can miss. A short free-dwell
+        //    (WALLPAPER_RESTORE_FREE_TICKS) avoids a Floor→Full→Floor strobe when sessions chain. The RC
+        //    actuation runs OFF the lock; `wallpaper_throttle_inflight` serializes it against a throttle.
+        // Self-heal a LEAKED in-flight claim: if a `do_acquire` future were dropped mid-throttle (a
+        // cancellation zbus doesn't do today, but a future dispatcher change could), the flag would stay
+        // Some forever and pin UE at floor (it gates BOTH a new throttle and this restore). A claim older
+        // than WALLPAPER_INFLIGHT_STALE (far longer than any real RC PUT + poll) is stale → clear it.
+        {
+            let mut g = inner.lock().await;
+            if g.wallpaper_throttle_inflight.is_some_and(|t| t.elapsed() > WALLPAPER_INFLIGHT_STALE) {
+                g.wallpaper_throttle_inflight = None;
+                eprintln!("coordd: ADR-0029 §3 cleared a STALE wallpaper-throttle in-flight claim (cancellation backstop)");
+            }
+        }
+        let restore = {
+            let mut g = inner.lock().await;
+            if g.lease.holder_tier().is_none() && g.wallpaper_throttled && g.wallpaper_throttle_inflight.is_none() {
+                g.wallpaper_free_ticks = g.wallpaper_free_ticks.saturating_add(1);
+                if g.wallpaper_free_ticks >= WALLPAPER_RESTORE_FREE_TICKS {
+                    g.wallpaper_throttle_inflight = Some(Instant::now()); // claim (serialize vs a throttle)
+                    true
+                } else {
+                    false
+                }
+            } else {
+                g.wallpaper_free_ticks = 0; // lease held, not throttled, or in-flight → reset the dwell
+                false
+            }
+        };
+        if restore {
+            let outcome = tokio::task::spawn_blocking(|| {
+                crate::rc_throttle::apply_rung(crate::governor::Rung::Full)
+            })
+            .await
+            .unwrap_or(crate::rc_throttle::ThrottleOutcome::Unreachable);
+            let cleared = {
+                let mut g = inner.lock().await;
+                g.wallpaper_throttle_inflight = None;
+                g.wallpaper_free_ticks = 0;
+                // Applied → restored. Unreachable → UE is gone (crashed/relaunched at full); treat as
+                // un-throttled so a stale flag can't block future throttles. Rejected → UE up but refused;
+                // LEAVE throttled=true to retry on the next free sweep (never flag-clear-but-floored).
+                let cleared = matches!(
+                    outcome,
+                    crate::rc_throttle::ThrottleOutcome::Applied | crate::rc_throttle::ThrottleOutcome::Unreachable
+                );
+                if cleared {
+                    g.wallpaper_throttled = false;
+                }
+                cleared
+            };
+            if cleared {
+                println!("coordd: ADR-0029 §3 restore UE floor→full (lease free) — {outcome:?}");
+            }
+        }
     }
 }
 
@@ -1578,6 +1857,34 @@ mod tests {
         assert!(!warm_reclaim_eligible(Tier::Batch, Some(20_000), est, hr));
         // Unreadable NVML (None) is never eligible — never unload the warm pool blind.
         assert!(!warm_reclaim_eligible(Tier::Batch, None, est, hr));
+    }
+
+    #[test]
+    fn wallpaper_throttle_eligibility_only_when_a_coexisting_throttle_would_admit() {
+        let est = 17_000u64;
+        let hr = headroom_for(est); // need = est + hr = 18_062
+        let min_gain = 512u64;
+        let rich = Some(Wallpaper { pid: 1, full_mib: 3_000, floor_mib: 1_000 }); // full→floor frees 2_000
+        let trivial = Some(Wallpaper { pid: 1, full_mib: 1_200, floor_mib: 1_000 }); // frees 200 (< min_gain)
+
+        // Heavy-lane, would-deny (free 17_000 < 18_062), and throttling the rich wallpaper (frees 2_000 →
+        // free_after 19_000 ≥ 18_062) would COEXIST → eligible.
+        assert!(wallpaper_throttle_eligible(Tier::Batch, Some(17_000), est, hr, rich, min_gain));
+        assert!(wallpaper_throttle_eligible(Tier::BestEffort, Some(17_000), est, hr, rich, min_gain));
+
+        // No wallpaper registered → dormant (the live default; the whole path is a no-op).
+        assert!(!wallpaper_throttle_eligible(Tier::Batch, Some(17_000), est, hr, None, min_gain));
+        // Interactive fails OPEN — never delayed by an RC round-trip (the load-bearing asymmetry).
+        assert!(!wallpaper_throttle_eligible(Tier::Interactive, Some(17_000), est, hr, rich, min_gain));
+        // Unreadable NVML → never throttle blind.
+        assert!(!wallpaper_throttle_eligible(Tier::Batch, None, est, hr, rich, min_gain));
+        // Already fits (free 20_000 ≥ 18_062) → nothing to throttle for.
+        assert!(!wallpaper_throttle_eligible(Tier::Batch, Some(20_000), est, hr, rich, min_gain));
+        // Trivial scene: full→floor frees < min_gain → not worth a visible rung change for ~0 MB.
+        assert!(!wallpaper_throttle_eligible(Tier::Batch, Some(17_000), est, hr, trivial, min_gain));
+        // Throttle INSUFFICIENT (free 5_000; even +2_000 = 7_000 < 18_062) → yield_decision says KILL, not
+        // coexist → the coexist-throttle does NOT fire (the kill backstop is a separate, deferred path).
+        assert!(!wallpaper_throttle_eligible(Tier::Batch, Some(5_000), est, hr, rich, min_gain));
     }
 
     #[test]

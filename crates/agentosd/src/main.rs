@@ -51,6 +51,7 @@ mod keyhole;
 mod lease;
 mod mcp;
 mod rc;
+mod rc_throttle;
 mod reclaim;
 mod scene;
 mod scope_reclaim;

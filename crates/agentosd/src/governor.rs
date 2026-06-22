@@ -35,9 +35,8 @@ use crate::coord::YieldOutcome;
 /// over" — Lumen GI+Reflections OFF, streaming pool hard-capped, 5 fps (the real VRAM-yield rung).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rung {
-    /// No throttle — the restore baseline (UE returns here when the gen releases the lease). Only the
-    /// gated RC restore path constructs it, so it is unreferenced today.
-    #[allow(dead_code)]
+    /// No throttle — the restore baseline (UE returns here when the gen releases the lease). Constructed
+    /// by the supervisor's invariant-restore path (`lease::supervise`, ADR-0029 §3).
     Full,
     /// "Yield a slice, keep the look" — the middle rung reserved for a future graduated-pressure
     /// controller (the preempt path goes straight to `Floor`), so it is unreferenced today.
@@ -94,6 +93,18 @@ impl Rung {
             Rung::Full => "FULL",
             Rung::Reduced => "REDUCED",
             Rung::Floor => "FLOOR",
+        }
+    }
+
+    /// The rung INDEX the throttle UFUNCTION takes over Remote Control. UE maps this index to the
+    /// SAME fixed cvar set as `cvars()` INSIDE the engine (`UAgentOSThrottleLibrary::ApplyRung(int)`),
+    /// so a rung INDEX — never a cvar name — crosses the wire, and `ExecuteConsoleCommand` stays
+    /// disabled (ADR-0029 §B). This is the stable wire contract between `rc_throttle` and the UE C++.
+    pub fn index(self) -> i32 {
+        match self {
+            Rung::Full => 0,
+            Rung::Reduced => 1,
+            Rung::Floor => 2,
         }
     }
 }
