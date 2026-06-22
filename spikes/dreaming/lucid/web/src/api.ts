@@ -21,6 +21,8 @@ export type DreamNode = {
   caption?: string | null            // VLM grounding: one-line description of what's on this frame (opening has only this)
   rating?: 'sfw' | 'mature'          // inferred content rating sealed at roll time; drives the render + an honest tag
   notes?: Note[]                     // moment tags steering the next beat (spatial feed-forward)
+  quality?: 'draft' | 'hero'         // ADR-0033 render lane this beat was generated in (absent on legacy nodes = draft)
+  hero_clip?: string | null          // ADR-0033 the finalized HD re-render of THIS beat (the same shot at 20-step fidelity)
 }
 export type Chain = { nodes: DreamNode[] } | null
 export type TurnPhase = 'idle' | 'dreaming' | 'done' | 'skipped' | 'refused' | 'error'
@@ -35,7 +37,10 @@ export type LucidState = {
   engine?: Engine   // ADR-0023: which i2v backend run_beat uses ('wan' | '10eros')
   stash?: StashStatus
 }
-export type Beat = { label: string; prompt: string }
+// ADR-0023: a "what happens next" choice. `key` is the backend's content-address (label+prompt) and `preview`
+// is the ref of a per-choice "potential path" still IF the dwell worker has rendered it yet (else null/absent)
+// — until then the card shows the seed conditioning still (the frame this beat would continue from).
+export type Beat = { label: string; prompt: string; key?: string; preview?: string | null }
 // ADR-0028: a saved (non-private) dream in the library.
 export type LibraryDream = {
   session: string; name: string; premise?: string | null
@@ -67,6 +72,21 @@ const getJSON = (path: string) => fetch(path).then((r) => r.json())
 // URL (no new request is made when a src string is unchanged, even with no-store). The backend ignores `v`.
 export const clipUrl = (id: number, ver?: string | null) => `/api/clip?id=${id}` + (ver ? `&v=${encodeURIComponent(ver)}` : '')
 export const frameUrl = (id: number, ver?: string | null) => `/api/frame?id=${id}` + (ver ? `&v=${encodeURIComponent(ver)}` : '')
+// ADR-0023: a per-choice "potential path" preview still. `ref` is the backend-minted, session-scoped name
+// (validated server-side, no traversal); served by /api/frame's preview= param. Used in place of the seed
+// still on a gutter card once that beat's preview has rendered.
+export const previewUrl = (ref: string) => '/api/frame?preview=' + encodeURIComponent(ref)
+// ADR-0023 (privacy consult 2026-06-21): per-choice path previews are OFF by default — the user opts in. The
+// preference is a client-side stance about the user's OWN GPU heat/noise (mirrors how the page holds SEGLEN),
+// NOT dream content, so it never touches chain.json/the library. Read at dwell-time to decide whether to fire
+// the trigger at all; the server independently refuses previews for a private dream and honours LUCID_PREVIEWS.
+export const previewsEnabled = () => { try { return localStorage.getItem('lucid.previews') === '1' } catch { return false } }
+export const setPreviewsEnabled = (on: boolean) => { try { localStorage.setItem('lucid.previews', on ? '1' : '0') } catch { /* private mode / disabled storage */ } }
+// Download the whole dream stitched into one MP4 (the backend concatenates the clips along the
+// story spine). A plain GET (attachment) — no CSRF (read-only, loopback). `session` selects a saved
+// dream; omit it for the current one. Fetched as a blob so the button can show a "Preparing…" state.
+export const downloadUrl = (session?: string) =>
+  '/api/download' + (session ? `?session=${encodeURIComponent(session)}` : '')
 
 // ---- queries ----
 export function useLucidState() {
@@ -83,13 +103,25 @@ export function useLucidState() {
 // so the menu is pinned to THIS frame of THIS dream — never aliased to a same-length frame of a prior
 // dream after a burn/delete + restart (the old chain-length key collided). staleTime Infinity because
 // the server guarantees the hold; the key change (new tip) is what advances the story.
-export function useBeats(enabled: boolean, session: string, nodeId: number) {
+export function useBeats(enabled: boolean, session: string, nodeId: number, dwelling = false) {
   return useQuery<Beat[]>({
     queryKey: ['beats', session, nodeId],
     // `node` grounds the menu on THAT beat (the tip = continue, an earlier beat = branch a new take)
     queryFn: () => getJSON('/api/beats?node=' + nodeId).then((j) => j.beats ?? []),
     enabled,
     staleTime: Infinity,
+    // ADR-0023: while DWELLING at a choice moment, poll so each per-choice "potential path" preview swaps in as
+    // its render lands (progressive fill-in). Bounded — it stops the instant every beat has a preview (or there
+    // are none to fetch), so it isn't a perpetual poll. The held-menu text never changes; only `preview` does.
+    refetchInterval: (q) => {
+      const d = q.state.data as Beat[] | undefined
+      // §2.2 (audit): a transient EMPTY roll (the 3B narrator momentarily timed out) must not soft-lock the
+      // menu to "type your own" — the server deliberately never seals an empty roll, so keep asking (bounded:
+      // only while the menu is active/enabled) until it recovers. Non-empty falls through to the preview poll.
+      if (!d || !d.length) return enabled ? 4000 : false
+      if (!dwelling) return false
+      return d.some((b) => !b.preview) ? 3500 : false
+    },
   })
 }
 
@@ -116,6 +148,20 @@ function useStateMutation<V>(fn: (v: V) => Promise<any>, resets: unknown[][] = [
 }
 
 export const useDream = () => useStateMutation((b: { prompt: string; label: string; length?: number; parent?: number }) => post('/api/dream', b))
+// ADR-0033: re-render a chosen beat at HERO quality (the 20-step lane) — the same shot, finalized in HD.
+export const useHero = () => useStateMutation((b: { node: number }) => post('/api/hero', b))
+// ADR-0023: fire-and-forget trigger that asks the server to start rendering per-choice "potential path" stills
+// for the dwelt-on node. Deliberately NOT a useStateMutation — it invalidates nothing; the /api/beats dwell
+// poll surfaces the previews as they land. The backend is fully fail-open (no warm lease / busy GPU -> no-op).
+export const useStartBeatPreviews = () => useMutation({ mutationFn: (b: { node: number }) => post('/api/beat-previews', b) })
+// ADR-0023 juncture refine: sharpen the viewer's OWN rough next-beat idea into one vivid, frame-grounded
+// beat via the local narrator (model proposes), gated by the deterministic red-line (code disposes). It
+// changes NOTHING server-side — no turn, no chain write, no lease — so it is NOT a useStateMutation (it
+// invalidates nothing; a refine must never supersede the dream). Fails honest: {ok:false, reason}. The
+// caller fills `refined` back into the SAME prompt input, still fully editable before dreaming it.
+export type RefineResult = { ok: boolean; refined?: string; reason?: string }
+export const useRefine = () =>
+  useMutation<RefineResult, unknown, { text: string; node: number }>({ mutationFn: (b) => post('/api/refine', b) })
 export const useStart = () =>
   useStateMutation((b: { private: boolean; name?: string; image_b64?: string; text?: string; consent?: boolean }) =>
     post('/api/start', b), [['beats']])

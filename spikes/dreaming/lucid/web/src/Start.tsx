@@ -5,9 +5,10 @@ const B2_NOTE = 'Any image you upload is checked for real-person likeness first,
 
 // start a dream from an uploaded image (B2 likeness-gated), a text description (t2i), or a synthetic
 // frame. Preserves the existing backend consent flow (SeedBlocked / requires_consent).
-export default function Start() {
+export default function Start({ onStarted }: { onStarted?: () => void }) {
   const start = useStart()
   const [priv, setPriv] = useState(false)
+  const [name, setName] = useState('')
   const [text, setText] = useState('')
   const [msg, setMsg] = useState(B2_NOTE)
   // B2 likeness consent: when the seed looks like a real person, the backend returns requires_consent.
@@ -19,7 +20,8 @@ export default function Start() {
   async function begin(consent = false) {
     setConsentReason(null)
     const f = fileRef.current?.files?.[0]
-    const body: { private: boolean; image_b64?: string; text?: string; consent?: boolean } = { private: priv }
+    const body: { private: boolean; name?: string; image_b64?: string; text?: string; consent?: boolean } =
+      { private: priv, name: name.trim() || undefined }
     if (f) { setMsg('🔎 checking your image for real-person likeness…'); body.image_b64 = await fileToB64(f); body.consent = consent }
     else if (text.trim()) { setMsg('✦ painting your opening…'); body.text = text.trim(); body.consent = consent }
     let j
@@ -36,12 +38,17 @@ export default function Start() {
     }
     if (j?.error) { setMsg(j.error); return }
     setMsg(B2_NOTE) // success — the state poll flips to the chain
+    setName('')
+    onStarted?.()  // drop back to the dream view if we were on the home/library screen
   }
 
   return (
     <div className="card">
-      <div className="card-title">Start a dream</div>
+      <h2 className="card-title" data-view-heading tabIndex={-1}>Start a dream</h2>
       <div className="note" style={{ marginTop: 6 }}>Begin an interactive dream — then choose what happens next, one beat at a time.</div>
+      <label className="block">Name this dream <span className="note">(optional — so you can find it again in “Your dreams”)</span><br />
+        <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Midnight aurora" maxLength={80} />
+      </label>
       <label className="block">Opening image <span className="note">(optional — an abstract frame is used if you give neither)</span><br />
         {/* swapping the seed re-opens the B2 gate: a consent granted for the PREVIOUS image must never
             ride along with a different upload (the consent moment names a specific likeness). */}

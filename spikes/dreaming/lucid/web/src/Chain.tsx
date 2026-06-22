@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type KeyboardEvent } from 'react'
 import type { DreamNode, LucidState, Beat, Note } from './api'
-import { clipUrl, frameUrl, downloadUrl, useBeats, useDream, useAddNote, useDeleteNote, segment } from './api'
+import { clipUrl, frameUrl, previewUrl, downloadUrl, useBeats, useDream, useHero, useStartBeatPreviews, useRefine, useAddNote, useDeleteNote, segment, previewsEnabled } from './api'
 
 // pointer-parallax rect cache — read once per card on mouseenter so mousemove never forces a reflow.
 const rectCache = new WeakMap<HTMLElement, DOMRect>()
@@ -35,8 +35,8 @@ const LENGTHS: { f: number; s: string }[] = [
 // (`posterSrc`) — that frame blooms IN over the aurora, in the SAME box, under the held serif caption,
 // and `onResolved` fires after the dissolve so the real <video> takes over in place (ADR-0014's "the
 // clip developing"). A child component so its `posterIn` state re-arms by unmounting between beats.
-function DevelopHero({ caption, posterSrc, onResolved }:
-  { caption: string | null; posterSrc: string | null; onResolved: () => void }) {
+function DevelopHero({ caption, posterSrc, onResolved, canReview = false, onReview }:
+  { caption: string | null; posterSrc: string | null; onResolved: () => void; canReview?: boolean; onReview?: () => void }) {
   const [posterIn, setPosterIn] = useState(false)
   function onPosterLoad() {
     setPosterIn(true)
@@ -57,6 +57,13 @@ function DevelopHero({ caption, posterSrc, onResolved }:
           {caption ? `“${caption}”` : 'the next moment is forming…'}
         </p>
       </div>
+      {/* a beat takes minutes — let the viewer rewatch the dream so far during the wait without losing this
+          forming view. Only while genuinely forming (no poster = not the reveal handoff) and there are clips. */}
+      {canReview && onReview && !posterSrc && (
+        <button type="button" className="peek-watch" onClick={onReview}>
+          <span aria-hidden="true">▷</span> Watch the dream so far
+        </button>
+      )}
     </div>
   )
 }
@@ -78,14 +85,34 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const playable = nodes.filter((n) => n.clip)
   const latest = playable.length ? playable[playable.length - 1].id : nodes[nodes.length - 1].id
   const tipId = nodes[nodes.length - 1].id
+  // "Play all" plays THE DREAM — the lit story path root→tip (the same spine the tree lights and Download
+  // stitches), NOT nodes.filter(clip): that flat list is every clip ever made and, on a BRANCHED dream,
+  // interleaves abandoned alternate takes in id-order (so play-all would play a dead take out of sequence).
+  // Walk parent pointers from the tip back to the root, reverse, keep the ones with a clip — mirrors
+  // lucid_stitch.clip_spine + the tree's litSet, so Play-all, Download, and the lit path stay one sequence.
+  const playSpine = useMemo(() => {
+    const byId = new Map(nodes.map((n) => [n.id, n]))
+    const line: DreamNode[] = []
+    const seen = new Set<number>()
+    let cur = byId.get(tipId)
+    while (cur && !seen.has(cur.id)) { line.push(cur); seen.add(cur.id); cur = cur.parent == null ? undefined : byId.get(cur.parent) }
+    return line.reverse().filter((n) => n.clip)
+  }, [nodes, tipId])
   const [selId, setSelId] = useState<number>(latest)
   const [playAll, setPlayAll] = useState(false)
   const [repeat, setRepeat] = useState(true)
+  const [downloading, setDownloading] = useState(false)   // stitching the whole dream into one MP4
   const [dwell, setDwell] = useState(false)   // clip has played once at a choice moment → choices available + the clip LOOPS while you choose
   const treeRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)   // stage + choices; the connector measure spans both
   const videoRef = useRef<HTMLVideoElement>(null)
+  // ADR-0032: the tag overlay must sit on the VIDEO CONTENT rect, not the stage — the clip is letterboxed
+  // within the stage (object-fit:contain, centered), and its aspect may not match, so a stage-relative tap
+  // (and the mask) would land wrong. `mediaBox` is the displayed content rect as % of the stage; we size the
+  // .tag-aim overlay to it so a tap maps straight to frame-normalized coords and the silhouette aligns.
+  const [mediaBox, setMediaBox] = useState<{ l: number; t: number; w: number; h: number } | null>(null)
+  const [paused, setPaused] = useState(false)   // clip paused (so you can tag a still moment) — synced to the <video>
 
   // Follow the newest clip as the story advances — but only if the user is already watching the tip;
   // if they've clicked back to review an earlier beat, don't yank them to the new clip mid-watch.
@@ -107,18 +134,85 @@ export default function Chain({ state, revealing = false, onLatestReady }:
 
   // ---- futures (the "what happens next" beats — now rendered in the stage gutters) ----
   const canDream = state.readiness.can_dream
+  // `draftOpen` (the tag panel) is declared up here so it can GATE the futures: while you're ACTIVELY
+  // TAGGING a moment, the "what happens next" choices/connectors clear off the stage so the whole clip is
+  // tappable (ADR-0032 — they were covering the lower clip, leaving only the top reachable).
+  const [draftOpen, setDraftOpen] = useState(false)
+  // Measure the displayed video/still CONTENT rect (object-fit:contain within the .vid element box) as % of
+  // the stage, so the tag overlay lands exactly on the clip. Re-measures on resize, metadata-load, and when
+  // the draft opens. Only runs while tagging (the overlay is only shown then).
+  useEffect(() => {
+    if (!draftOpen) return
+    const measure = () => {
+      const s = stageRef.current
+      const m = s?.querySelector('.vid, .still') as HTMLVideoElement | HTMLImageElement | null
+      if (!s || !m) { setMediaBox(null); return }
+      const sb = s.getBoundingClientRect(), mb = m.getBoundingClientRect()
+      if (sb.width < 1 || sb.height < 1 || mb.width < 1) return
+      const iw = (m as HTMLVideoElement).videoWidth || (m as HTMLImageElement).naturalWidth || mb.width
+      const ih = (m as HTMLVideoElement).videoHeight || (m as HTMLImageElement).naturalHeight || mb.height
+      const scale = Math.min(mb.width / iw, mb.height / ih)          // object-fit:contain content rect
+      const cw = iw * scale, ch = ih * scale
+      const cl = mb.left + (mb.width - cw) / 2, ct = mb.top + (mb.height - ch) / 2
+      setMediaBox({ l: ((cl - sb.left) / sb.width) * 100, t: ((ct - sb.top) / sb.height) * 100,
+        w: (cw / sb.width) * 100, h: (ch / sb.height) * 100 })
+    }
+    measure()
+    const s = stageRef.current, m = s?.querySelector('.vid, .still')
+    const ro = new ResizeObserver(measure)
+    if (s) ro.observe(s)
+    if (m) ro.observe(m)
+    const v = videoRef.current
+    v?.addEventListener('loadedmetadata', measure)
+    window.addEventListener('resize', measure)
+    return () => { ro.disconnect(); v?.removeEventListener('loadedmetadata', measure); window.removeEventListener('resize', measure) }
+  }, [draftOpen, sel.id, sel.clip])
+  // pause/resume the clip while tagging so you can mark up a still moment (the native controls are under the
+  // tag overlay). `paused` stays in sync via the <video> onPlay/onPause handlers.
+  function togglePlay() {
+    const v = videoRef.current; if (!v) return
+    if (v.paused) v.play().catch(() => {}); else { v.pause(); setDraftT(v.currentTime) }
+  }
   // futures grow from the SELECTED beat: at the tip it's "continue", at an earlier beat it's "branch a new take"
-  const showFutures = !dreaming && !revealing && canDream
+  const showFutures = !dreaming && !revealing && canDream && !draftOpen
   const branchingFrom = sel.id !== tipId
   const dream = useDream()
+  const hero = useHero()                          // ADR-0033: re-render the selected beat at HD (the same shot)
+  const startBeatPreviews = useStartBeatPreviews()   // ADR-0023: render per-choice "potential path" stills on dwell
   const [own, setOwn] = useState('')
+  // ADR-0023 juncture refine: ✨ sharpens the typed idea into a vivid, frame-grounded next beat (model
+  // proposes; the red-line gate disposes), filled BACK into this same input — still fully editable before
+  // you dream it. `refineMsg` is the honest inline status (refined / a calm reason); `ownRef` returns focus
+  // to the input so the refined text is immediately editable.
+  const refine = useRefine()
+  const [refineMsg, setRefineMsg] = useState<string | null>(null)
+  const ownRef = useRef<HTMLInputElement>(null)
+  // §1.4 (audit): a typed custom prompt is original user work with no second copy. Stash the last
+  // fired text so a fail-open turn (skipped/error/refused) can restore it into the input instead of
+  // losing it; cleared once a beat actually lands (the per-turn reset below).
+  const lastCustom = useRef<string | null>(null)
   const [len, setLen] = useState(33)            // default ~2s, matches lucid_engine DEFAULT_LEN
   const [flash, setFlash] = useState('')
   const [committed, setCommitted] = useState(false)
   // the just-committed beat's label — shown as the forming hero's caption to BRIDGE the gap between the click
   // and the 2.5–5s poll flipping the server turn to 'dreaming' (without it, a click read as a no-op).
   const [pendingLabel, setPendingLabel] = useState<string | null>(null)
-  const busy = dream.isPending || committed
+  const busy = dream.isPending || hero.isPending || committed
+  // While a beat generates (minutes) the DevelopHero owns the whole stage, so the dream-so-far isn't
+  // playable. `peeking` lets the viewer rewatch DURING the wait: the stage swaps back to the player (tap any
+  // beat in the tree, or "Watch the dream so far" on the hero), one tap returns to the forming beat, and it
+  // auto-exits when the new beat lands (the per-turn reset below). Distinct from `revealing` (App's reveal
+  // hold) — peeking is gated OFF during the reveal handoff so the poster bloom is never interrupted.
+  const [peeking, setPeeking] = useState(false)
+  // peeking only takes effect WHILE generating (not the brief reveal handoff) and only when the selected
+  // beat has a clip to play — then the stage renders the player instead of the forming hero.
+  const reviewWhileDreaming = peeking && (dreaming || busy) && !revealing && !!sel.clip
+  // ADR-0033: the clip actually played is the finalized HERO re-render when present, else the draft. Used
+  // for the <video> src/key so a finalize swaps in the HD shot (the ?v= ref changes → the browser refetches).
+  const playClip = sel.hero_clip ?? sel.clip
+  const isHero = !!sel.hero_clip
+  // offer "Finalize in HD" on a rendered, not-yet-finalized beat (never the clip-less opening) when idle
+  const canFinalize = !!sel.clip && !isHero && sel.id !== 0 && !busy && !dreaming && !revealing
   // ADR-0023 council S2 ("the path you didn't take is remembered, never wasted"): when you pick a beat,
   // the options you DIDN'T pick are stashed per node — so a branched-from beat keeps them, one click from
   // blooming. Reversibility (ADR-0005) made generative. Zero-GPU (a label + the on-disk conditioning still).
@@ -129,8 +223,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const addNote = useAddNote()
   const delNote = useDeleteNote()
   // the inline tag draft: the captured time, the selected intent (defaults to the `hold` primitive), and
-  // optional text. `draftOpen` toggles the panel; closing on a node change keeps it pinned to one moment.
-  const [draftOpen, setDraftOpen] = useState(false)
+  // optional text. `draftOpen` (declared above, so it can gate the futures) toggles the panel.
   const [draftT, setDraftT] = useState(0)
   const [draftTag, setDraftTag] = useState<Note['tag']>('hold')
   const [draftText, setDraftText] = useState('')
@@ -154,8 +247,18 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const [prevSelId, setPrevSelId] = useState(sel.id)
   const [prevPhase, setPrevPhase] = useState(state.turn.phase)
   if (sel.id !== prevSelId) { setPrevSelId(sel.id); setDraftOpen(false); setDwell(false); setDraftMask(null); setDraftPreview(null); setSegmenting(false) }   // new beat: close any open draft, end the dwell, drop the segmentation
-  if (state.turn.phase !== prevPhase) { setPrevPhase(state.turn.phase); setCommitted(false); setDwell(false); setPendingLabel(null) }   // turn rolled over: unlock the menu, end the dwell, drop the optimistic caption
+  if (state.turn.phase !== prevPhase) { setPrevPhase(state.turn.phase); setCommitted(false); setDwell(false); setPendingLabel(null); setPeeking(false) }   // turn rolled over: unlock the menu, end the dwell, drop the optimistic caption, leave review (the new beat takes over)
+  // §1.4: when the turn settles, restore a fired custom prompt if it FAILED OPEN (the user's typed sentence
+  // is their original work — don't lose it), or clear the stash on a successful landing. In an effect (not the
+  // render-time reset above) because it reads/writes a ref, which render must not touch.
+  useEffect(() => {
+    const p = state.turn.phase
+    if (!lastCustom.current) return
+    if (p === 'done') lastCustom.current = null
+    else if (p === 'skipped' || p === 'error' || p === 'refused') { setOwn(lastCustom.current); lastCustom.current = null }
+  }, [state.turn.phase])
   function openDraft() {
+    videoRef.current?.pause()                          // freeze the moment so it's tappable (a still to mark up)
     setDraftT(videoRef.current?.currentTime ?? 0)      // clip-less opening still -> t=0
     setDraftTag('hold'); setDraftText(''); setDraftPt(null); setDraftMask(null); setDraftPreview(null)
     setSegmenting(false); setAiming(false); setKbCursor({ x: 0.5, y: 0.5 }); setDraftOpen(true)
@@ -176,10 +279,23 @@ export default function Chain({ state, revealing = false, onLatestReady }:
       })
       .catch(() => { if (seq === segSeq.current) setSegmenting(false) })   // fail-open -> keep the point
   }
+  // Map a viewport tap to FRAME-normalized coords using the displayed video content rect (object-fit:contain
+  // within the .vid box) — so a tap anywhere on the stage lands on the right pixel; a tap in the letterbox
+  // returns null (ignored). Same math as the mediaBox measure, applied to the click.
+  function mediaContentPoint(clientX: number, clientY: number) {
+    const m = stageRef.current?.querySelector('.vid, .still') as HTMLVideoElement | HTMLImageElement | null
+    if (!m) return null
+    const b = m.getBoundingClientRect()
+    const iw = (m as HTMLVideoElement).videoWidth || (m as HTMLImageElement).naturalWidth || b.width
+    const ih = (m as HTMLVideoElement).videoHeight || (m as HTMLImageElement).naturalHeight || b.height
+    const scale = Math.min(b.width / iw, b.height / ih)
+    const cw = iw * scale, ch = ih * scale
+    const x = (clientX - (b.left + (b.width - cw) / 2)) / cw, y = (clientY - (b.top + (b.height - ch) / 2)) / ch
+    return (x < 0 || x > 1 || y < 0 || y > 1) ? null : { x, y }
+  }
   function placePoint(e: MouseEvent<HTMLDivElement>) {
-    const r = e.currentTarget.getBoundingClientRect()
-    placeAt(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
-            Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)))
+    const p = mediaContentPoint(e.clientX, e.clientY)
+    if (p) placeAt(p.x, p.y)            // a tap in the letterbox margin is ignored (not part of the frame)
   }
   // KEYBOARD/switch path (WCAG 2.1.1): the aim surface is focusable; arrows nudge a crosshair (Shift = coarse),
   // Enter/Space segments at it — so segmentation is never pointer-only. (The chip-based frame-wide note stays
@@ -212,11 +328,28 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const carryCount = carryNode?.notes?.length ?? 0
   // Beats are HELD per chain tip (lucid_linear.beats_for_tip): the menu is pinned to THIS frame.
   const { data: beatsData, isLoading, isFetching } =
-    useBeats(canDream && !dreaming && !revealing, state.session, sel.id)
+    useBeats(canDream && !dreaming && !revealing, state.session, sel.id, dwell)
   // NO_BEATS (a stable ref), not `= []`: `beats` is a dep of the gutter-link layout effect below, and a
   // fresh `[]` each render would churn that dep → setLinkPaths → re-render → infinite loop (React #185).
   const beats = beatsData ?? NO_BEATS
   const loadingBeats = isLoading || (isFetching && beats.length === 0)
+  // ADR-0023: when the dwell opens at a choice moment and the held menu still lacks per-choice previews, ask the
+  // server ONCE to render the "potential path" stills — it fills them in progressively (the /api/beats dwell poll
+  // swaps each card from the seed still to its own preview). Fired from an effect, not onEnded, so it only runs
+  // after the menu has loaded; guarded per-node so a re-render / a poll arrival doesn't re-trigger. Server-side is
+  // fully fail-open (cold lease / busy GPU -> no-op), so a miss just leaves the seed still — never an error path.
+  // PRIVACY (consult 2026-06-21): only when the user has OPTED IN (path previews are off by default) and NOT for a
+  // private dream — the server enforces both too, but we don't even fire the call otherwise (no wasted GPU/heat).
+  const previewFiredFor = useRef<number | null>(null)
+  useEffect(() => {
+    if (!dwell || state.private || !previewsEnabled()) return
+    if (!beats.length || !beats.some((b) => !b.preview)) return
+    if (previewFiredFor.current === sel.id) return
+    previewFiredFor.current = sel.id
+    startBeatPreviews.mutate({ node: sel.id })
+    // startBeatPreviews is a stable mutation handle (excluded on purpose; adding it would not change behaviour)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dwell, sel.id, beats, state.private])
   // A pick is a commitment: lock the menu the instant it's in flight so a second beat can't fire and the
   // held suggestions don't read as still-choosable. The lock clears when the phase turns over (the poll
   // swaps in the dreaming hero, then a fresh tip rolls new beats) — mirrors the old <Choice> unmount; the
@@ -236,6 +369,56 @@ export default function Chain({ state, revealing = false, onLatestReady }:
     }
   }
 
+  // Sharpen the typed idea into a vivid, frame-grounded next beat WITHOUT firing it — the refined text
+  // lands back in the same input for one more edit (model proposes; you, and the red-line gate, dispose).
+  // Grounded on THIS beat's frame + the dream's premise (node: sel.id). Fails honest: a calm inline reason,
+  // and the user's original text is left untouched so a model hiccup never costs them their idea.
+  async function doRefine() {
+    const text = own.trim()
+    if (!text || busy || refine.isPending) return
+    setRefineMsg(null)
+    try {
+      const j = await refine.mutateAsync({ text, node: sel.id })
+      if (j?.ok && j.refined) { setOwn(j.refined); setRefineMsg('Refined — edit it, or dream it.'); ownRef.current?.focus() }
+      else setRefineMsg(j?.reason || 'Couldn’t refine that — send your own.')
+    } catch {
+      setRefineMsg('Couldn’t reach Lucid — send your own, or try again.')
+    }
+  }
+
+  // Download the whole dream as one stitched MP4. Fetched as a blob (not a bare <a href>) so the
+  // button can show "Preparing…" and a re-encode that takes a few seconds doesn't read as a no-op —
+  // and a second click can't kick off a duplicate stitch. The backend names the file; we mirror it
+  // for the blob link. The stitch runs CPU-only server-side, so it never preempts a generating beat.
+  async function downloadDream() {
+    if (downloading) return
+    // A private dream is RAM-only and auto-burned on logout. Saving it to the device crosses that
+    // boundary permanently — make it an informed choice, never a silent one (privacy review).
+    if (state.private && !window.confirm(
+      'This is a private dream. Downloading saves it permanently to your device — outside Lucid’s ' +
+      'private storage, and it will not be auto-burned when you log out. Continue?')) return
+    setDownloading(true)
+    try {
+      const res = await fetch(downloadUrl(state.session))
+      if (!res.ok) throw new Error(await res.text().catch(() => ''))
+      const blob = await res.blob()
+      // Guard the failure mode that looks like success: a stale backend (route not loaded yet) returns
+      // the SPA index.html with a 200, which would otherwise be saved as a ~1KB "dream.mp4". Only a
+      // real video response is a real download — anything else surfaces as an honest error.
+      if (!blob.type.startsWith('video/')) throw new Error('not a video response')
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = (state.name || 'dream').replace(/[^\w.-]+/g, '-').replace(/^[-_.]+|[-_.]+$/g, '').slice(0, 60) + '.mp4'
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 10000)
+    } catch {
+      showFlash('Could not prepare the download — try again in a moment.')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
   // ---- the choice moment: a selected clip plays once clean, then (on `ended`) the choices appear and the
   // clip LOOPS gently behind them — a living backdrop while you choose, not a frozen frame (user's call,
   // overriding the council's frozen-dwell-with-a-breath; the Wan last≠first-frame hard-cut is accepted as
@@ -251,18 +434,20 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   // reveal (CSS). Mobile stacks the choices below the clip, so they stay visible there regardless.
   const choicesRevealed = !sel.clip || dwell
 
-  // "Play all" — watch the dream end-to-end; advance on each segment's `ended`, wrap if Repeat is on.
+  // "Play all" — watch the dream end-to-end along the LIT SPINE (root→tip); advance on each segment's
+  // `ended`, wrap if Repeat is on. Sequencing is over playSpine, not the flat clip list, so a branched
+  // dream plays its story path in order instead of interleaving abandoned alternate takes.
   function togglePlayAll() {
     if (playAll) return setPlayAll(false)
-    if (!playable.length) return
-    setSelId(playable[0].id); setPlayAll(true)
+    if (!playSpine.length) return
+    setSelId(playSpine[0].id); setPlayAll(true)
   }
   function onEnded() {
     if (playAll) {
-      const i = playable.findIndex((n) => n.id === sel.id)
-      const next = playable[i + 1]
+      const i = playSpine.findIndex((n) => n.id === sel.id)
+      const next = playSpine[i + 1]
       if (next) setSelId(next.id)
-      else if (repeat) setSelId(playable[0].id)
+      else if (repeat) setSelId(playSpine[0].id)
       else setPlayAll(false)
       return
     }
@@ -271,8 +456,8 @@ export default function Chain({ state, revealing = false, onLatestReady }:
       videoRef.current?.play().catch(() => {})   // ...and the clip LOOPS gently behind them (not a frozen frame)
     }
   }
-  const pos = playAll ? playable.findIndex((n) => n.id === sel.id) + 1 : 0
-  const totalSecs = playable.reduce((a, n) => a + (n.length ? n.length / FPS : 0), 0)
+  const pos = playAll ? playSpine.findIndex((n) => n.id === sel.id) + 1 : 0
+  const totalSecs = playSpine.reduce((a, n) => a + (n.length ? n.length / FPS : 0), 0)
   const go = (j: number) => { if (nodes[j]) setSelId(nodes[j].id) }
 
   // ---- moment-tag derivations for the selected node ----
@@ -429,18 +614,24 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   }
 
   function gutterCard(f: Beat & { side: 'L' | 'R' }) {
-    // default thumb = the zero-GPU conditioning still (the frame this beat would continue FROM). Every path
-    // starts here; the motion glimpse that differentiates them is a gated, opportunistic maybe (council brief).
-    // Accessible name = the choice itself, with the branch-vs-continue intent spoken; the decorative eyebrow
-    // and the duplicated visible prompt are hidden from the name so a screen reader doesn't lead with framing
-    // text or hear the prompt twice (it was the button's text content AND the `title`). `title` stays a tooltip.
+    // The thumb is this choice's own "potential path" PREVIEW once the dwell worker has rendered it (ADR-0023);
+    // until then it's the zero-GPU conditioning still (the frame this beat would continue FROM). Every path
+    // starts at the same still, and a card that never gains a preview is a legitimate resting state, not a
+    // failure. The eyebrow word-shifts from "a glimpse" to "this path" when the preview lands — a NON-COLOUR
+    // ready tell (the a11y cap). Accessible name = the choice itself; the decorative eyebrow and the duplicated
+    // visible prompt are hidden from the name so a screen reader doesn't lead with framing text or hear the
+    // prompt twice (it was the button's text content AND the `title`). `title` stays a tooltip.
+    const hasPreview = !!f.preview
+    const src = hasPreview ? previewUrl(f.preview as string) : frameUrl(sel.id, sel.out_frame)
     const ariaName = `${branchingFrom ? 'Branch a new take: ' : ''}${f.label} — ${f.prompt}`
     return (
       <button key={f.label + f.prompt} className="gchoice" disabled={busy} aria-label={ariaName}
         data-gkey={f.label + f.prompt} onMouseEnter={cardEnter} onMouseMove={cardMove} onMouseLeave={cardLeave}
         onClick={() => fire(f.prompt, f.label)} title={f.prompt}>
-        <span className="gthumb"><img src={frameUrl(sel.id, sel.out_frame)} alt="" aria-hidden="true" loading="lazy" /></span>
-        <span className="geyebrow" aria-hidden="true">a glimpse — not the final beat</span>
+        {/* key={src} remounts the <img> when the seed→preview swap happens so the bloom-in re-fires cleanly */}
+        <span className={'gthumb' + (hasPreview ? ' is-real' : ' is-seed')}>
+          <img key={src} src={src} alt="" aria-hidden="true" loading="lazy" /></span>
+        <span className="geyebrow" aria-hidden="true">{hasPreview ? 'this path' : 'a glimpse — not the final beat'}</span>
         <span className="glabel">{f.label}</span>
         <span className="gprompt">{f.prompt}</span>
       </button>
@@ -448,16 +639,33 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   }
   // compose-your-own now lives WITH the curated beats in the gutters (not demoted to the tree) — the two
   // halves of "what happens next" are one surface; it reveals/hides with the choices and stacks on mobile.
+  const composeBusy = busy || refine.isPending
   const composeCard = (
     <div className="gchoice compose" key="__compose" data-gkey="__compose"
       onMouseEnter={cardEnter} onMouseMove={cardMove} onMouseLeave={cardLeave}>
       <span className="geyebrow">or describe your own</span>
       <form className="gc-form"
-        onSubmit={(e) => { e.preventDefault(); if (own.trim() && !busy) { fire(own.trim(), 'custom'); setOwn('') } }}>
-        <input type="text" value={own} placeholder="the next moment…" disabled={busy}
-          aria-label="Compose your own next moment" onChange={(e) => setOwn(e.target.value)} />
-        <button className="future-go" type="submit" disabled={busy} aria-label="Dream this">→</button>
+        onSubmit={(e) => { e.preventDefault(); if (own.trim() && !composeBusy) { lastCustom.current = own.trim(); fire(own.trim(), 'custom'); setOwn(''); setRefineMsg(null) } }}>
+        <input ref={ownRef} type="text" value={own} placeholder="the next moment…" disabled={composeBusy}
+          aria-label="Compose your own next moment"
+          onChange={(e) => { setOwn(e.target.value); if (refineMsg) setRefineMsg(null) }} />
+        <div className="gc-actions">
+          {/* ✦ Refine: the model PROPOSES a sharper, frame-grounded rewrite of your words; you still edit + dispose.
+              Secondary to "Dream it" so the primary commit stays clear. Disabled until there's something to refine.
+              While it works it wears a "Sharpening…" label + a light-sweep (.is-sharpening) — honest + aria-busy. */}
+          <button className={'future-refine' + (refine.isPending ? ' is-sharpening' : '')} type="button"
+            disabled={composeBusy || !own.trim()} onClick={doRefine}
+            aria-label="Refine this into a vivid, filmable beat" aria-busy={refine.isPending}
+            title="Sharpen this into a vivid, filmable beat — you can still edit it">
+            <span className="fr-spark" aria-hidden="true">✦</span>
+            <span className="fr-label">{refine.isPending ? 'Sharpening…' : 'Refine'}</span>
+          </button>
+          <button className="future-go" type="submit" disabled={composeBusy} aria-label="Dream this">
+            <span className="fg-label">Dream it</span><span className="fg-arrow" aria-hidden="true">→</span>
+          </button>
+        </div>
       </form>
+      {refineMsg && <span className="gc-msg" role="status" aria-live="polite">{refineMsg}</span>}
     </div>
   )
 
@@ -473,22 +681,32 @@ export default function Chain({ state, revealing = false, onLatestReady }:
       {flash && <div className="flash" role="alert">{flash}</div>}
 
       {/* ---- the cinematic player + the on-stage choice gutters ---- */}
-      {dreaming || revealing || busy ? (
+      {/* while generating, the forming hero owns the stage — UNLESS the viewer has chosen to peek back at the
+          dream so far (reviewWhileDreaming), which renders the player below instead. The reveal handoff
+          (`revealing`) always keeps the hero so the poster bloom is never interrupted. */}
+      {(dreaming || revealing || busy) && !reviewWhileDreaming ? (
         <DevelopHero caption={heroCaption} posterSrc={revealing ? frameUrl(latest, nodes.find((n) => n.id === latest)?.out_frame) : null}
-          onResolved={() => onLatestReady?.()} />
+          onResolved={() => onLatestReady?.()} canReview={playable.length > 0} onReview={() => setPeeking(true)} />
       ) : (
        <div className={'stage-wrap' + (choicesRevealed ? ' revealed' : '')} ref={wrapRef}>
+        {/* peeking at the dream so far mid-generation: a pulsing pill back to the still-forming beat */}
+        {reviewWhileDreaming && (
+          <button type="button" className="peek-back" onClick={() => setPeeking(false)}>
+            <span className="pb-spark" aria-hidden="true">✦</span> Still forming — back to it
+          </button>
+        )}
         <div className={'stage' + (dwell ? ' dwell' : '') + (showFutures ? ' has-choices' : '')} ref={stageRef}>
           <img className="spill" src={frameUrl(sel.id, sel.out_frame)} alt="" aria-hidden="true" />
           <div className="clipwrap">
             {sel.clip ? (
               <video
-                key={sel.clip ?? sel.id} ref={videoRef} className="vid"
-                src={clipUrl(sel.id, sel.clip)} poster={frameUrl(sel.id, sel.out_frame)}
+                key={playClip ?? sel.id} ref={videoRef} className="vid"
+                src={clipUrl(sel.id, playClip)} poster={frameUrl(sel.id, sel.out_frame)}
                 aria-label={`Dream clip: ${sel.label || 'opening'}`}
                 autoPlay muted playsInline controls
                 loop={!playAll && (dwell || (repeat && !choiceMoment))}
                 onEnded={onEnded} onLoadedData={onLatestReady} onError={onLatestReady}
+                onPlay={() => setPaused(false)} onPause={() => setPaused(true)}
               />
             ) : (
               <img key={sel.out_frame || sel.id} className="still" src={frameUrl(sel.id, sel.out_frame)} alt={sel.label || 'opening frame'} />
@@ -500,24 +718,31 @@ export default function Chain({ state, revealing = false, onLatestReady }:
               a darkening scrim on everything else (so it reads on any frame), the tag also named in the draft
               chip below. Fail-open: no mask -> the bare point (a frame region). Sits above the video. */}
           {canTag && draftOpen && (
+            // The CLICK surface is the WHOLE stage (inset:0) so there are no dead zones; placePoint maps a
+            // tap to frame-normalized coords via the video content rect (a tap in the letterbox is ignored).
+            // The VISUAL overlay (scrim/mask/dot/cross) lives in an inner box sized to that content rect so
+            // it aligns with the clip regardless of any measurement slop.
             <div className="tag-aim" onClick={placePoint} tabIndex={0} role="application"
               onKeyDown={aimKey} onFocus={() => setAiming(true)} onBlur={() => setAiming(false)}
               aria-label="Aim at an object to steer the next beat — click it, or use the arrow keys then Enter">
-              {draftPreview && (
-                <>
-                  <div className="aim-scrim" />
-                  <div className={'aim-mask aim-' + draftTag} aria-hidden="true"
-                    style={{ WebkitMaskImage: `url(${draftPreview})`, maskImage: `url(${draftPreview})` }} />
-                </>
-              )}
-              {draftPt && !draftPreview && (
-                <span className={'aim-dot aim-' + draftTag + (segmenting ? ' seg' : '')}
-                  style={{ left: draftPt.x * 100 + '%', top: draftPt.y * 100 + '%' }} />
-              )}
-              {aiming && !draftPreview && (   /* keyboard aiming crosshair (shown while focused, pre-point) */
-                <span className="aim-cross" aria-hidden="true"
-                  style={{ left: kbCursor.x * 100 + '%', top: kbCursor.y * 100 + '%' }} />
-              )}
+              <div className="tag-aim-media"
+                style={mediaBox ? { left: mediaBox.l + '%', top: mediaBox.t + '%', width: mediaBox.w + '%', height: mediaBox.h + '%' } : { inset: 0 }}>
+                {draftPreview && (
+                  <>
+                    <div className="aim-scrim" />
+                    <div className={'aim-mask aim-' + draftTag} aria-hidden="true"
+                      style={{ WebkitMaskImage: `url(${draftPreview})`, maskImage: `url(${draftPreview})` }} />
+                  </>
+                )}
+                {draftPt && !draftPreview && (
+                  <span className={'aim-dot aim-' + draftTag + (segmenting ? ' seg' : '')}
+                    style={{ left: draftPt.x * 100 + '%', top: draftPt.y * 100 + '%' }} />
+                )}
+                {aiming && !draftPreview && (   /* keyboard aiming crosshair (shown while focused, pre-point) */
+                  <span className="aim-cross" aria-hidden="true"
+                    style={{ left: kbCursor.x * 100 + '%', top: kbCursor.y * 100 + '%' }} />
+                )}
+              </div>
             </div>
           )}
           {/* honest, calm status across the segmentation lifecycle — announced to assistive tech */}
@@ -569,11 +794,19 @@ export default function Chain({ state, revealing = false, onLatestReady }:
               <div className="eyebrow">
                 <span>{sel.label || 'opening'}</span>
                 {sel.rating === 'mature' && <span className="tag tag-mature">mature</span>}
+                {isHero && <span className="tag tag-hd" title="This beat has been finalized in HD (the 20-step hero render)">HD</span>}
                 {sel.length ? <span style={{ opacity: 0.7 }}>· {fmtDur(sel.length / FPS)}</span> : null}
                 {canTag && !draftOpen && (
                   <button type="button" className="tag-btn" disabled={busy} onClick={openDraft}
                     aria-label="Tag a moment in this clip to steer the next beat">
                     <span className="ic" aria-hidden="true">✦</span> Tag a moment
+                  </button>
+                )}
+                {/* ADR-0033: finalize THIS beat in HD — re-renders the same shot on the 20-step lane (minutes). */}
+                {canFinalize && (
+                  <button type="button" className="tag-btn" onClick={() => hero.mutate({ node: sel.id })}
+                    aria-label="Finalize this beat in HD — re-renders the same shot at higher quality (takes a few minutes)">
+                    <span className="ic" aria-hidden="true">✦</span> Finalize in HD
                   </button>
                 )}
               </div>
@@ -582,8 +815,14 @@ export default function Chain({ state, revealing = false, onLatestReady }:
               {canTag && draftOpen && (
                 <div className="tag-draft" role="group" aria-label="Tag this moment">
                   <div className="tag-draft-head">
+                    {sel.clip && (
+                      <button type="button" className="tag-play" onClick={togglePlay}
+                        aria-label={paused ? 'Play the clip' : 'Pause the clip to mark up this moment'}>
+                        <span aria-hidden="true">{paused ? '▶' : '⏸'}</span> {paused ? 'Play' : 'Pause'}
+                      </button>
+                    )}
                     Tag at <b>{draftT.toFixed(1)}s</b> — steers the next beat
-                    <span className="aim-hint">{draftPt ? ' · point set ✓ (tap to move)' : ' · tap the clip to point (optional)'}</span>
+                    <span className="aim-hint">{draftPt ? ' · point set ✓ (tap to move)' : ' · tap a spot on the clip'}</span>
                   </div>
                   <div className="tagchips" role="radiogroup" aria-label="What kind of note">
                     {TAGS.map((o) => (
@@ -592,11 +831,15 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                         onClick={() => setDraftTag(o.tag)}>{o.label}</button>
                     ))}
                   </div>
-                  <input type="text" className="tag-text" value={draftText} disabled={busy}
-                    placeholder="add a detail (optional)…" aria-label="Optional note detail"
-                    onChange={(e) => setDraftText(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveNote() }
-                      else if (e.key === 'Escape') { e.preventDefault(); setDraftOpen(false) } }} />
+                  {/* the optional text detail reveals (animates in) only AFTER a location is placed —
+                      the tap is the primary gesture; the detail is a refinement on top of it (ADR-0032) */}
+                  {draftPt && (
+                    <input type="text" className="tag-text reveal" value={draftText} disabled={busy}
+                      placeholder="add a detail (optional)…" aria-label="Optional note detail"
+                      onChange={(e) => setDraftText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveNote() }
+                        else if (e.key === 'Escape') { e.preventDefault(); setDraftOpen(false) } }} />
+                  )}
                   <div className="tag-draft-row">
                     <button type="button" className="tag-save" disabled={busy} onClick={saveNote}>Save tag</button>
                     <button type="button" className="tag-cancel" onClick={() => setDraftOpen(false)}>Cancel</button>
@@ -614,6 +857,9 @@ export default function Chain({ state, revealing = false, onLatestReady }:
           // "what happens next" group is announced (was: only the left gutter was a labelled group).
           <div className={'choices' + (draftOpen ? ' tagging' : '')} role="group"
             aria-label={branchingFrom ? 'Branch a new take — choose a path' : 'What happens next — choose a branch'}>
+            {/* MOBILE-only serif lede naming the fork (decorative; the group's aria-label covers AT). CSS shows it
+                only in the ≤820px stack, where there's no desktop hover-hint / connector to set the moment. */}
+            <p className="choices-lede" aria-hidden="true">{branchingFrom ? 'branch a new take' : 'what happens next'}</p>
             <div className="gutter left">
               {gutterBeats.filter((b) => b.side === 'L').map(gutterCard)}
             </div>
@@ -640,7 +886,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
 
       {/* ---- the dream tree: now pure history/branch-map (lit path / dim alternate takes) ---- */}
       <div className="tree">
-        {!dreaming && !revealing && playable.length > 0 && (
+        {((!dreaming && !revealing) || reviewWhileDreaming) && playable.length > 0 && (
           <div className="player-bar" role="group" aria-label="Playback"
             aria-keyshortcuts="Space ArrowLeft ArrowRight Home End P R">
             <span className="sr" role="status">{playAll ? 'Playing the whole dream' : ''}</span>
@@ -654,7 +900,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                 </button>
               </>
             )}
-            {playable.length > 1 && (
+            {playSpine.length > 1 && (
               <button className={'pbtn' + (playAll ? ' on' : '')} aria-pressed={playAll} onClick={togglePlayAll}>
                 <span className="ic" aria-hidden="true">{playAll ? '⏸' : '▶'}</span>
                 {playAll ? 'Stop' : 'Play all'}
@@ -664,8 +910,13 @@ export default function Chain({ state, revealing = false, onLatestReady }:
               title={playAll ? 'Loop the whole dream' : 'Loop this clip'}>
               <span className="ic" aria-hidden="true">🔁</span> Repeat {repeat ? 'on' : 'off'}
             </button>
-            {playAll && playable.length > 1 && (
-              <span className="player-pos" aria-hidden="true">Playing {Math.max(1, pos)} of {playable.length}</span>
+            <button className="pbtn" onClick={downloadDream} disabled={downloading}
+              aria-busy={downloading} aria-label="Download the whole dream as one MP4 video file"
+              title="Download the whole dream stitched into one MP4">
+              <span className="ic" aria-hidden="true">⤓</span> {downloading ? 'Preparing…' : 'Download'}
+            </button>
+            {playAll && playSpine.length > 1 && (
+              <span className="player-pos" aria-hidden="true">Playing {Math.max(1, pos)} of {playSpine.length}</span>
             )}
           </div>
         )}
@@ -739,9 +990,12 @@ export default function Chain({ state, revealing = false, onLatestReady }:
         )}
 
         {/* honest outcome of the last turn, inline (folded in from <Choice>) */}
-        {atHead && t.phase === 'skipped' && <div className="banner">That beat was skipped — the graphics card was needed elsewhere, so the dream fails open and your desktop is untouched. Choose again when you're ready.</div>}
-        {atHead && t.phase === 'error' && <div className="banner bad">That clip didn't come through — your desktop is untouched. Try again.</div>}
-        {atHead && t.phase === 'refused' && <div className="banner">That direction isn't something Lucid can make. Try a different turn.</div>}
+        {/* §1.3: surface the outcome where the user FIRED FROM, not only at the tip — a branch-fire fail-open
+            (sel.id !== tipId) used to snap back silently. §2.1/1.1: render the server's HONEST reason (t.error)
+            when present (a structural "another app holds the GPU" / an OOM / a backend-down), not a false calm. */}
+        {(atHead || sel.id === firedFrom) && t.phase === 'skipped' && <div className="banner">{t.error || 'That beat was skipped — the graphics card was needed elsewhere. Your desktop is untouched.'} Nothing was lost.</div>}
+        {(atHead || sel.id === firedFrom) && t.phase === 'error' && <div className="banner bad">{t.error || "That clip didn't come through."} Your desktop is untouched.</div>}
+        {(atHead || sel.id === firedFrom) && t.phase === 'refused' && <div className="banner">That direction isn't something Lucid can make. Try a different turn.</div>}
         {!canDream && atHead && <div className="note" style={{ margin: '4px 0 10px' }}>Choosing what happens next switches on once everything above is ready.</div>}
 
         <div className="tree-scroll" ref={treeRef} role="group" aria-label="Dream tree — click a beat to jump">
@@ -762,7 +1016,8 @@ export default function Chain({ state, revealing = false, onLatestReady }:
               const lit = litSet.has(n.id), cur = n.id === sel.id
               return (
                 <button key={n.id} className={'node' + (cur ? ' cur' : lit ? ' lit' : ' alt')}
-                  style={{ left: px(n.id), top: py(n.id) }} onClick={() => setSelId(n.id)}
+                  style={{ left: px(n.id), top: py(n.id) }}
+                  onClick={() => { setSelId(n.id); if ((dreaming || busy) && n.clip) setPeeking(true) }}  // tap a beat mid-dream → review it
                   aria-current={cur ? 'true' : undefined}
                   title={n.prompt || n.caption || n.label || 'opening'}>
                   <span className="cell">

@@ -140,6 +140,11 @@ a{ color:var(--inst-blue) }
 @media (prefers-reduced-motion:reduce){ .stage .poster-reveal{ transition:none } }
 .cap{ position:absolute; left:0; right:0; bottom:0; padding:22px; z-index:2;
   background:linear-gradient(0deg,rgba(9,11,17,.86),transparent) }
+/* ADR-0032: the caption band passes taps THROUGH to the full-stage tag surface beneath it (so the lower
+   clip — behind the caption — is tag-able); only the interactive button/panel inside it capture their own
+   clicks (pointer-events inherits, so the panel's chips/input/buttons come back with it). */
+.cap{ pointer-events:none }
+.cap .tag-btn, .cap .tag-draft{ pointer-events:auto }
 .beat-q{ font-family:var(--display); font-style:italic; font-weight:380; font-size:1.4rem; line-height:1.28;
   color:#eef1f8; margin:0; max-width:34ch }
 /* live "forming" badge on the generating hero — a soft pulse signals work-in-progress the instant a beat commits */
@@ -247,6 +252,10 @@ a{ color:var(--inst-blue) }
 /* mature uses the lower-sat copper (brand-warm), NOT the reserved alarm-warm or red — a calm fact, not a flag */
 .tag-mature{ color:var(--brand-warm); border:1px solid color-mix(in srgb,var(--brand-warm) 45%,transparent);
   background:color-mix(in srgb,var(--brand-warm) 9%,transparent) }
+/* ADR-0033: a beat finalized in HD wears a calm cool-blue quality pill (the instrument accent), distinct
+   from mature's copper — a quiet fact ("this shot is the hero render"), not a flag */
+.tag-hd{ color:var(--inst-blue); border:1px solid color-mix(in srgb,var(--inst-blue) 45%,transparent);
+  background:color-mix(in srgb,var(--inst-blue) 10%,transparent) }
 
 /* play the whole dream in order, optionally on repeat — a quiet toolbar under the player */
 .player-bar{ display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap }
@@ -311,6 +320,9 @@ a{ color:var(--inst-blue) }
   border:1px solid color-mix(in srgb,var(--inst-blue) 32%,transparent);
   background:color-mix(in srgb,var(--inst-blue) 9%,transparent); backdrop-filter:blur(var(--blur-raised)) }
 .tag-draft-head{ font-size:var(--fs-xs); color:var(--inst-label); margin-bottom:8px }
+.tag-play{ float:right; margin-left:8px; background:transparent; border:1px solid var(--hairline); color:var(--inst-muted);
+  border-radius:6px; padding:2px 9px; font:inherit; font-size:11px; cursor:pointer }
+.tag-play:hover{ border-color:var(--inst-blue); color:var(--inst-blue) }
 .tag-draft-head b{ color:var(--inst-blue); font-variant-numeric:tabular-nums }
 .tagchips{ display:flex; flex-wrap:wrap; gap:7px }
 .tagchip{ background:transparent; border:1px solid var(--hairline); color:var(--inst-muted);
@@ -321,6 +333,10 @@ a{ color:var(--inst-blue) }
 .tagchip:disabled{ opacity:.45; cursor:default }
 @media (prefers-reduced-motion:reduce){ .tagchip{ transition:none } }
 .tag-text{ margin-top:9px }   /* input[type=text] base style carries the rest */
+/* ADR-0032: the detail input animates in once a location is placed (a refinement on top of the tap) */
+.tag-text.reveal{ animation:tag-reveal .26s cubic-bezier(.2,.7,.3,1) both; transform-origin:top }
+@keyframes tag-reveal{ from{ opacity:0; transform:translateY(-6px) scaleY(.96) } to{ opacity:1; transform:none } }
+@media (prefers-reduced-motion:reduce){ .tag-text.reveal{ animation:none } }
 .tag-draft-row{ display:flex; gap:8px; margin-top:10px }
 .tag-save{ background:var(--inst-blue); color:#0c0e15; border:none; border-radius:var(--radius-sm);
   padding:7px 14px; font:inherit; font-weight:700; cursor:pointer; min-height:34px }
@@ -337,10 +353,11 @@ a{ color:var(--inst-blue) }
 /* `hold` is the steering primitive — give it a touch more presence than the directional nudges */
 .mk-dot.mk-hold{ height:9px; width:4px }
 
-/* ADR-0025 regional steering: tap-to-place the note's spatial point on the clip while tagging. The overlay
-   is z-index 2 — above the video (z1) to catch the tap, BELOW the caption/draft panel (.cap z3) so the
-   chips + save stay usable. Only mounted while the draft is open, so it never blocks normal playback. */
+/* ADR-0025/0032 regional steering: tap-to-place the note's spatial point on the clip while tagging. The
+   click surface is the WHOLE stage (z2) so there are no dead zones; the caption band passes taps through to
+   it (see .cap below). Only mounted while the draft is open, so it never blocks normal playback. */
 .tag-aim{ position:absolute; inset:0; z-index:2; cursor:crosshair }
+.tag-aim-media{ position:absolute; pointer-events:none }   /* visual overlay box, sized to the clip content rect */
 .tag-aim:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:-2px }
 /* keyboard aiming crosshair (ADR-0032 WCAG 2.1.1): a ringed marker the user nudges with arrows + Enter */
 .aim-cross{ position:absolute; width:20px; height:20px; z-index:3; transform:translate(-50%,-50%); pointer-events:none;
@@ -398,8 +415,47 @@ a{ color:var(--inst-blue) }
    absolutely overlaid on the stage's margins on desktop, normal flow below it on mobile. (council §1a) */
 .stage-wrap{ position:relative }
 .choices{ position:absolute; inset:0; z-index:3; pointer-events:none }
+/* MOBILE-only choice-moment lede — names the fork in the dream's serif voice. Sighted phone users get
+   neither the desktop hover hint nor the connector lines, so without it the choices read as a bare form
+   grid; this gives the moment its name. Decorative (aria-hidden) — the .choices group already carries the
+   labelled aria name for assistive tech. display:none on desktop, where the gutters speak for themselves.
+   Entrance is transform-only (a gentle drop-in); opacity stays 1, never gating real visibility on motion. */
+.choices-lede{ display:none }
+@keyframes lede-in{ from{ transform:translateY(-5px) } to{ transform:none } }
+@media (prefers-reduced-motion:reduce){ .choices-lede{ animation:none } }
+
+/* ---- "watch the dream so far" while a beat generates (peeking) ----
+   A beat takes minutes; the forming hero shouldn't lock the viewer out of the dream. `.peek-watch` rides the
+   forming hero (a calm way in); `.peek-back` rides the reviewed clip (a pulsing way back to the forming beat
+   so the wait is never forgotten). Both are loopback-calm, glass, and honour reduced-motion/transparency. */
+.peek-watch{ position:absolute; left:50%; top:14px; transform:translateX(-50%); z-index:4;
+  display:inline-flex; align-items:center; gap:8px; padding:9px 17px; border-radius:999px; white-space:nowrap;
+  background:rgba(9,11,17,.62); border:1px solid var(--hairline); color:var(--inst-text);
+  font:inherit; font-size:var(--fs-sm); cursor:pointer; backdrop-filter:blur(8px);
+  transition:border-color .18s ease, background .18s ease }
+.peek-watch:hover{ border-color:var(--inst-blue); background:rgba(122,162,255,.14) }
+.peek-watch:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:2px }
+.peek-back{ position:absolute; left:50%; top:12px; transform:translateX(-50%); z-index:6;
+  display:inline-flex; align-items:center; gap:8px; padding:8px 16px; border-radius:999px; white-space:nowrap;
+  background:color-mix(in srgb,var(--inst-blue) 24%, rgba(9,11,17,.84)); color:var(--inst-text);
+  border:1px solid color-mix(in srgb,var(--inst-blue) 50%,transparent); font:inherit; font-size:var(--fs-sm);
+  font-weight:560; cursor:pointer; backdrop-filter:blur(9px); box-shadow:0 10px 26px -14px #000;
+  animation:peek-pulse 2.4s ease-in-out infinite }
+.peek-back .pb-spark{ color:var(--inst-blue); animation:fr-twinkle 2.4s ease-in-out infinite }
+.peek-back:hover{ background:color-mix(in srgb,var(--inst-blue) 34%, rgba(9,11,17,.84)) }
+.peek-back:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:2px }
+@keyframes peek-pulse{ 0%,100%{ box-shadow:0 10px 26px -14px #000, 0 0 0 0 color-mix(in srgb,var(--inst-blue) 42%,transparent) }
+  60%{ box-shadow:0 10px 26px -14px #000, 0 0 0 5px transparent } }
+@media (prefers-reduced-transparency:reduce){ .peek-watch{ background:rgba(15,18,28,.97); backdrop-filter:none }
+  .peek-back{ background:rgba(15,21,38,.98); backdrop-filter:none } }
+@media (prefers-reduced-motion:reduce){ .peek-back{ animation:none } .peek-back .pb-spark{ animation:none } }
+/* the foot padding RESERVES the bottom caption band (.cap — the beat title + index sits there, absolute
+   bottom:0): without it, space-evenly spreads the cards over the FULL stage height and the lowest card
+   drops onto the title on a short/narrow stage, making it illegible. Reserving the band lifts the options
+   above the caption. (No effect in the small-phone stack — there .gutter is display:contents.) */
 .gutter{ position:absolute; top:0; bottom:0; z-index:3; width:clamp(245px,28%,345px); display:flex;
-  flex-direction:column; justify-content:space-evenly; gap:14px; padding:18px 14px; pointer-events:none }
+  flex-direction:column; justify-content:space-evenly; gap:14px; padding:18px 14px var(--gutter-foot,132px);
+  pointer-events:none }
 /* the real clip's blurred spill floods the gutters with bright imagery — darken the gutter zones behind
    the cards so they read as calm panels, not text-on-busy-photo. Only when choices are present; clear of
    the centred portrait clip (it sits ~30–70%, the scrim hugs the outer ~22%). */
@@ -448,18 +504,70 @@ a{ color:var(--inst-blue) }
 .gthumb img{ width:100%; height:100%; object-fit:cover; opacity:.6; filter:saturate(.9); transition:opacity .2s ease, filter .2s ease, transform .16s ease-out }
 .gthumb::after{ content:''; position:absolute; inset:0; pointer-events:none;
   background:radial-gradient(70% 60% at 50% 38%, transparent, rgba(7,8,12,.5)) }
+/* ADR-0023: a RENDERED per-choice "potential path" preview reads as real — a solid hairline (not the dashed
+   "a glimpse" resting state) and a full-strength image that blooms in as it swaps from the seed still. The seed
+   fallback keeps the dashed/dimmed grammar above. The hover rule (opacity:1, scale) still wins for both states;
+   the bloom uses no fill-mode so it never freezes the hover transform once it's done. */
+.gthumb.is-real{ border:1px solid color-mix(in srgb,var(--inst-blue) 42%,transparent) }
+.gthumb.is-real img{ opacity:.92; filter:none; animation:gpreview-bloom .6s ease }
+@keyframes gpreview-bloom{ from{ opacity:0; transform:scale(1.05); filter:saturate(.55) brightness(.8) } to{ opacity:.92; transform:none; filter:none } }
+@media (prefers-reduced-motion:reduce){ .gthumb.is-real img{ animation:none } }
 .geyebrow{ font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:rgba(230,233,240,.68) }   /* .5->.68 clears AA over the card+scrim+spill worst case */
 .glabel{ font-size:13.5px; font-weight:600; color:var(--inst-text) }
 .gprompt{ font-family:var(--display); font-style:italic; font-weight:380; font-size:.82rem; line-height:1.36;
   color:var(--inst-muted) }
-/* compose-your-own card (in the gutter, beside the curated beats) — a container, not a button */
-.gchoice.compose{ cursor:default; gap:8px }
-/* "or describe your own" sits at the FOOT of the right gutter, in normal flow below the curated beats
-   (which are wrapped in .gutter-beats and grow to fill the space above). In-flow means it can never be
-   overlapped by a beat card — the old absolute-pinned version collided with the lowest card on short stages. */
+/* compose-your-own card — a container, not a button. It's the viewer's OWN VOICE at the fork, so it's set
+   apart from the cool-blue curated glimpses with a warm-copper edge (the authored/your-voice token, echoing
+   the private-stash copper) and a faint warm wash at its head — "describe your own" reads as a deliberate
+   authored act, not just one more card. */
+.gchoice.compose{ cursor:default; gap:9px;
+  border-color:color-mix(in srgb,var(--brand-warm) 32%,var(--hairline));
+  background:linear-gradient(180deg, color-mix(in srgb,var(--brand-warm) 6%,transparent), transparent 58%), rgba(12,14,21,.84) }
+.gchoice.compose .geyebrow{ color:color-mix(in srgb,var(--brand-warm) 70%,var(--inst-text)); letter-spacing:.11em }
+@media (prefers-reduced-transparency:reduce){ .gchoice.compose{ background:rgba(17,15,13,.97) } }
+/* "or describe your own" sits at the FOOT of the right gutter, in normal flow below the curated beats. */
 .gutter.right .gchoice.compose{ margin:0 }
-.gc-form{ display:flex; gap:6px; align-items:center }
-.gc-form input{ margin-top:0; padding:8px 11px; min-width:0 }
+/* the form STACKS — the typed idea gets the full width, and the two actions share the row below it, so
+   neither the words nor the buttons are cramped (in a narrow gutter OR on a phone). */
+.gc-form{ display:flex; flex-direction:column; gap:9px; align-items:stretch }
+.gc-form input{ margin-top:0; padding:10px 13px; min-width:0; width:100% }
+.gc-actions{ display:flex; gap:8px; align-items:stretch }
+/* ✦ Refine — the SECONDARY action: a blue-wash pill that PROPOSES a sharper, frame-grounded rewrite of the
+   typed idea, leaving the primary commit ("Dream it") the filled blue. 44px tall (WCAG 2.5.8). The ✦ spark
+   twinkles on hover; while the model works a sliver of light SWEEPS across it — the "sharpening" made felt. */
+.gc-actions .future-refine{ flex:1 1 auto; width:auto; min-height:44px; display:inline-flex; align-items:center;
+  justify-content:center; gap:7px; padding:0 13px; position:relative; overflow:hidden;
+  background:rgba(122,162,255,.08); color:var(--inst-text);
+  border:1px solid color-mix(in srgb,var(--inst-blue) 30%,transparent); border-radius:var(--radius-sm);
+  cursor:pointer; font-size:13.5px; font-weight:560; letter-spacing:.01em; line-height:1;
+  transition:border-color .18s ease, background .18s ease, box-shadow .2s ease }
+.gc-actions .future-refine .fr-spark{ font-size:13px; color:var(--inst-blue); transition:transform .2s ease }
+.gc-actions .future-refine:hover:not(:disabled){ border-color:var(--inst-blue); background:rgba(122,162,255,.16);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--inst-blue) 22%,transparent), 0 6px 20px -12px color-mix(in srgb,var(--inst-blue) 70%,transparent) }
+.gc-actions .future-refine:hover:not(:disabled) .fr-spark{ animation:fr-twinkle 1.05s ease-in-out infinite }
+.gc-actions .future-refine:disabled{ opacity:.42; cursor:default }
+.gc-actions .future-refine:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:2px }
+/* the sharpening sweep — a diagonal sliver of light crossing the button while the model rewrites the idea */
+.gc-actions .future-refine.is-sharpening{ color:var(--inst-blue); border-color:color-mix(in srgb,var(--inst-blue) 55%,transparent) }
+.gc-actions .future-refine.is-sharpening .fr-spark{ animation:fr-twinkle .8s ease-in-out infinite }
+.gc-actions .future-refine.is-sharpening::after{ content:''; position:absolute; inset:0; pointer-events:none;
+  background:linear-gradient(108deg, transparent 32%, color-mix(in srgb,var(--inst-blue) 34%,transparent) 50%, transparent 68%);
+  transform:translateX(-110%); animation:fr-sweep 1.15s ease-in-out infinite }
+/* Dream it → — the PRIMARY commit: filled blue, label + arrow, grows to share the row with Refine */
+.gc-actions .future-go{ flex:1 1 auto; width:auto; min-height:44px; display:inline-flex; align-items:center;
+  justify-content:center; gap:6px; padding:0 15px; font-size:13.5px; font-weight:640; letter-spacing:.01em }
+.gc-actions .future-go .fg-arrow{ font-size:15px; transition:transform .18s ease }
+.gc-actions .future-go:hover:not(:disabled) .fg-arrow{ transform:translateX(3px) }
+/* honest inline status for the refine round-trip — the model's reply, in the dream's own serif whisper */
+.gc-msg{ display:block; margin-top:7px; font-family:var(--display); font-style:italic; font-weight:380;
+  font-size:.86rem; line-height:1.35; color:color-mix(in srgb,var(--inst-blue) 28%,var(--inst-text)) }
+@keyframes fr-sweep{ to{ transform:translateX(110%) } }
+@keyframes fr-twinkle{ 0%,100%{ transform:scale(1) rotate(0) } 50%{ transform:scale(1.22) rotate(10deg) } }
+@media (prefers-reduced-motion:reduce){
+  .gc-actions .future-refine.is-sharpening::after{ animation:none; display:none }
+  .gc-actions .future-refine:hover:not(:disabled) .fr-spark,
+  .gc-actions .future-refine.is-sharpening .fr-spark{ animation:none }
+  .gc-actions .future-go:hover:not(:disabled) .fg-arrow{ transform:none } }
 /* discoverability cue: fine-pointer desktop only, shown WHILE the choices are hidden, fades as they reveal —
    a hidden primary action without a cue is a trap (review). Touch/mobile show choices always → no cue. */
 .choices-hint{ display:none }
@@ -541,6 +649,13 @@ a{ color:var(--inst-blue) }
   .gchoice .gthumb{ max-height:148px }
   .gutter-links{ display:none }
   .gutter-loading{ position:static; transform:none; align-self:center; margin:2px auto }
+  /* name the fork above the glimpse grid */
+  .choices-lede{ display:block; flex:1 1 100%; order:-1; margin:0 2px 1px; font-family:var(--display);
+    font-style:italic; font-weight:380; font-size:1.06rem; letter-spacing:-.01em; line-height:1.2;
+    color:var(--inst-text); opacity:.95; animation:lede-in .5s ease both }
+  .choices-lede::before{ content:'✦'; margin-right:.42em; font-style:normal; color:var(--inst-blue); opacity:.85 }
+  /* the warm "your voice" compose panel spans the full width, settling BELOW the glimpse paths */
+  .gchoice.compose{ flex:1 1 100%; order:1 }
 }
 
 /* S2 — "paths not taken": the unpicked options from a branched-from beat, kept faint + one click from

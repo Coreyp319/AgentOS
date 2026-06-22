@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { useBurn, useDelete, useRenameDream, useSetEngine, useStashSave } from './api'
+import { useBurn, useDelete, useRenameDream, useSetEngine, useStashSave, previewsEnabled, setPreviewsEnabled } from './api'
 import type { Readiness, Engine, StashStatus } from './api'
 
 // ADR-0028: the app's section nav — a calm, wordmark-anchored pill row that replaces the ad-hoc
@@ -69,6 +69,36 @@ export function EngineToggle({ engine }: { engine?: Engine }) {
         </div>
         <div className="note" style={{ marginTop: 8, opacity: 0.7 }}>
           Applies on the next beat — switching drops the warm GPU lease so it re-sizes safely.
+        </div>
+      </div>
+    </details>
+  )
+}
+
+// ADR-0023 (privacy consult 2026-06-21): opt-in toggle for per-choice "potential path" previews. OFF by
+// default — the feature renders a still of paths you may NOT take on your own GPU (warmth, fan-noise), so the
+// user chooses, with an honest one-line disclosure. The preference is client-side (localStorage, never written
+// into a dream); the server independently refuses previews during a private dream regardless of this switch.
+export function PreviewToggle() {
+  const [on, setOn] = useState(previewsEnabled())
+  const set = (next: boolean) => { setPreviewsEnabled(next); setOn(next) }
+  return (
+    <details className="card disc">
+      <summary className="disc-sum">
+        <span className="disc-k">Path previews</span>
+        <span className="disc-v">{on ? 'On' : 'Off'}</span>
+        <span className="disc-caret" aria-hidden="true">▾</span>
+      </summary>
+      <div className="disc-body">
+        <div className="row" role="group" aria-label="Path previews">
+          <button className={'beat' + (on ? '' : ' ghost')} aria-pressed={on}
+            onClick={() => { if (!on) set(true) }}><b>On</b><small>A still of each path</small></button>
+          <button className={'beat' + (!on ? '' : ' ghost')} aria-pressed={!on}
+            onClick={() => { if (on) set(false) }}><b>Off</b><small>Just the current frame</small></button>
+        </div>
+        <div className="note" style={{ marginTop: 8, opacity: 0.7 }}>
+          When a clip ends, quietly render a still of where each choice could go — on the graphics card you're
+          already dreaming on, so it runs warm and may spin the fan. Off by default; never runs during a private dream.
         </div>
       </div>
     </details>

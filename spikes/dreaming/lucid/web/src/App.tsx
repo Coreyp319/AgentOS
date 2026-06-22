@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLucidState } from './api'
 import type { LucidState, TurnPhase } from './api'
-import { ReadinessCard, ReadyChip, PrivateCard, LibraryCard, EngineToggle, Nav } from './components'
+import { ReadinessCard, ReadyChip, PrivateCard, LibraryCard, EngineToggle, PreviewToggle, Nav } from './components'
 import { DreamGallery, StashPanel } from './Library'
 import QueuePanel from './QueuePanel'
 import Start from './Start'
@@ -140,6 +140,7 @@ export default function App() {
             <>
               <h2 className="lib-head" data-view-heading tabIndex={-1}><span>Settings</span></h2>
               <EngineToggle engine={s.engine} />
+              <PreviewToggle />
               <p className="lib-empty" style={{ marginTop: 12 }}>
                 Saving, renaming, and deleting live with each dream — open one to manage it.
               </p>
