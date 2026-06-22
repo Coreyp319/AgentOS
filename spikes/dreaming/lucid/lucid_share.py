@@ -689,23 +689,29 @@ def _render_receipt(r: dict, dream_origin: "str | None" = None) -> str:
 _ICON_CACHE: "dict[int, bytes]" = {}
 
 
+_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "share_assets")
+
+
 def _icon(size: int) -> bytes:
+    """The unified AgentOS PWA icon (regenerate via integrations/design/make_pwa_icons.py) — the
+    Share glyph (an arrow into a tray) on the shared instrument plate, full-bleed for maskable.
+    Served from share_assets/; if that's missing, fall back to a minimal inline plate so the PWA
+    still has an icon."""
     if size in _ICON_CACHE:
         return _ICON_CACHE[size]
-    from PIL import Image, ImageDraw
-    img = Image.new("RGB", (size, size), (11, 13, 20))
-    d = ImageDraw.Draw(img)
-    for y in range(size):                                   # soft aurora wash
-        t = y / size
-        d.line([(0, y), (size, y)],
-               fill=(int(15 + 22 * t), int(20 + 30 * t), int(40 + 70 * t)))
-    r = size // 5                                           # a calm blue ring (the one accent)
-    d.ellipse([size//2 - r, size//2 - r, size//2 + r, size//2 + r],
-              outline=(91, 140, 255), width=max(2, size // 32))
-    out = io.BytesIO()
-    img.save(out, "PNG")
-    _ICON_CACHE[size] = out.getvalue()
-    return _ICON_CACHE[size]
+    try:
+        with open(os.path.join(_ICON_DIR, f"icon-{size}.png"), "rb") as fh:
+            data = fh.read()
+    except OSError:
+        from PIL import Image, ImageDraw
+        img = Image.new("RGB", (size, size), (18, 20, 28))
+        d = ImageDraw.Draw(img)
+        r = size // 5                                       # minimal fallback: a calm blue ring
+        d.ellipse([size//2 - r, size//2 - r, size//2 + r, size//2 + r],
+                  outline=(140, 176, 255), width=max(2, size // 32))
+        out = io.BytesIO(); img.save(out, "PNG"); data = out.getvalue()
+    _ICON_CACHE[size] = data
+    return data
 
 
 # ---- HTTP handler -----------------------------------------------------------
