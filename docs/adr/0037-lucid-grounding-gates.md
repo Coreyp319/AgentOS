@@ -255,8 +255,15 @@ architecture (promoted here to the *primary* update model).
   (`/api/state` over Tailscale), `security-reviewer` (canon-in-stash crypto — no new primitive),
   `reversibility-tx-reviewer` (corrupt/rejected-ledger reverts cleanly), `resource-safety-reviewer`
   (next-turn-`ground_frame` fold is truly residency-free vs `force_evict` at `:772`).
-- Pure functions (L0 ledger-merge, L2 histogram-correlation) land in `lucid_ground.py` with unit
-  tests to the `derive_feed` bar; branch/revert pinned as O(spine) off-lease text passes.
+- **BUILT 2026-06-21 (pure, NOT wired):** `lucid_ground.py` holds the deterministic cores —
+  `merge_canon` (the dispose), the hybrid `extract_time_of_day`/`extract_mood` + `update_canon`
+  orchestrator (code owns when/feel, the LLM delta owns who/what/story — the LLM's time/mood are
+  stripped at the boundary), `canon_to_context` (the line that replaces the labels join), and the L2
+  `palette_drift`/`palette_verdict` (cv2-in-venv, fail-closed-None, writes no file). 19/19 unit tests
+  (`test_lucid_ground_canon.py`) + live cv2 check (identical→steady, red/blue→shifted, missing→unknown).
+  **Integration into `lucid_linear` (`context_for`/`step`) is the next step — still GATED** on the
+  on-box `--full --runs 20` gate + the `/api/state` egress decision. Branch/revert pinned as O(spine)
+  off-lease text passes (owed at integration).
 
 ## Seams (verified against live code, 2026-06-21)
 - `lucid_linear.py:990` — `gate_prompt` red-line (safety authority; the ledger/flag are NOT this).
