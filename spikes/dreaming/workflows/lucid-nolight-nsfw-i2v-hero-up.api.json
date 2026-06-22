@@ -1,0 +1,253 @@
+{
+  "uh": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "wan22_enhNSFW_nolight_cf_Q6K_high.gguf"
+    }
+  },
+  "ul": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "wan22_enhNSFW_nolight_cf_Q6K_low.gguf"
+    }
+  },
+  "clip": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "nsfw_wan_umt5-xxl_fp8_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    }
+  },
+  "vae": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    }
+  },
+  "pos": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "clip",
+        0
+      ],
+      "text": "__PROMPT__"
+    }
+  },
+  "neg": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "clip",
+        0
+      ],
+      "text": "blurry, low quality, distorted face, bad anatomy, extra limbs, extra fingers, fused fingers, deformed, disfigured, malformed limbs, mutated hands, missing fingers, poorly drawn hands, poorly drawn face, duplicate limbs, merged bodies, watermark, text, plastic skin, wax face, cgi"
+    }
+  },
+  "img": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "__INIT__"
+    }
+  },
+  "i2v": {
+    "class_type": "WanImageToVideo",
+    "inputs": {
+      "width": 576,
+      "height": 1024,
+      "length": 49,
+      "batch_size": 1,
+      "positive": [
+        "pos",
+        0
+      ],
+      "negative": [
+        "neg",
+        0
+      ],
+      "vae": [
+        "vae",
+        0
+      ],
+      "start_image": [
+        "img",
+        0
+      ]
+    }
+  },
+  "mh": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "model": [
+        "lh",
+        0
+      ],
+      "shift": 8.0
+    }
+  },
+  "ml": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "model": [
+        "ll",
+        0
+      ],
+      "shift": 8.0
+    }
+  },
+  "kh": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": [
+        "mh",
+        0
+      ],
+      "add_noise": "enable",
+      "noise_seed": 1,
+      "steps": 20,
+      "cfg": 3.5,
+      "sampler_name": "euler",
+      "scheduler": "beta",
+      "positive": [
+        "i2v",
+        0
+      ],
+      "negative": [
+        "i2v",
+        1
+      ],
+      "latent_image": [
+        "i2v",
+        2
+      ],
+      "start_at_step": 0,
+      "end_at_step": 10,
+      "return_with_leftover_noise": "enable"
+    }
+  },
+  "kl": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": [
+        "ml",
+        0
+      ],
+      "add_noise": "disable",
+      "noise_seed": 1,
+      "steps": 20,
+      "cfg": 3.5,
+      "sampler_name": "euler",
+      "scheduler": "beta",
+      "positive": [
+        "i2v",
+        0
+      ],
+      "negative": [
+        "i2v",
+        1
+      ],
+      "latent_image": [
+        "kh",
+        0
+      ],
+      "start_at_step": 10,
+      "end_at_step": 10000,
+      "return_with_leftover_noise": "disable"
+    }
+  },
+  "dec": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "kl",
+        0
+      ],
+      "vae": [
+        "vae",
+        0
+      ]
+    }
+  },
+  "vid": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": [
+        "up",
+        0
+      ],
+      "frame_rate": 16,
+      "loop_count": 0,
+      "filename_prefix": "i2v_nolight_test",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "pingpong": false,
+      "save_output": true
+    }
+  },
+  "lh": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "ih",
+        0
+      ],
+      "lora_name": "NSFW-22-H-e8.safetensors",
+      "strength_model": 0.0
+    }
+  },
+  "ll": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "il",
+        0
+      ],
+      "lora_name": "NSFW-22-L-e8.safetensors",
+      "strength_model": 0.6
+    }
+  },
+  "ih": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "uh",
+        0
+      ],
+      "lora_name": "Instareal_high.safetensors",
+      "strength_model": 0.0
+    }
+  },
+  "il": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "ul",
+        0
+      ],
+      "lora_name": "Instareal_low.safetensors",
+      "strength_model": 0.7
+    }
+  },
+  "upmodel": {
+    "class_type": "UpscaleModelLoader",
+    "inputs": {
+      "model_name": "RealESRGAN_x2plus.pth"
+    }
+  },
+  "up": {
+    "class_type": "ImageUpscaleWithModel",
+    "inputs": {
+      "upscale_model": [
+        "upmodel",
+        0
+      ],
+      "image": [
+        "dec",
+        0
+      ]
+    }
+  }
+}
