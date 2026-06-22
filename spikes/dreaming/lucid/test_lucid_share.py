@@ -30,6 +30,7 @@ os.environ.pop("HERMES_API_KEY", None)
 import lucid_share as S  # noqa: E402
 
 _LAST = {}
+_MOCK = {"resp": None}   # set to a dict to override the default ok response (B2-blocked verdict tests)
 
 
 class _Mock(BaseHTTPRequestHandler):
@@ -42,7 +43,7 @@ class _Mock(BaseHTTPRequestHandler):
         _LAST["path"] = self.path
         _LAST["share_key"] = self.headers.get("X-Share-Key")
         _LAST["body"] = body
-        out = json.dumps({"ok": True, "session": "sess_test", "private": False}).encode()
+        out = json.dumps(_MOCK["resp"] or {"ok": True, "session": "sess_test", "private": False}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
@@ -96,6 +97,33 @@ def test_lucid_door_sends_share_key():
     base64.b64decode(_LAST["body"]["image_b64"], validate=True)
     assert _LAST["body"].get("name") == "a calm aurora"
     print("ok  lucid door: proxies /api/start with X-Share-Key + clean image")
+
+
+def test_lucid_door_consent_parity():
+    # the mobile-share gap: a real-person photo was a dead end on the phone (no way to assert rights).
+    # The door must now (a) forward `consent` to /api/start, (b) surface `requires_consent` so the PWA
+    # can offer the gate, and (c) keep the minor red-line a HARD block that consent cannot override.
+    clean = S._clean_image(_jpeg(exif=False))
+    try:
+        # real person, no consent yet → overridable block, consent=False forwarded verbatim
+        _MOCK["resp"] = {"blocked": True, "ok": False, "requires_consent": True,
+                         "reason": "A real person was detected."}
+        r = S.door_lucid(clean, "x", consent=False)
+        assert r["ok"] is False and r["blocked"] is True and r["requires_consent"] is True, r
+        assert _LAST["body"].get("consent") is False, "consent=False must be forwarded as given"
+        # explicit consent → forwarded as True; upstream now allows
+        _MOCK["resp"] = {"ok": True, "session": "sess_ok"}
+        r2 = S.door_lucid(clean, "x", consent=True)
+        assert r2["ok"] is True, r2
+        assert _LAST["body"].get("consent") is True, "consent=True must be forwarded to /api/start"
+        # minor red-line → hard block; requires_consent is False even though we sent consent=True
+        _MOCK["resp"] = {"blocked": True, "ok": False, "requires_consent": False,
+                         "reason": "This may be a minor."}
+        r3 = S.door_lucid(clean, "x", consent=True)
+        assert r3["ok"] is False and r3["blocked"] is True and r3["requires_consent"] is False, r3
+    finally:
+        _MOCK["resp"] = None     # restore the default ok response for the live tests that follow
+    print("ok  lucid door: forwards consent + surfaces requires_consent (minor stays a hard block)")
 
 
 def test_claude_door_is_inert():
@@ -261,6 +289,19 @@ def test_live_capture_page_csp_no_remote_fonts(base):
     print("ok  capture page(live): CSP present, zero remote fonts, links to the receipt")
 
 
+def test_capture_page_has_consent_gate(base):
+    # the fix for the reported bug: the PWA must branch on requires_consent and present the canonical
+    # consent affordance (so a real-person photo is no longer a dead end on the phone), and send() must
+    # forward consent to /share. Static page assertions (the JS itself needs a browser to exercise).
+    code, body, _ = _get(base + "/")
+    assert code == 200, code
+    assert "I have the right to use this image" in body, "canonical consent copy must be present"
+    assert "requires_consent" in body, "send() must branch on requires_consent to offer the gate"
+    assert "consent:!!consent" in body, "send() must forward the consent assertion to /share"
+    assert "function consentGate" in body, "the inline consent gate must be defined"
+    print("ok  capture page: consent gate present (requires_consent → 'I have the right' affordance)")
+
+
 def test_live_malformed_receipt_id_404(base):
     for bad in ("..%2f..%2fetc%2fpasswd", "a/b/c", "x" * 220):
         code, _, _ = _get(base + "/r/" + bad)
@@ -333,6 +374,7 @@ def main():
     test_clean_strips_exif_and_orients()
     test_clean_rejects_oversize_dims()
     test_lucid_door_sends_share_key()
+    test_lucid_door_consent_parity()
     test_claude_door_is_inert()
     test_inbox_sweeps_expired()
     test_unbuilt_doors_fail_honestly()
@@ -348,6 +390,7 @@ def main():
     test_live_roundtrip_drops_caption_has_csp(base)
     test_live_unknown_and_expired_both_404(base)
     test_live_capture_page_csp_no_remote_fonts(base)
+    test_capture_page_has_consent_gate(base)
     test_live_malformed_receipt_id_404(base)
     test_live_receipt_nojs_href_from_forwarded_host(base)
     test_live_token_requires_origin(base)

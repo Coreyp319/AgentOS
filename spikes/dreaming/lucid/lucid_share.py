@@ -167,18 +167,23 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float = 30.0) -> tu
         return 0, {"error": f"unreachable: {e.reason}"}
 
 
-def door_lucid(jpeg: bytes, caption: str) -> dict:
+def door_lucid(jpeg: bytes, caption: str, consent: bool = False) -> dict:
     """Start a Lucid dream from the photo by proxying to lucid_web /api/start with X-Share-Key.
-    lucid_web re-runs its own EXIF strip + B2 likeness gate inside start() — we don't bypass it."""
+    lucid_web re-runs its own EXIF strip + B2 likeness gate inside start() — we don't bypass it.
+    `consent` forwards the explicit 'I am this person / I hold the rights' assertion so a real-person
+    verdict is overridable on the phone exactly as it already is in the web app (ADR-0017). We surface
+    `requires_consent` so the PWA can offer that gate; the minor red-line stays a hard block
+    (requires_consent=False) and consent cannot override it — the server enforces both."""
     b64 = base64.b64encode(jpeg).decode()
     name = (caption or "").strip()[:80] or None
     code, j = _post_json(f"{LUCID_BASE}/api/start",
-                         {"image_b64": b64, "name": name, "private": False},
+                         {"image_b64": b64, "name": name, "private": False, "consent": bool(consent)},
                          {"X-Share-Key": SHARE_KEY})
     if code == 0:
         return {"ok": False, "reason": "the dream service isn't reachable right now"}
-    if j.get("blocked"):     # B2 likeness gate fired (real person / minor, no consent)
+    if j.get("blocked"):     # B2 likeness gate fired (real person → overridable; minor → hard block)
         return {"ok": False, "blocked": True,
+                "requires_consent": bool(j.get("requires_consent")),
                 "reason": j.get("reason") or "that image can't seed a dream (a real person was detected)"}
     if j.get("error"):
         return {"ok": False, "reason": j["error"]}
@@ -188,7 +193,7 @@ def door_lucid(jpeg: bytes, caption: str) -> dict:
     return {"ok": False, "reason": "the dream service returned an unexpected response"}
 
 
-def door_hermes_chat(jpeg: bytes, caption: str) -> dict:
+def door_hermes_chat(jpeg: bytes, caption: str, consent: bool = False) -> dict:
     """Send the photo + caption to Hermes as a multimodal chat message (data->orchestrator).
     Irreversible by nature; the receipt discloses that. Hermes' key stays on-box (env, never logged)."""
     if not HERMES_API_KEY:
@@ -209,7 +214,7 @@ def door_hermes_chat(jpeg: bytes, caption: str) -> dict:
     return {"ok": True, "dest": "hermes-chat", "session": sid, "irreversible": True}
 
 
-def door_hermes_task(jpeg: bytes, caption: str) -> dict:
+def door_hermes_task(jpeg: bytes, caption: str, consent: bool = False) -> dict:
     """Phase 2 (ADR-0027): create a kanban task. The task-write mechanism (shell Hermes' own
     `kanban` CLI, the pinned default) is unconfirmed, so we DO NOT fake success — honest 'not yet'.
     Wiring this is gated on the human confirming the exact argv + the schema probe."""
@@ -217,7 +222,7 @@ def door_hermes_task(jpeg: bytes, caption: str) -> dict:
             "reason": "Hermes tasks aren't enabled yet — the task-write bridge is Phase 2 (needs sign-off)"}
 
 
-def door_claude(jpeg: bytes, caption: str) -> dict:
+def door_claude(jpeg: bytes, caption: str, consent: bool = False) -> dict:
     """Phase 3 (ADR-0027): write an INERT proposal file for desktop approval. THIS FILE NEVER
     EXECUTES claude -p. The caption is stored verbatim, clearly labeled untrusted phone input.
     A separate, human-approved desktop step (behind the blocking review gate) would act on it."""
@@ -408,6 +413,20 @@ h1 em{font-style:italic;color:var(--cool)}
  font:400 15.5px/1.45 var(--serif)}
 .msg.ok{border-color:rgba(138,169,255,.4);color:#cdd9ff}
 .msg.bad{border-color:rgba(255,120,120,.4);color:#ffc4c4}
+/* consent gate: a deliberate pause (real-person likeness), NOT an error — calm, cool, never red */
+.msg.gate{border-color:var(--line2);background:var(--panel2)}
+.gate .gr{margin:0 0 13px;color:var(--ink);font:400 15.5px/1.45 var(--serif)}
+.att{display:flex;gap:11px;align-items:flex-start;cursor:pointer;margin:0 0 15px;
+ font:400 14.5px/1.4 var(--sans);color:var(--ink);-webkit-tap-highlight-color:transparent}
+.att input{flex:none;width:20px;height:20px;margin-top:1px;accent-color:var(--cool)}
+.gacts{display:flex;gap:10px;justify-content:flex-end}
+.gbtn{min-height:44px;border:1px solid var(--line2);background:transparent;color:var(--ink);
+ border-radius:13px;padding:11px 17px;font:560 15px var(--serif);cursor:pointer;
+ -webkit-tap-highlight-color:transparent;transition:transform .07s,opacity .2s}
+.gbtn:active{transform:scale(.98)}
+.gbtn.cont{border:0;color:#0a1024;background:linear-gradient(180deg,var(--cool),var(--cool-d))}
+.gbtn[disabled]{opacity:.34;cursor:default}
+.gbtn:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
 .msg .open{display:inline-block;margin-top:9px;font:500 12px var(--mono);letter-spacing:.06em;
  color:var(--cool);text-decoration:none;border-bottom:1px solid rgba(138,169,255,.4);padding-bottom:1px}
 .foot{margin:22px 2px 0;font:400 10.5px/1.6 var(--mono);letter-spacing:.08em;color:var(--dim);text-transform:uppercase}
@@ -462,16 +481,16 @@ function dreamUrl(){const p=(LP==='80'||LP==='443')?'':':'+LP;return location.pr
 function reset(){b64=null;dest=null;prev.hidden=true;prev.removeAttribute('src');ph.hidden=false;
   frame.classList.remove('developed');cap.value='';out.innerHTML='';file.value='';
   doors.forEach(x=>x.setAttribute('aria-checked',false));
-  go.textContent='Send to your box';go.onclick=send;go.disabled=true}
+  go.textContent='Send to your box';go.style.display='';go.onclick=()=>send();go.disabled=true}
 file.onchange=()=>{const f=file.files&&file.files[0];if(!f)return;
   const fr=new FileReader();fr.onload=()=>{b64=String(fr.result).split(',')[1];
     prev.src=fr.result;prev.hidden=false;ph.hidden=true;frame.classList.remove('developed');refresh()};
   fr.readAsDataURL(f)};
 doors.forEach(d=>d.onclick=()=>{dest=d.dataset.dest;doors.forEach(x=>x.setAttribute('aria-checked',x===d));refresh()});
-async function send(){go.disabled=true;out.innerHTML='<div class=msg>Developing…</div>';
+async function send(consent){go.disabled=true;out.innerHTML='<div class=msg>Developing…</div>';
   try{
     const r=await fetch('/share',{method:'POST',headers:{'Content-Type':'application/json','X-Share-Token':CSRF},
-      body:JSON.stringify({dest,image_b64:b64,caption:cap.value})});
+      body:JSON.stringify({dest,image_b64:b64,caption:cap.value,consent:!!consent})});
     const j=await r.json();
     if(j.ok){
       frame.classList.add('developed');                       // the develop, not a spinner
@@ -482,12 +501,34 @@ async function send(){go.disabled=true;out.innerHTML='<div class=msg>Developing�
       const links=[open,rcpt].filter(Boolean).join(' · ');
       out.innerHTML='<div class="msg ok">'+(j.message||'Done.')+(links?'<br>'+links:'')+'</div>';
       go.textContent='Send another';go.onclick=reset;go.disabled=false;
+    }else if(j.requires_consent){
+      consentGate(j.reason);                                  // overridable real-person verdict — offer the gate
     }else{
       out.innerHTML='<div class="msg bad">'+(j.reason||j.error||'Could not send.')+'</div>';go.disabled=false;
     }
   }catch(e){out.innerHTML='<div class="msg bad">The box didn’t answer. Check Tailscale and try again.</div>';go.disabled=false}
 }
-go.onclick=send;
+// the consent moment (B2 real-person likeness): a deliberate, checkbox-gated pause that re-sends with
+// consent=true. The reason is server text, set via textContent (never innerHTML) so it can't inject.
+// The minor red-line never reaches here — it returns blocked WITHOUT requires_consent (hard refusal).
+function consentGate(reason){
+  out.innerHTML='<div class="msg gate" role=group aria-label="Confirm you may use this image">'
+    +'<p class=gr></p>'
+    +'<label class=att><input type=checkbox id=att>'
+    +'<span>I am this person, or I have the right to use this image.</span></label>'
+    +'<div class=gacts>'
+    +'<button class=gbtn id=gcancel type=button>Choose another</button>'
+    +'<button class="gbtn cont" id=gcont type=button disabled>Continue</button>'
+    +'</div></div>';
+  out.querySelector('.gr').textContent=reason||'A real person was detected in this photo.';
+  go.style.display='none';                                    // the gate owns the action while it's open
+  const att=document.getElementById('att'),cont=document.getElementById('gcont'),cancel=document.getElementById('gcancel');
+  att.onchange=()=>{cont.disabled=!att.checked};
+  cont.onclick=()=>{out.innerHTML='';go.style.display='';send(true)};   // explicit consent → re-send
+  cancel.onclick=()=>{out.innerHTML='';go.style.display='';go.disabled=false};  // dismiss; keep photo + pick another door
+  att.focus();
+}
+go.onclick=()=>send();
 </script></body></html>"""
 
 
@@ -776,7 +817,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(200, json.dumps({"ok": False, "reason": f"invalid image: {e}"}),
                                   "application/json")
-            result = DOOR_FN[dest](jpeg, caption)
+            # consent is the explicit 'I have the right to this image' assertion; only the lucid
+            # door's B2 likeness gate consumes it (the others accept-and-ignore for a uniform contract).
+            result = DOOR_FN[dest](jpeg, caption, consent=bool(req.get("consent")))
         finally:
             _DECODE_SEM.release()
 
