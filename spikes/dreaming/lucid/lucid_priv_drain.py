@@ -99,25 +99,25 @@ def _session_lock(session):
     return lock
 
 
-def drain_private_one(session, runner):
+def drain_private_one(session, runner, *, now=None):
     """Drain ONE eligible held for a SINGLE private session under its per-session flock: recover orphans
     → FIFO-by-seq → claim + run ONE eligible held via the injected `runner(rec)->outcome` → SILENT-BURN
     writeback. Returns (id, outcome, disposition) for the job run, else None (nothing eligible / session
-    burned / lock contended).
+    burned / lock contended). `now` (ADR-0036 I9): inject the clock for a replayable tick; None ⇒ wall.
 
     Every terminal here is `lucid_priv_queue.writeback`, whose non-retry branch calls `purge` (the
     silent burn): a retry-exhausted or human-cause private record can ONLY end as "burned-silent" or a
     live "held" — there is no review/needs-review/ambient edge reachable from this function."""
+    now = time.time() if now is None else now
     lock = _session_lock(session)
     if lock is None:
         return None
     try:
         # crash recovery first, provably under our flock. recover_crashed itself silently burns the
         # session if recovery would have re-filed a record as needs-review (it never leaves a review row).
-        _recovered, burned = PQ.recover_crashed(session)
+        _recovered, burned = PQ.recover_crashed(session, now=now)
         if burned:
             return (session, "recover-burned", "burned-silent")
-        now = time.time()
         for rec in PQ.drain_order(session):           # strict arrival FIFO (anti-scheduler holds here too)
             if rec.get("next_retry_after", 0) > now:
                 continue                              # backoff floor — eligibility, NOT an ordering key
@@ -128,7 +128,7 @@ def drain_private_one(session, runner):
                 outcome = runner(claimed)
             except Exception:
                 outcome = "priv-drain-error"          # never lose the request to a runner exception
-            disp = PQ.writeback(session, claimed, outcome)   # SILENT-BURN terminal (never review.json)
+            disp = PQ.writeback(session, claimed, outcome, now=now)   # SILENT-BURN terminal (never review.json)
             return (rec["id"], outcome, disp)
         return None                                   # ONE eligible job per session per tick
     finally:
@@ -225,9 +225,13 @@ def _governed_private_runner(rec):
         if not snapshot or not os.path.isfile(snapshot):
             return "no-snapshot"                      # the sealed snapshot vanished — re-hold, never re-fetch
         session = rec["id"]                            # the record id IS the session id for the re-run
+        frozen = rec.get("frozen") or {}               # ADR-0036 D5: frozen prompt+seed from the sealed record
+        # Unlike the durable ONESHOT drainer, we do NOT pin the engine (no E.set_engine): this runs
+        # IN-PROCESS in the web app, so mutating the global engine could disrupt a concurrent live dream.
+        # Private retries are in-session / short-lived, so registry drift within a session is unlikely.
         # B2 already cleared this seed at hold → _trusted_seed=True (do NOT re-run B2, no consent edge).
-        L.start(session, snapshot, private=True, _trusted_seed=True)
-        gated = S.gate_prompt(MOTION_PROMPT)
+        L.start(session, snapshot, private=True, _trusted_seed=True, seed=frozen.get("seed"))
+        gated = S.gate_prompt(frozen.get("prompt") or MOTION_PROMPT)   # frozen prompt; constant only for legacy
         if gated is None:                              # defensive: the neutral motion prompt should pass
             return "prompt-blocked"
         node = L.step(session, gated, label="animate", tier="best-effort")

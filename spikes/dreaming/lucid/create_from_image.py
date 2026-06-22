@@ -43,6 +43,7 @@ import lucid_safety as S   # noqa: E402  (the deterministic prompt gate)
 import lucid_store as ST   # noqa: E402  (private/ephemeral storage hygiene — ADR-0016)
 import lucid_jobs as J     # noqa: E402  (visible queue for NON-private creations — the :8765 board)
 import lucid_queue as Q    # noqa: E402  (durable deferral spool — held instead of dropped, ADR-0019 §5)
+import lucid_priv_queue as PQ  # noqa: E402  (ADR-0019 §5 / ADR-0036 D9: EPHEMERAL private hold — tmpfs, burns on logout)
 import lucid_toast as T    # noqa: E402  (G5 recovery-toast: persist-first a11y view over a held row, ADR-0019)
 
 APP = "AgentOS · Create"
@@ -209,6 +210,36 @@ def _job(job_id, **fields):
         pass
 
 
+def _hold_private(session, local):
+    """ADR-0019 §5 / ADR-0036 D9: a PRIVATE create that can't run now is HELD in the EPHEMERAL,
+    tmpfs-only private queue (`lucid_priv_queue`) — NEVER the durable spool — so the in-session
+    private drainer re-runs it on a best-effort lease, instead of the old silent skip. It burns on
+    logout; no durable trace, no review surface — only an action-less, transient notice
+    (`T.notify_private`), the private carve-out the privacy ruling requires.
+
+    The held record's id IS the session (the private drainer re-runs `L.start(rec["id"], ...)`), so we
+    pass `session` as both. `ST.ensure_session(..., private=True)` MUST precede `PQ.hold` — the latter
+    asserts `ST.is_private(session)`, which only becomes true once the sealed tmpfs session dir exists.
+    That ordering is LOAD-BEARING at the coordinator-down site (which runs BEFORE `L.start` would have
+    sealed the session) and an idempotent no-op at the GPU-busy site (where `L.start` already sealed it).
+    The offline-private test pins it: drop/reorder this `ensure_session` and that test fails (it is the
+    case where this call is the only seal). FAIL-OPEN (ADR-0003): any failure returns False so the caller
+    falls back to the calm skip — a private hold is never allowed to crash or to leak a durable row.
+    Returns True iff the request was held ephemerally."""
+    try:
+        ST.ensure_session(session, private=True)              # seal the tmpfs session so is_private(session) holds
+        PQ.hold(session, session, "Create from image", local,  # id == session; snapshot sealed into the tmpfs subdir
+                frozen=L.freeze_intent(MOTION_PROMPT))          # ADR-0036 D5: freeze the intent so the private drainer reads it
+    except Exception as e:
+        print(f"[create] private hold failed, falling back to skip: {e}", file=sys.stderr)
+        return False
+    try:
+        T.notify_private("Create from image")                 # action-less, transient, RAM-only (burns on logout)
+    except Exception as te:
+        print(f"[create] private held notice failed (hold is safe): {te}", file=sys.stderr)
+    return True
+
+
 def gate_seed(local_path, pre_consent, job_id=None):
     """Run B2 and DECIDE, surfacing each outcome honestly. Returns True only if cleared to generate.
 
@@ -296,7 +327,7 @@ def run(arg, private, pre_consent=False):
         if not coordinator_up():
             if not private and job_id:
                 try:
-                    rec = Q.enqueue(job_id, "Create from image", local)   # held; returns the durable record; copies the PNG before the finally unlinks it
+                    rec = Q.enqueue(job_id, "Create from image", local, frozen=L.freeze_intent(MOTION_PROMPT))   # held; durable record + ADR-0036 D5 frozen intent
                     _job(job_id, status="held", detail="waiting — graphics turn-taking is starting up")
                     # G5 (ADR-0019 §5): persist-FIRST (enqueue above fsynced the row) then show the
                     # recovery toast as a VIEW over that already-durable record — "Run when free /
@@ -318,6 +349,10 @@ def run(arg, private, pre_consent=False):
                         print(f"[create] enqueue-failed toast failed: {te}", file=sys.stderr)
                     _job(job_id, status="skipped", detail="graphics turn-taking is offline")
                     return 0
+            elif private and _hold_private(session, local):
+                # ADR-0036 D9: a PRIVATE couldn't-run-now is HELD in the EPHEMERAL tmpfs queue (the
+                # in-session private drainer re-runs it; it burns on logout) — not the old silent skip.
+                return 0
             _job(job_id, status="skipped", detail="graphics turn-taking is offline")
             notify("Dreaming is offline — skipping" + tag,
                    "The GPU coordinator isn't running, so the video wasn't created. It never "
@@ -342,11 +377,12 @@ def run(arg, private, pre_consent=False):
         if node is None:                         # generate_video fell open (GPU busy / preempted / ComfyUI cold)
             # ADR-0019 §5: a couldn't-run-now request is HELD, not dropped. For a NON-private creation we
             # snapshot the already-sanitized PNG into the durable spool so the drainer re-runs it later on
-            # a Tier::BestEffort lease — the user never has to click again. (Private has no durable spool;
-            # its ephemeral retry queue is gated on the private-mode conditions, so it keeps the calm skip.)
+            # a Tier::BestEffort lease — the user never has to click again. ADR-0036 D9: a PRIVATE creation
+            # is HELD in the EPHEMERAL tmpfs queue (lucid_priv_queue) instead — its in-session drainer
+            # re-runs it on a best-effort lease and it burns on logout; no durable trace, no review surface.
             if not private and job_id:
                 try:
-                    rec = Q.enqueue(job_id, "Create from image", local)   # held; returns the durable record; copies the PNG before the finally unlinks it
+                    rec = Q.enqueue(job_id, "Create from image", local, frozen=L.freeze_intent(MOTION_PROMPT))   # held; durable record + ADR-0036 D5 frozen intent
                     _job(job_id, status="held", detail="waiting for the graphics card")
                     # G5 (ADR-0019 §5): persist-FIRST, then the recovery toast as a VIEW over the durable
                     # held row — "Run when free / Cancel" a11y actions, not a plain notify. Fail-open: the
@@ -365,6 +401,8 @@ def run(arg, private, pre_consent=False):
                         print(f"[create] enqueue-failed toast failed: {te}", file=sys.stderr)
                     _job(job_id, status="skipped", detail="the graphics card was busy")
                     return 0
+            elif private and _hold_private(session, local):
+                return 0                         # ADR-0036 D9: held in the ephemeral private queue, not skipped
             _job(job_id, status="skipped", detail="the graphics card was busy")
             notify("The GPU is busy — skipped for now" + tag,
                    "Lucid waits its turn and won't interrupt you. Try again shortly.")

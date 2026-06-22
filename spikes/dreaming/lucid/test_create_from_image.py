@@ -166,7 +166,7 @@ def _install_run_harness(rec, *, coordinator, b2_flags=None, b2_verdict=None,
         def _enq(job_id, title, snapshot_src=None, **k):
             snap_ok = bool(snapshot_src) and os.path.isfile(snapshot_src)
             rec.enqueued.append((job_id, title, snap_ok))
-            return _orig_enqueue(job_id, title, snapshot_src, spool=spool)
+            return _orig_enqueue(job_id, title, snapshot_src, spool=spool, **k)   # forward frozen= (ADR-0036 D5)
         Q.enqueue = _enq
 
     # Storage hygiene + governed generation — no-ops / trip the "generated" flag.
@@ -238,29 +238,60 @@ with tempfile.TemporaryDirectory() as spool:
     check("offline non-private -> no enqueue-failed toast on the success path", rec.failed_toasts == 0)
     # the durable spool actually holds a record + its sanitized snapshot
     import glob as _glob
+    import json as _json
     check("offline non-private -> a *.held.json exists on disk", len(_glob.glob(os.path.join(spool, "*.held.json"))) == 1)
     check("offline non-private -> the snapshot .png exists on disk", len(_glob.glob(os.path.join(spool, "*.png"))) == 1)
+    # ADR-0036 D5: the held record carries the FROZEN intent; the frozen prompt equals the motion
+    # constant (so the drain is byte-identical), and it carries a seed + engine for deterministic re-run.
+    _hr = _json.load(open(_glob.glob(os.path.join(spool, "*.held.json"))[0]))
+    check("offline non-private -> held record carries the frozen intent (ADR-0036 D5)",
+          isinstance(_hr.get("frozen"), dict))
+    check("offline non-private -> frozen prompt == the motion constant (byte-identical drain)",
+          _hr.get("frozen", {}).get("prompt") == C.MOTION_PROMPT)
+    check("offline non-private -> frozen intent carries a seed + engine",
+          isinstance(_hr.get("frozen", {}).get("seed"), int) and bool(_hr["frozen"].get("engine")))
 
 
-# --- coordinator OFFLINE, PRIVATE -> calm SKIP, never enters the durable spool ----------------------
-with tempfile.TemporaryDirectory() as spool:
-    rec = _Recorder()
-    _install_run_harness(rec, coordinator=False,
-                         b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
-                         spool=spool)
-    rc = C.run(SEED_URL, private=True)
-    check("offline private -> rc 0 (calm)", rc == 0)
-    check("offline private -> NOT enqueued (no durable spool for private)", len(rec.enqueued) == 0)
-    check("offline private -> never generated", rec.generated is False)
-    import glob as _glob
-    check("offline private -> nothing written to the durable spool", len(_glob.glob(os.path.join(spool, "*.held.json"))) == 0)
-    # G5 carve-out (ADR-0019 §5 PRIVATE): a private deferral has NO durable row, so it must NEVER pass
-    # a record to a record-requiring toast. The launcher keeps the calm plain skip notify for private.
-    check("offline private -> notify_held NEVER called (no durable record exists for a private hold)",
-          len(rec.held_toasts) == 0)
-    check("offline private -> no enqueue-failed toast either (private never enqueues)", rec.failed_toasts == 0)
-    check("offline private -> no durable-record toast was fabricated for a private item",
-          len(rec.private_toasts) == 0)
+# --- coordinator OFFLINE, PRIVATE -> HELD in the EPHEMERAL tmpfs queue (ADR-0036 D9), never durable ---
+# Previously a private deferral was a SILENT SKIP. Now it is held in the in-session private queue (the
+# private drainer re-runs it; it burns on logout) — NO durable row, NO review surface, an action-less
+# transient notice only. Isolate XDG_RUNTIME_DIR so the tmpfs queue + sealed session land in a temp dir.
+import glob as _glob
+import json as _json
+with tempfile.TemporaryDirectory() as spool, tempfile.TemporaryDirectory() as runtime:
+    _prev_rt = os.environ.get("XDG_RUNTIME_DIR")
+    os.environ["XDG_RUNTIME_DIR"] = runtime
+    try:
+        rec = _Recorder()
+        _install_run_harness(rec, coordinator=False,
+                             b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                             spool=spool)
+        rc = C.run(SEED_URL, private=True)
+        pq_root = os.path.join(runtime, "agentos", "lucid-priv-queue")
+        held = _glob.glob(os.path.join(pq_root, "*", "*.held.json"))
+        snaps = _glob.glob(os.path.join(pq_root, "*", "*.png"))
+        check("offline private -> rc 0 (calm)", rc == 0)
+        check("offline private -> NOT enqueued to the DURABLE spool (private is tmpfs-only)", len(rec.enqueued) == 0)
+        check("offline private -> nothing in the durable spool",
+              len(_glob.glob(os.path.join(spool, "*.held.json"))) == 0)
+        check("offline private -> never generated (deferred, not run)", rec.generated is False)
+        check("offline private -> HELD in the EPHEMERAL private queue (one *.held.json in tmpfs)", len(held) == 1)
+        check("offline private -> the sealed snapshot PNG sits in the tmpfs queue subdir", len(snaps) == 1)
+        check("offline private -> the held record is marked private=True",
+              len(held) == 1 and _json.load(open(held[0])).get("private") is True)
+        check("offline private -> the held record carries the frozen intent (ADR-0036 D5)",
+              len(held) == 1 and isinstance(_json.load(open(held[0])).get("frozen"), dict))
+        check("offline private -> the action-less private notice shown exactly once",
+              rec.private_toasts == ["Create from image"])
+        check("offline private -> notify_held NEVER called (no durable row for a private hold)",
+              len(rec.held_toasts) == 0)
+        check("offline private -> no enqueue-failed toast (private never touches the durable spool)",
+              rec.failed_toasts == 0)
+    finally:
+        if _prev_rt is None:
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+        else:
+            os.environ["XDG_RUNTIME_DIR"] = _prev_rt
 
 
 # --- coordinator OFFLINE, possible MINOR -> TERMINAL block; never held, never enqueued --------------
@@ -348,18 +379,63 @@ with tempfile.TemporaryDirectory() as spool:
     check("gpu-busy non-private -> no enqueue-failed toast on the success path", rec.failed_toasts == 0)
 
 
-# --- coordinator ONLINE, GPU busy, but PRIVATE -> calm skip; NO durable-record toast ---------------
-with tempfile.TemporaryDirectory() as spool:
-    rec = _Recorder()
-    _install_run_harness(rec, coordinator=True,
-                         b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
-                         spool=spool)
-    L.step = lambda *a, **k: None        # GPU busy
-    rc = C.run(SEED_URL, private=True)
-    check("gpu-busy private -> rc 0 (calm)", rc == 0)
-    check("gpu-busy private -> NOT enqueued (private has no durable spool)", len(rec.enqueued) == 0)
-    check("gpu-busy private -> notify_held NEVER called (no durable record for a private hold)",
-          len(rec.held_toasts) == 0)
+# --- coordinator ONLINE, GPU busy, PRIVATE -> HELD in the ephemeral private queue (ADR-0036 D9) -----
+with tempfile.TemporaryDirectory() as spool, tempfile.TemporaryDirectory() as runtime:
+    _prev_rt = os.environ.get("XDG_RUNTIME_DIR")
+    os.environ["XDG_RUNTIME_DIR"] = runtime
+    try:
+        rec = _Recorder()
+        _install_run_harness(rec, coordinator=True,
+                             b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                             spool=spool)
+        L.step = lambda *a, **k: None        # GPU busy -> the deferral branch (L.start stub already ran)
+        rc = C.run(SEED_URL, private=True)
+        pq_root = os.path.join(runtime, "agentos", "lucid-priv-queue")
+        held = _glob.glob(os.path.join(pq_root, "*", "*.held.json"))
+        check("gpu-busy private -> rc 0 (calm)", rc == 0)
+        check("gpu-busy private -> NOT enqueued to the durable spool", len(rec.enqueued) == 0)
+        check("gpu-busy private -> HELD in the ephemeral private queue (one *.held.json in tmpfs)", len(held) == 1)
+        check("gpu-busy private -> action-less private notice shown exactly once",
+              rec.private_toasts == ["Create from image"])
+        check("gpu-busy private -> notify_held NEVER called (no durable row for a private hold)",
+              len(rec.held_toasts) == 0)
+    finally:
+        if _prev_rt is None:
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+        else:
+            os.environ["XDG_RUNTIME_DIR"] = _prev_rt
+
+
+# --- PRIVATE hold FAILS (tmpfs unwritable) -> FAIL-OPEN to the calm skip; never crash, never a notice -
+with tempfile.TemporaryDirectory() as spool, tempfile.TemporaryDirectory() as runtime:
+    _prev_rt = os.environ.get("XDG_RUNTIME_DIR")
+    os.environ["XDG_RUNTIME_DIR"] = runtime
+    _real_PQ = C.PQ
+    try:
+        rec = _Recorder()
+        _install_run_harness(rec, coordinator=False,
+                             b2_flags={"has_face": False, "real_person": False, "possibly_minor": False},
+                             spool=spool)
+        class _BoomPQ:                       # the ephemeral hold raises (e.g. tmpfs full / unwritable)
+            @staticmethod
+            def hold(*a, **k):
+                raise RuntimeError("tmpfs unwritable")
+        C.PQ = _BoomPQ
+        rc = C.run(SEED_URL, private=True)
+        pq_root = os.path.join(runtime, "agentos", "lucid-priv-queue")
+        held = _glob.glob(os.path.join(pq_root, "*", "*.held.json"))
+        check("private hold-fails -> rc 0 (fail-open, never crashes)", rc == 0)
+        check("private hold-fails -> nothing held in the private queue (hold raised)", len(held) == 0)
+        check("private hold-fails -> NO private notice (the hold failed, so nothing to announce)",
+              rec.private_toasts == [])
+        check("private hold-fails -> nothing leaked to the durable spool", len(rec.enqueued) == 0)
+        check("private hold-fails -> notify_held NEVER called", len(rec.held_toasts) == 0)
+    finally:
+        C.PQ = _real_PQ
+        if _prev_rt is None:
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+        else:
+            os.environ["XDG_RUNTIME_DIR"] = _prev_rt
 
 
 # --- coordinator ONLINE, GPU busy, enqueue FAILS -> notify_enqueue_failed, never notify_held -------

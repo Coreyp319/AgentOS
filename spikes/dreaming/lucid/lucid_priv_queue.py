@@ -91,14 +91,18 @@ def _ensure_sealed_session(session):
 
 
 # ============================ the EPHEMERAL chokepoint ============================
-def hold(session, job_id, title, snapshot_src=None):
+def hold(session, job_id, title, snapshot_src=None, *, frozen=None):
     """THE ephemeral chokepoint (ADR-0019 §5) — the ONLY writer to the tmpfs private queue.
 
     Asserts `ST.is_private(session)` and RAISES `ValueError` otherwise: a non-private session can
     never enter the private spool (Condition 2, physical separation — the durable `enqueue` is the
     mirror refusal). Snapshots the already-sanitized PNG INTO the sealed tmpfs session subdir (never
     shared disk, never a drain-time URL re-fetch). Writes a `held` record mirroring `lucid_queue`'s
-    record shape, with `private=True` and a fresh per-session monotonic `seq`. Returns the record."""
+    record shape, with `private=True` and a fresh per-session monotonic `seq`. Returns the record.
+
+    `frozen` (ADR-0036 D5): the frozen generation intent (from `lucid_linear.freeze_intent`), stored
+    verbatim — sealed in tmpfs with the rest — so the in-session private drainer resolves the prompt and
+    seed from the record, not a mutable pointer. Omitted ⇒ no `frozen` key (drainer falls back)."""
     if job_id is None:
         raise ValueError("hold: job_id is None — even a private hold needs a stable dedup id")
     if not ST.is_private(session):
@@ -115,6 +119,8 @@ def hold(session, job_id, title, snapshot_src=None):
     rec = {"id": job_id, "seq": Q.alloc_seq(spool), "created": now, "title": str(title)[:80],
            "snapshot": snapshot, "private": True, "attempts": 0, "last_error": None,
            "next_retry_after": 0.0, "state": "held"}
+    if frozen is not None:
+        rec["frozen"] = frozen
     Q._atomic_write(Q._rec_path(spool, job_id, "held"), rec)
     return rec
 
@@ -137,14 +143,14 @@ def claim(session, job_id):
     return Q.claim(_session_spool(session), job_id)
 
 
-def recover_crashed(session):
+def recover_crashed(session, *, now=None):
     """Return any orphaned `*.running.json` for a private session to `held` (reused
     `lucid_queue.recover_crashed`). Decides from the FILE, never the PID. NOTE: like writeback, the
     reused op can re-file a record as `*.review.json` if its `next_state` is "needs-review" — a
     private item must not acquire a review row, so we sweep any such file to a silent burn afterward.
-    Returns (recovered_list, burned_bool)."""
+    Returns (recovered_list, burned_bool). `now` (ADR-0036 I9): inject the clock; None ⇒ wall clock."""
     spool = _session_spool(session)
-    recovered = Q.recover_crashed(spool)
+    recovered = Q.recover_crashed(spool, now=now)
     # H3/Condition 6: a private record may NEVER rest as needs-review (a review row). If recovery
     # re-filed one, the whole session's retry has exhausted into the human lane it cannot have —
     # burn it silently rather than leave a review artifact in the spool.
@@ -154,7 +160,7 @@ def recover_crashed(session):
     return recovered, False
 
 
-def writeback(session, rec, outcome):
+def writeback(session, rec, outcome, *, now=None):
     """Resolve a `running` private record by its run outcome — the EPHEMERAL counterpart to
     `lucid_queue.writeback`, diverging at exactly one point: the durable writeback escalates an
     exhausted/human-cause record to `needs-review` (a persisted review row + the `review.json` warm
@@ -162,7 +168,9 @@ def writeback(session, rec, outcome):
     (`lucid_queue.next_state`, reused unchanged) computes a terminal that is NOT a live retry, we
     BURN THE SESSION SILENTLY (Condition 6): no review row, no review.json, no persisted trace.
 
-    Returns the resolved disposition: "done" | "held" | "burned-silent"."""
+    Returns the resolved disposition: "done" | "held" | "burned-silent".
+    `now` (ADR-0036 I9): inject the clock for replayable tests; None ⇒ wall clock."""
+    now = time.time() if now is None else now
     spool = _session_spool(session)
     running = Q._rec_path(spool, rec["id"], "running")
     if outcome == "done":
@@ -171,12 +179,12 @@ def writeback(session, rec, outcome):
         return "done"
     rec["attempts"] = rec.get("attempts", 0) + 1
     rec["last_error"] = outcome
-    age = time.time() - rec.get("created", time.time())
+    age = now - rec.get("created", now)
     state = Q.next_state(rec["attempts"], rec["last_error"], age)   # PURE policy, reused verbatim
     Q._unlink(running)
     if state == "held":
         # still a live in-session retry — re-file held with the backoff floor (reused policy).
-        rec["next_retry_after"] = time.time() + Q.retry_backoff_s(rec["attempts"])
+        rec["next_retry_after"] = now + Q.retry_backoff_s(rec["attempts"])
         rec["state"] = "held"
         Q._atomic_write(Q._rec_path(spool, rec["id"], "held"), rec)
         return "held"

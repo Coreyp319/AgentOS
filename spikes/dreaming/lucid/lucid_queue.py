@@ -155,11 +155,16 @@ def alloc_seq(spool):
 
 
 # ============================ the chokepoint + lifecycle ============================
-def enqueue(job_id, title, snapshot_src=None, *, private=False, spool=None):
+def enqueue(job_id, title, snapshot_src=None, *, private=False, spool=None, frozen=None, now=None):
     """THE durable chokepoint (ADR-0019). Refuses `job_id is None` AND refuses `private=True` — a
     private/anonymous request can NEVER enter the persisted spool (Condition 2, physical separation).
     Snapshots the already-sanitized PNG INTO the spool so drain-time never re-fetches a remote URL.
-    Writes a `held` record with a fresh monotonic `seq`. Returns the record."""
+    Writes a `held` record with a fresh monotonic `seq`. Returns the record.
+
+    `frozen` (ADR-0036 D5): the frozen generation intent (prompt/seed/engine/workflow/quality/est, from
+    `lucid_linear.freeze_intent`), stored verbatim so the drainer resolves nothing from a mutable
+    pointer. Omitted ⇒ no `frozen` key (a legacy record; the drainer falls back to its constants).
+    `now` (ADR-0036 I9): inject the clock for replayable tests; None ⇒ wall clock."""
     if job_id is None:
         raise ValueError("enqueue: job_id is None — an anonymous request must not reach the durable spool")
     if private:
@@ -169,7 +174,7 @@ def enqueue(job_id, title, snapshot_src=None, *, private=False, spool=None):
         raise ValueError(f"bad job id {job_id!r}")
     spool = durable_dir() if spool is None else spool
     _ensure(spool)
-    now = time.time()
+    now = time.time() if now is None else now
     snapshot = None
     if snapshot_src and os.path.isfile(snapshot_src):
         snapshot = _snapshot_path(spool, job_id)
@@ -177,6 +182,8 @@ def enqueue(job_id, title, snapshot_src=None, *, private=False, spool=None):
     rec = {"id": job_id, "seq": alloc_seq(spool), "created": now, "title": str(title)[:80],
            "snapshot": snapshot, "private": False, "attempts": 0, "last_error": None,
            "next_retry_after": 0.0, "state": "held"}
+    if frozen is not None:
+        rec["frozen"] = frozen
     _atomic_write(_rec_path(spool, job_id, "held"), rec)
     return rec
 
@@ -213,10 +220,12 @@ def claim(spool, job_id):
     return rec
 
 
-def writeback(spool, rec, outcome):
+def writeback(spool, rec, outcome, *, now=None):
     """Resolve a `running` record by its run outcome. `outcome == "done"` clears it (terminal); any
     other outcome is a failure cause: bump `attempts`, recompute state via `next_state` (G4), set the
-    backoff floor, and re-file under the next state's suffix. Returns the resolved state."""
+    backoff floor, and re-file under the next state's suffix. Returns the resolved state.
+    `now` (ADR-0036 I9): inject the clock for replayable tests; None ⇒ wall clock."""
+    now = time.time() if now is None else now
     running = _rec_path(spool, rec["id"], "running")
     if outcome == "done":
         _unlink(running)
@@ -224,22 +233,24 @@ def writeback(spool, rec, outcome):
         return "done"
     rec["attempts"] = rec.get("attempts", 0) + 1
     rec["last_error"] = outcome
-    age = time.time() - rec.get("created", time.time())
+    age = now - rec.get("created", now)
     state = next_state(rec["attempts"], rec["last_error"], age)
     _unlink(running)
     if state == "expired":
         _unlink(_snapshot_path(spool, rec["id"]))   # ages out visibly + honestly; nothing lingers
         return "expired"
-    rec["next_retry_after"] = time.time() + retry_backoff_s(rec["attempts"])
+    rec["next_retry_after"] = now + retry_backoff_s(rec["attempts"])
     rec["state"] = state
     _atomic_write(_rec_path(spool, rec["id"], "review" if state == "needs-review" else "held"), rec)
     return state
 
 
-def recover_crashed(spool):
+def recover_crashed(spool, *, now=None):
     """With the drainer flock held, every `*.running.json` is provably an orphan (a prior fire died
     mid-run) → return it to `held` (attempts++, cause 'preempted', owner_pid=None). Decides from the
-    FILE, never the PID. Returns [(id, resolved_state), …]."""
+    FILE, never the PID. Returns [(id, resolved_state), …].
+    `now` (ADR-0036 I9): inject the clock for replayable tests; None ⇒ wall clock."""
+    now = time.time() if now is None else now
     out = []
     for p in glob.glob(os.path.join(spool, "*.running.json")):
         try:
@@ -251,14 +262,14 @@ def recover_crashed(spool):
         rec["attempts"] = rec.get("attempts", 0) + 1
         rec["last_error"] = "preempted"
         rec["owner_pid"] = None
-        age = time.time() - rec.get("created", time.time())
+        age = now - rec.get("created", now)
         state = next_state(rec["attempts"], rec["last_error"], age)
         _unlink(p)
         if state == "expired":
             _unlink(_snapshot_path(spool, rec["id"]))
             out.append((rec["id"], "expired"))
             continue
-        rec["next_retry_after"] = time.time() + retry_backoff_s(rec["attempts"])
+        rec["next_retry_after"] = now + retry_backoff_s(rec["attempts"])
         rec["state"] = state
         _atomic_write(_rec_path(spool, rec["id"], "review" if state == "needs-review" else "held"), rec)
         out.append((rec["id"], state))

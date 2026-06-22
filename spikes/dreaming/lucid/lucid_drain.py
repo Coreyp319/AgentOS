@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lucid_queue as Q       # noqa: E402
 import lucid_review as R      # noqa: E402  (G1 sidecar producer — the SOLE review.json writer)
 import lucid_linear as L      # noqa: E402  (the governed launcher — lease + red-line gate + B2 chokepoint)
+import lucid_engine as E      # noqa: E402  (ADR-0036 D5: pin the frozen engine on the durable ONESHOT drain)
 import lucid_safety as S      # noqa: E402  (the deterministic prompt gate — same chokepoint as the web loop)
 
 # The neutral "come alive" motion prompt the interactive create-from-image path uses (mirrors
@@ -37,13 +38,15 @@ def _refresh_sidecar(spool):
     R.write(Q.needs_review_items(spool))
 
 
-def drain_once(spool, runner):
+def drain_once(spool, runner, *, now=None):
     """One fire: recover orphans → FIFO drain → claim + run ONE eligible held → re-file the outcome →
     refresh the sidecar. `runner(rec) -> outcome` ('done' | a failure cause) is INJECTED so the loop is
-    testable without a GPU. Returns (id, outcome, next_state) for the job run this fire, else None."""
-    Q.recover_crashed(spool)              # decides from the file; safe under the caller's flock
+    testable without a GPU. Returns (id, outcome, next_state) for the job run this fire, else None.
+    `now` (ADR-0036 I9): inject the clock for a replayable tick (eligibility + recover + writeback all
+    read it); None ⇒ wall clock."""
+    now = time.time() if now is None else now
+    Q.recover_crashed(spool, now=now)     # decides from the file; safe under the caller's flock
     ran = None
-    now = time.time()
     for rec in Q.drain_order(Q.read_held(spool)):   # strict arrival FIFO (G6); HALTS on a priority key
         if rec.get("next_retry_after", 0) > now:
             continue                       # backoff floor — eligibility, NOT an ordering key
@@ -54,7 +57,7 @@ def drain_once(spool, runner):
             outcome = runner(claimed)
         except Exception:
             outcome = "drain-error"        # never lose the request to a runner exception
-        next_state = Q.writeback(spool, claimed, outcome)
+        next_state = Q.writeback(spool, claimed, outcome, now=now)
         ran = (rec["id"], outcome, next_state)
         break                              # ONE job per fire; the timer re-fires for the rest
     _refresh_sidecar(spool)
@@ -83,9 +86,17 @@ def _governed_runner(rec):
         if not snapshot or not os.path.isfile(snapshot):
             return "no-snapshot"                # the spool image vanished — re-hold, never re-fetch
         session = rec["id"]                      # the record id IS the session id for the re-run
-        # B2 already cleared this seed at enqueue → _trusted_seed=True (do NOT re-run B2).
-        L.start(session, snapshot, private=False, _trusted_seed=True)
-        gated = S.gate_prompt(MOTION_PROMPT)
+        frozen = rec.get("frozen") or {}         # ADR-0036 D5: drain the FROZEN intent, not a live pointer
+        # Pin the engine the request was ADMITTED under: a registry flip (e.g. wan→10eros) between enqueue
+        # and this drain would otherwise run a different pipeline (and a wrong est) than the user asked for.
+        # Safe here because the durable drainer is a systemd ONESHOT — no concurrent live dream in-process.
+        eng = frozen.get("engine")
+        if eng and eng != E.current_engine():
+            E.set_engine(eng)
+        # B2 already cleared this seed at enqueue → _trusted_seed=True (do NOT re-run B2). The frozen base
+        # seed (when present) makes the deferred re-run reproduce the same noise family; None ⇒ legacy mint.
+        L.start(session, snapshot, private=False, _trusted_seed=True, seed=frozen.get("seed"))
+        gated = S.gate_prompt(frozen.get("prompt") or MOTION_PROMPT)   # frozen prompt; constant only for a legacy record
         if gated is None:                        # defensive: the neutral motion prompt should pass
             return "prompt-blocked"
         node = L.step(session, gated, label="animate", tier="best-effort")

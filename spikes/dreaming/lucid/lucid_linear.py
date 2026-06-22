@@ -237,6 +237,33 @@ def start(session, opening_image, private=False, consent=False, _trusted_seed=Fa
     return chain
 
 
+def freeze_intent(prompt, *, quality="draft", seed=None):
+    """ADR-0036 D5: capture the generation intent as VALUES at enqueue time, so a deferred drain
+    reproduces what was asked instead of re-deriving it from mutable globals. The durable drainer
+    ENFORCES three of these: the frozen `prompt` (vs the old triplicated module constant), the frozen
+    `seed` (vs a fresh mint at drain — so a deferred RETRY reproduces the same noise family), and the
+    frozen `engine` family (it pins `set_engine` so a wan↔10eros registry flip can't run a different
+    pipeline than the one admitted).
+
+    `workflow`, `quality`, and `est_mib` are RECORDED for audit/forward-compat but live-resolved at
+    drain — honestly: `workflow` (the intra-family graph) has no runtime setter, so it can't drift
+    within a process; only an operator `LUCID_WORKFLOW` change between oneshot fires could, which the
+    always-draft create-from-image lane never triggers. `est_mib` needs no enforcement because the
+    engine pin runs BEFORE the lease, so the live `est_mib()` already matches the pinned engine.
+
+    Returns a plain JSON-able dict stored verbatim in the queue record under `frozen`; the drainers
+    fall back to their module constants ONLY for a legacy record that predates this freeze."""
+    return {
+        "v": 1,
+        "prompt": prompt,
+        "seed": seed if seed is not None else random.randint(1, 2**31 - 1),
+        "engine": E.current_engine(),
+        "workflow": os.path.basename(E.WORKFLOW),
+        "quality": quality,
+        "est_mib": E.est_mib(),
+    }
+
+
 def burn(session):
     """Wipe a private session's every sink (ADR-0016). No-op set for a persistent session."""
     return ST.burn(session)
