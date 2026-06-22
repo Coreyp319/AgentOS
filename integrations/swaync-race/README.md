@@ -24,7 +24,14 @@ the dominant stall is the portal, not the socket.
 
 ## The fix
 In `swaync.service.d/nimbus-race.conf`, take the portal off swaync's critical path:
-1. `Wants=/After=xdg-desktop-portal.service` — warm the portal before swaync.
+1. `Wants=xdg-desktop-portal.service` — pull the portal into the transaction so it warms
+   alongside swaync. **Do NOT `After=xdg-desktop-portal.service`** (regressed 2026-06-22):
+   the portal is `After=graphical-session.target` and stock `plasma-core.target` is
+   `After=plasma-plasmashell.service`, so `plasmashell → After swaync → After portal → … →
+   plasmashell` forms an ordering **cycle**. systemd breaks a cycle by deleting a job — it
+   deleted plasmashell's start job, so the whole shell (panels + dock) never started at boot.
+   Step 2 sequences swaync after the portal *answers* at runtime, so the `After=` ordering is
+   redundant anyway; `Wants=` (no ordering edge) keeps the warm-up without the cycle.
 2. A bounded, fail-open `ExecStartPre` that waits until the portal **Settings interface answers**,
    so swaync's own query returns instantly instead of timing out ~25s.
 3. `TimeoutStartSec=90` — margin for the one-time cold warmup + swaync's <2s warm acquire.
