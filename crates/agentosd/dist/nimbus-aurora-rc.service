@@ -1,0 +1,16 @@
+[Unit]
+Description=AgentOS reactive mood pusher (scene-params.json → UE Remote Control MPC over loopback :30010, ADR-0030 D1 / ADR-0029 §B)
+PartOf=graphical-session.target
+After=graphical-session.target nimbus-aurora-scene.service
+Wants=nimbus-aurora-scene.service
+
+[Service]
+Type=simple
+# Best-effort + fail-open (ADR-0003): a failed PUT is dropped, UE holds its last MPC value. Loopback-only.
+ExecStart=%h/.local/bin/agentosd rc
+Restart=on-failure
+RestartSec=2
+Nice=8
+
+[Install]
+WantedBy=graphical-session.target

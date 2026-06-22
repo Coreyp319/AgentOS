@@ -1,0 +1,15 @@
+[Unit]
+Description=AgentOS reactive dark-ride mood disposer (agent.json + wind.json → scene-params.json, ADR-0030)
+PartOf=graphical-session.target
+After=graphical-session.target nimbus-aurora-agent.service
+Wants=nimbus-aurora-agent.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/agentosd scene
+Restart=on-failure
+RestartSec=2
+Nice=8
+
+[Install]
+WantedBy=graphical-session.target

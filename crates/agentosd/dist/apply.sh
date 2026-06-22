@@ -10,9 +10,13 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 BIN_DEST="$HOME/.local/bin/agentosd"
-UNITS=(agentos-lease.service nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service)
+UNITS=(agentos-lease.service nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service nimbus-aurora-scene.service)
 # Timer-triggered (install both, enable only the .timer).
 REPORT_UNITS=(agentos-coexist-report.service agentos-coexist-report.timer)
+# ADR-0030 reactive UE pusher: installed but NOT started here — `rc` PUTs to the UE MPC, which is inert
+# until the reactive MPC + material taps are authored into the wallpaper scene (the GPU-gated Phase A step).
+# Enable it AFTER authoring: `systemctl --user enable --now nimbus-aurora-rc.service`.
+INSTALL_ONLY=(nimbus-aurora-rc.service)
 UNIT_DIR="$HOME/.config/systemd/user"
 RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentosd"
@@ -24,7 +28,7 @@ mkdir -p "$(dirname "$BIN_DEST")"
 install -m755 "$REPO/target/release/agentosd" "$BIN_DEST"
 
 mkdir -p "$UNIT_DIR"
-for UNIT in "${UNITS[@]}" "${REPORT_UNITS[@]}"; do
+for UNIT in "${UNITS[@]}" "${REPORT_UNITS[@]}" "${INSTALL_ONLY[@]}"; do
   install -m644 "$HERE/$UNIT" "$UNIT_DIR/$UNIT"
 done
 
@@ -44,3 +48,6 @@ if systemctl --user enable --now agentos-coexist-report.timer 2>/dev/null; then
 else
   echo "  ! enable the report timer by hand: systemctl --user enable --now agentos-coexist-report.timer"
 fi
+echo "  → $RUNTIME/nimbus-aurora/scene-params.json (reactive dark-ride mood, ADR-0030)"
+echo "  • nimbus-aurora-rc.service installed but NOT started — enable it after the reactive MPC is authored"
+echo "    into the UE wallpaper scene:  systemctl --user enable --now nimbus-aurora-rc.service"
