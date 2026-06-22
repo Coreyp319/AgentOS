@@ -175,13 +175,32 @@ def place_clip(session, private, src_clip):
     if not private or not src_clip:
         return src_clip
     d = ensure_session(session, True)
-    dest = os.path.join(d, os.path.basename(src_clip))
+    src_base = os.path.basename(src_clip)
+    # Collision-free destination for THIS beat's clip. The privacy drain below rmtrees the shared output
+    # subdir after every beat, which resets ComfyUI/VHS's counter to clip_00001.mp4 each render — so without
+    # a unique tmpfs name every beat would overwrite the last and ALL chain nodes would point at one file
+    # (a private dream would collapse to a single clip, and Play-all would stall on the repeated path). Keep
+    # the extension; bump an index until the name is free.
+    def _free_dest(base):
+        cand = os.path.join(d, base)
+        if not os.path.lexists(cand):
+            return cand
+        stem, ext = os.path.splitext(base)
+        i = 1
+        while os.path.lexists(os.path.join(d, f"{stem}_{i}{ext}")):
+            i += 1
+        return os.path.join(d, f"{stem}_{i}{ext}")
+    dest = _free_dest(src_base)
     out_dir = _priv_output_dir(session)
     if _own_real_dir(out_dir) is True:
         for fn in os.listdir(out_dir):
             src = os.path.join(out_dir, fn)
             if os.path.isfile(src) and not os.path.islink(src):
-                shutil.move(src, os.path.join(d, fn))
+                # the rendered clip gets the unique `dest`; incidental sidecars (e.g. the VHS .png, unused by
+                # the chain) keep their name — overwriting a stale sidecar is harmless and the drain still
+                # removes every private byte from shared output (privacy invariant preserved).
+                target = dest if fn == src_base else os.path.join(d, fn)
+                shutil.move(src, target)
         shutil.rmtree(out_dir, ignore_errors=True)
     elif os.path.isfile(src_clip):  # fallback: at least relocate the named clip out of shared disk
         shutil.move(src_clip, dest)

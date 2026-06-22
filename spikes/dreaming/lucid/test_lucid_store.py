@@ -81,6 +81,20 @@ check("no private clip left in shared output", not os.path.isfile(shared_clip))
 check("prompt-bearing sidecar PNG also drained (BLOCKER fix)", not os.path.isfile(sidecar))
 check("shared output subdir removed entirely", not os.path.isdir(os.path.join(COUTPUT, "lucid-priv-p1")))
 
+# --- a SECOND private beat emits clip_00001.mp4 AGAIN (VHS counter resets because the drain rmtree'd the
+#     output subdir): place_clip must NOT overwrite the first beat — each node keeps its own clip file ---
+shared_clip2 = os.path.join(COUTPUT, "lucid-priv-p1", "clip_00001.mp4")
+sidecar2 = os.path.join(COUTPUT, "lucid-priv-p1", "clip_00001.png")
+os.makedirs(os.path.dirname(shared_clip2), exist_ok=True)
+open(shared_clip2, "w").write("CLIPBYTES-2")
+open(sidecar2, "w").write("PROMPT-2")
+moved2 = ST.place_clip("p1", True, shared_clip2)
+check("second private beat gets a DISTINCT tmpfs path", moved2 != moved and os.path.isfile(moved2))
+check("first private beat's clip is preserved (not overwritten)", os.path.isfile(moved))
+check("the two beats are different files on disk",
+      open(moved).read() == "CLIPBYTES" and open(moved2).read() == "CLIPBYTES-2")
+check("second beat's shared output also fully drained", not os.path.isdir(os.path.join(COUTPUT, "lucid-priv-p1")))
+
 # --- persistent place_clip leaves the clip where ComfyUI wrote it ---
 pclip = os.path.join(COUTPUT, "lucid", "keep.mp4")
 os.makedirs(os.path.dirname(pclip), exist_ok=True)
