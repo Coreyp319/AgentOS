@@ -200,7 +200,13 @@ def build(seed_image, prompt, longer_edge, length, out_prefix, keep_upscale=Fals
     _bypass_class(api, "ResizeImageMaskNode")  # V3 dynamic-combo node; redundant
 
     # seed image, prompt, size/length, output name
-    cc.set_input(api, "LoadImage", "image", os.path.basename(seed_image))
+    # Preserve the seed's path RELATIVE to ComfyUI's input/ (LoadImage accepts subdir-relative names).
+    # Basename-only dropped a PRIVATE session's sealed subdir (.lucid-priv-<s>/…) so ComfyUI couldn't
+    # find the seed; relpath keeps it for private AND non-private. Out-of-tree seeds (CLI) → basename.
+    _inp = os.path.join(cc.COMFY_ROOT, "input")
+    _rel = os.path.relpath(seed_image, _inp)
+    cc.set_input(api, "LoadImage", "image",
+                 _rel if not _rel.startswith("..") else os.path.basename(seed_image))
     pos, _neg = cc.pos_neg_text_nodes(api)
     if pos:
         api[pos]["inputs"]["text"] = prompt
