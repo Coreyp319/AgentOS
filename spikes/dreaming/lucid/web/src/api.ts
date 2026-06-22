@@ -162,8 +162,21 @@ export const useStartBeatPreviews = () => useMutation({ mutationFn: (b: { node: 
 export type RefineResult = { ok: boolean; refined?: string; reason?: string }
 export const useRefine = () =>
   useMutation<RefineResult, unknown, { text: string; node: number }>({ mutationFn: (b) => post('/api/refine', b) })
+// ADR-0023 the Shot Card readback: assemble the EXACT prompt the next beat would run (the parent's notes
+// DECOMPOSED — or the deterministic suffix — with the persistent subject folded IN), so the user can SEE
+// and EDIT it before committing minutes of generation ("model proposes, code disposes" made visible). A
+// VLM text/vision call only — NO lease/turn/chain write (like refine) — so it's safe during the dwell and
+// fails honest. A one-off (not a useStateMutation; it invalidates nothing). `notes_digest` binds the reading
+// to the exact notes it derived from — echo it back to /api/dream so a stale edit is caught (the staleness
+// gate). `engine` says whether the tagged regions ALSO steer pixels (10eros) or only inform the words (wan).
+export type FuseRow = { id: string; tag: 'more' | 'less' | 'hold' | 'change'; text: string; t: number; region: boolean; mask: boolean }
+export type FuseResult = {
+  ok: boolean; reason?: string | null; fused?: string | null; subject?: string
+  source?: 'decompose' | 'suffix'; rows?: FuseRow[]; notes_digest?: string; engine?: string
+}
+export const fuse = (b: { parent: number; prompt: string }): Promise<FuseResult> => post('/api/fuse', b)
 export const useStart = () =>
-  useStateMutation((b: { private: boolean; name?: string; image_b64?: string; text?: string; consent?: boolean }) =>
+  useStateMutation((b: { private: boolean; name?: string; image_b64?: string; text?: string; consent?: boolean; mature?: boolean }) =>
     post('/api/start', b), [['beats']])
 export const useSetEngine = () => useStateMutation((engine: string) => post('/api/engine', { engine }))
 export const useBurn = () => useStateMutation((_: void) => post('/api/burn'), [['beats']])

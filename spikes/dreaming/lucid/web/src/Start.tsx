@@ -8,6 +8,11 @@ const B2_NOTE = 'Any image you upload is checked for real-person likeness first,
 export default function Start({ onStarted }: { onStarted?: () => void }) {
   const start = useStart()
   const [priv, setPriv] = useState(false)
+  // the user-declared content floor. The per-frame VLM is conservative (it only goes mature when the seed
+  // already reads explicit), so without this a dream you INTEND as mature can render entirely SFW. Declaring
+  // it floors every choice-menu to mature from the first frame. The red line (minors / real people) is
+  // independent and always enforced in code — this can never widen it.
+  const [mature, setMature] = useState(false)
   const [name, setName] = useState('')
   const [text, setText] = useState('')
   const [msg, setMsg] = useState(B2_NOTE)
@@ -20,8 +25,8 @@ export default function Start({ onStarted }: { onStarted?: () => void }) {
   async function begin(consent = false) {
     setConsentReason(null)
     const f = fileRef.current?.files?.[0]
-    const body: { private: boolean; name?: string; image_b64?: string; text?: string; consent?: boolean } =
-      { private: priv, name: name.trim() || undefined }
+    const body: { private: boolean; name?: string; image_b64?: string; text?: string; consent?: boolean; mature?: boolean } =
+      { private: priv, name: name.trim() || undefined, mature: mature || undefined }
     if (f) { setMsg('🔎 checking your image for real-person likeness…'); body.image_b64 = await fileToB64(f); body.consent = consent }
     else if (text.trim()) { setMsg('✦ painting your opening…'); body.text = text.trim(); body.consent = consent }
     let j
@@ -60,6 +65,10 @@ export default function Start({ onStarted }: { onStarted?: () => void }) {
       <label className="check">
         <input type="checkbox" checked={priv} onChange={(e) => setPriv(e.target.checked)} />
         <span><span className="lock">🔒 Private session</span> <span className="note">— kept in memory, not saved, never shown elsewhere, wiped when you log out.</span></span>
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={mature} onChange={(e) => setMature(e.target.checked)} />
+        <span><span className="lock">🔞 Mature dream</span> <span className="note">— the suggestions and video may be explicit, from the first frame. Off keeps it tasteful. Minors and real people are always blocked.</span></span>
       </label>
       <div className="note" style={{ marginBottom: 4 }}>Otherwise the dream is saved on this computer (your dream library) until you delete it.</div>
       <button className="beat" disabled={start.isPending || !!consentReason} onClick={() => begin(false)}>✦ Begin a dream</button>

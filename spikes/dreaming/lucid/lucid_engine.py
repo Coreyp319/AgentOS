@@ -87,10 +87,13 @@ BEAT_TEMP = float(os.environ.get("LUCID_BEAT_TEMP", "0.78"))
 # goal is a SMALL but not-timid model so eviction stays cheap (ADR-0015 §3 / ADR-0018 — a 14B is slower to
 # evict and can delay the video step). When this differs from MODEL the beat-gen call runs TEXT-ONLY (the
 # alt model may not be vision-capable) and works from the caption ground_frame already put in the context.
-# Shipped ON: the registry sets narrator-beats=hermes3:3b (smaller+faster-evicting than the 3.2GB vision
-# model, valid JSON every trial, richer dream-logic, modestly bolder). Clear that role (or set
-# LUCID_NARRATOR_MODEL=qwen2.5vl:3b) to fold beat-gen back onto the single vision model. See
-# [[lucid-beatgen-prompt-redesign]].
+# Shipped ON: the registry sets narrator-beats=MN-12B-Mag-Mell-R1 (Q5_K_M ~8.7GB), the mature-lane fix for
+# "the choices are too conservative" — A/B-verified explicit + JSON-reliable + two-dial-faithful where the
+# old hermes3:3b stayed euphemistic (spikes/dreaming/lucid/ab_mature_narrator.py). ~8.7GB still evicts in a
+# few seconds via force_evict before the i2v lease (ADR-0015 §3). The mature HEAT is steered by
+# _RATING_CLAUSE['mature'] below and stays rating-gated. Set narrator-beats=hermes3:3b for the cheap-evict
+# fallback, =Rocinante-12B for hotter, or LUCID_NARRATOR_MODEL=qwen2.5vl:3b to fold beat-gen back onto the
+# single vision model. See [[lucid-beatgen-prompt-redesign]] + the registry narrator-beats notes.
 NARRATOR_MODEL = os.environ.get("LUCID_NARRATOR_MODEL") or lucid_models.get("narrator-beats", MODEL)
 
 DEFAULT_W, DEFAULT_H, DEFAULT_LEN = 720, 1280, 33  # ~2s portrait @16fps; matches the
@@ -439,8 +442,19 @@ _SYS_TMPL = (
 # tunes creative tone, it can never widen the red line.
 _RATING_CLAUSE = {
     "sfw": "Keep every choice strictly SFW — no nudity or sexual content.",
-    "mature": ("This dream is adult/mature: you MAY propose sensual or explicit continuations when they "
-               "fit what is on screen. (Still absolutely no minors and no real, identifiable people.)"),
+    # DIRECTIVE, not permissive: a small narrator under-reads a soft "you may" and defaults tame, which is
+    # exactly the "too conservative to be useful" failure. For a mature dream, explicit erotic content is
+    # the DEFAULT register the viewer asked for, not a rare exception. Stay concrete and plain-anatomical;
+    # vary the heat across the choices instead of repeating one act. The red-line below is independent of
+    # this clause and is ALSO re-enforced in code (lucid_safety.red_line_ok) — tone can never widen it.
+    "mature": ("This is an adult, mature dream and the viewer WANTS explicit erotic content — write the choices "
+               "that way BY DEFAULT, not as rare exceptions. Be sexually direct and concrete: name nudity, "
+               "bodies, and sex acts in plain present-tense words as the ONE thing that changes in each "
+               "choice. Pull the choices toward genuinely different explicit directions — a different act, "
+               "a different reveal, a rising intensity — rather than repeating one beat. Do NOT soften, "
+               "fade to black, euphemize, or keep it merely 'sensual'; match the heat the viewer asked for. "
+               "(The motion still stays small and continuous from this frame — small motion, never a small "
+               "idea.)"),
 }
 
 

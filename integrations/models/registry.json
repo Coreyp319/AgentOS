@@ -40,20 +40,22 @@
       "id": "narrator-beats",
       "role": "Story suggestions — beat writer (text)",
       "purpose": "Writes the 3-4 'what happens next' choices each turn. Split out from 'narrator' so the beat writer can be a less-timid, more imaginative model than the vision grounder. Output is schema-validated and red-line-filtered before it can reach the GPU.",
-      "model": "hermes3:3b",
+      "model": "hf.co/bartowski/MN-12B-Mag-Mell-R1-GGUF:Q5_K_M",
       "runtime": "ollama",
-      "size_gb": 2.0,
-      "source": "ollama library: hermes3:3b (Nous Hermes 3, Llama-3.2-3B)",
+      "size_gb": 8.7,
+      "source": "huggingface: bartowski/MN-12B-Mag-Mell-R1-GGUF (Q5_K_M) — Mistral-Nemo 12B creative-writing merge, ChatML",
       "local": true,
       "safety_critical": false,
       "used_by": ["Lucid beat-gen (propose)"],
       "alternatives": [
-        "qwen2.5vl:3b — the vision grounder; reliable and SEES the frame, but TIMID in the mature lane and thinner on dream-logic. Set this role to qwen2.5vl:3b to fold beat-gen back onto the single vision model (prior behavior).",
-        "hermes4-14b:latest — 15GB, bolder/more explicit still, but slow to evict (the ADR-0015/0018 problem); only on a free GPU.",
+        "hermes3:3b — 2.0GB, fastest to evict and JSON-reliable, but TIMID in the mature lane (verified euphemistic: 'intimate area' / 'collarbone' / 'Unspoken Promise' even under the directive clause). The cheap-evict fallback; set this role to hermes3:3b on a constrained GPU.",
+        "qwen2.5vl:3b — the vision grounder; SEES the frame but timid + thinner on dream-logic. Folds beat-gen back onto the single vision model.",
+        "hf.co/bartowski/Rocinante-12B-v1.1-GGUF:Q5_K_M — TheDrummer, tuned hardest for explicit / least positivity bias; the 'hotter' one-line swap if Mag-Mell isn't direct enough.",
+        "dolphin3.0-mistral-24b — ~16GB, more disciplined + bold but slower to evict (the ADR-0015/0018 problem); only on a free GPU.",
         "dolphin3.0-qwen2.5:3b — uncensored but BROKE the JSON beat contract (0 beats every call); rejected.",
-        "huihui_ai/qwen2.5-abliterate:3b — JSON-reliable but creatively bland and not actually bolder; rejected."
+        "huihui_ai/qwen2.5-abliterate:3b — JSON-reliable but creatively bland and not actually bolder; rejected (crude abliteration follows the two-dial law worse)."
       ],
-      "notes": "Verified A/B 2026-06-21 (spikes/dreaming/lucid/ab_branch_prompt.py) vs qwen2.5vl:3b: valid JSON every trial, 4/4 distinct, richer dream-logic + more premise-advancing, modestly bolder, and SMALLER (2.0GB vs 3.2GB) so it evicts at least as fast. TEXT-ONLY: it cannot see the frame, so beat-gen reads the caption the 'narrator' vision pass produced (lucid_engine.NARRATOR_MODEL != MODEL drops the image) — the i2v step still continues from the frame pixels, so grounding fidelity is preserved. Revert: set this role's model to qwen2.5vl:3b, or unset/clear LUCID_NARRATOR_MODEL. 'Not timid' here = more willing + creative; still tasteful, not graphically explicit (a small model that keeps the JSON contract cannot reliably do hardcore — that needs hermes4-14b or a JSON-repair layer)."
+      "notes": "Mature-lane upgrade 2026-06-21 to fix 'the choices are much too conservative to be useful'. Root cause was the model, not the safety gate (lucid_safety only blocks minors/real-people/non-consent — never general adult). A/B'd vs hermes3:3b on the real path (spikes/dreaming/lucid/ab_mature_narrator.py, sensual-but-clothed mature scene): hermes3:3b stayed euphemistic ('hand moves closer to her intimate area', 'collarbone', 'Unspoken Promise') and was flaky on JSON; Mag-Mell-12B was explicit + concrete ('glistening sex', 'fully nude, stroking his erect cock', wax on a breast), kept 3-4/4 distinct beats per roll, honored the two-dial law (small motion / big different idea), and emitted valid JSON every trial. Best-in-class 12B for low-'slop' (non-euphemistic) creative prose + worldbuilding, so it serves the SFW lane too. ~8.7GB Q5_K_M evicts in a few seconds via force_evict (ollama stop) before the i2v lease — heavier than the old 2-3GB narrators but well within the ADR-0015 §3 budget on the 24GB card. TEXT-ONLY: it cannot see the frame, so beat-gen reads the caption the 'narrator' vision pass produced (lucid_engine.NARRATOR_MODEL != MODEL drops the image); the i2v step still continues from the frame pixels, so grounding fidelity is preserved. Revert/tune: set this role's model (hermes3:3b = cheap-evict, Rocinante = hotter), or override at runtime with LUCID_NARRATOR_MODEL. The mature heat itself is steered by _RATING_CLAUSE['mature'] in lucid_engine.py and stays rating-gated (sfw dreams are unaffected)."
     },
     {
       "id": "t2i-opening",

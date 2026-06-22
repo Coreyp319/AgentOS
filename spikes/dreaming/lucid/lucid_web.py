@@ -1380,6 +1380,10 @@ class Handler(BaseHTTPRequestHandler):
             private = bool(req.get("private"))
             consent = bool(req.get("consent"))
             name = req.get("name")   # human label for the library (ADR-0028)
+            # the "Mature dream" toggle -> a user-declared content floor on the chain, so every beat menu is
+            # steered mature from frame 0 instead of waiting for the conservative per-frame VLM to flip. Only
+            # ever floors UP; the red line is independent + code-enforced (lucid_safety). Default off = today.
+            rating_floor = "mature" if bool(req.get("mature")) else None
             img_b64 = req.get("image_b64")
             if not _START_SEM.acquire(blocking=False):   # bound concurrent decode + vision-model loads
                 return self._send(429, json.dumps({"error": "busy — try again in a moment"}), "application/json")
@@ -1406,7 +1410,7 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         return self._send(200, json.dumps({"error": f"invalid image: {e}"}), "application/json")
                     try:
-                        L.start(new_sess, seed, private=private, consent=consent, name=name)  # B2 INSIDE start()
+                        L.start(new_sess, seed, private=private, consent=consent, name=name, rating_floor=rating_floor)  # B2 INSIDE start()
                     except L.SeedBlocked as e:
                         return self._send(200, json.dumps({"blocked": True, **e.verdict.as_dict()}), "application/json")
                     except Exception as e:
@@ -1435,7 +1439,7 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                         return self._send(200, json.dumps({"error": str(e)}), "application/json")
                     try:
-                        L.start(new_sess, seed, private=private, consent=consent, name=name)  # B2 on the gen
+                        L.start(new_sess, seed, private=private, consent=consent, name=name, rating_floor=rating_floor)  # B2 on the gen
                     except L.SeedBlocked as e:
                         return self._send(200, json.dumps({"blocked": True, **e.verdict.as_dict()}), "application/json")
                     except Exception as e:
@@ -1449,7 +1453,7 @@ class Handler(BaseHTTPRequestHandler):
                 # no image, no text -> a server-generated abstract opening (trusted; no real person)
                 seed = _synthetic_opening()
                 try:
-                    L.start(new_sess, seed, private=private, _trusted_seed=True, name=name)
+                    L.start(new_sess, seed, private=private, _trusted_seed=True, name=name, rating_floor=rating_floor)
                 except Exception as e:
                     return self._send(200, json.dumps({"error": f"start failed: {e}"}), "application/json")
                 finally:

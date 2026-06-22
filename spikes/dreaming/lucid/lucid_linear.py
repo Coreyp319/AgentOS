@@ -191,7 +191,7 @@ def save_chain(session, chain):
 
 
 def start(session, opening_image, private=False, consent=False, _trusted_seed=False, premise=None,
-          name=None):
+          name=None, seed=None, rating_floor=None):
     # start() is the SINGLE B2 chokepoint (ADR-0017). _trusted_seed=True is reachable ONLY for a
     # server-generated abstract opening (no real person) — never for a user-supplied image. Every
     # user seed passes B2 here, so no surface can route around the guard.
@@ -214,11 +214,22 @@ def start(session, opening_image, private=False, consent=False, _trusted_seed=Fa
     # (_beat_seed = base + node id), so (a) a clip is reproducible — the hero re-render of a draft beat
     # reuses the SAME seed to refine the SAME shot, not roll a new one — and (b) the whole dream shares one
     # noise family instead of the old per-beat random() lottery (a small steadiness win on identity drift).
+    # ADR-0036 D5: an explicit `seed` (frozen at enqueue by `freeze_intent`) is used when given, so a
+    # DEFERRED create re-runs the SAME base seed instead of rolling a fresh one at drain — a deferred
+    # retry reproduces the same noise family. None (the default) preserves today's mint-on-start.
     chain = {"session": session, "private": private,
              "name": (name or "").strip()[:80] or None,
              "created": time.time(),
-             "seed": random.randint(1, 2**31 - 1),
+             "seed": seed if seed is not None else random.randint(1, 2**31 - 1),
              "premise": (premise or "").strip()[:300] or None,
+             # rating_floor: the USER-DECLARED content floor (the "Mature dream" toggle). The per-frame VLM
+             # rating (ground_frame) is conservative — it only flips to 'mature' when the seed image/premise
+             # already reads explicit, so a suggestive-but-clothed opening renders a whole dream SFW and the
+             # viewer never sees mature choices. This floors EVERY beat menu + refine to the declared tier from
+             # frame 0; the VLM can still ratchet a SFW dream UP (monotone), never the floor DOWN. Validated to
+             # the one tier we support ('mature'); anything else -> None = today's pure-VLM behaviour. The red
+             # line (minors / real people / non-consent) is INDEPENDENT and code-enforced — a floor can't widen it.
+             "rating_floor": "mature" if rating_floor == "mature" else None,
              "nodes": [
                  {"id": 0, "parent": None, "label": "opening", "prompt": None,
                   "seed": None, "clip": None, "out_frame": ref_name}]}
@@ -295,7 +306,7 @@ def _refine_context(session, node_id):
         chain = load_chain(session)
         node = _node_or_tip(chain, node_id)
         caption = node.get("caption")
-        rating = _max_rating(node.get("rating"))            # sealed monotone floor; None -> sfw
+        rating = _max_rating(node.get("rating"), chain.get("rating_floor"))   # sealed floor + the declared floor
         frame_b64 = E.frame_to_b64(_frame_abs(session, node))
         if not caption and frame_b64:                       # frame never grounded yet — one cheap pass
             cap, rt = E.ground_frame(frame_b64, chain.get("premise"))
@@ -576,6 +587,7 @@ def roll_menu(session, chain, n=4, node=None):
     node = node or chain["nodes"][-1]
     frame_b64 = E.frame_to_b64(_frame_abs(session, node))
     caption, rating = E.ground_frame(frame_b64, chain.get("premise"))
+    rating = _max_rating(rating, chain.get("rating_floor"))   # user-declared floor wins (monotone, sticky-up)
     if caption and not S.red_line_ok(caption):     # a model-written caption is untrusted text too
         caption = None
     beats = propose(context_for(session, caption=caption, node=node), n=n, rating=rating, frame_b64=frame_b64)
@@ -828,7 +840,7 @@ def generate_beat_preview(session, node_id, beat, external_lease=True):
         anchor = node.get("out_frame")                # the conditioning frame this path continues FROM
         if not anchor:
             return None
-        rating = _max_rating(*(n.get("rating") for n in _ancestry(chain, node)))
+        rating = _max_rating(chain.get("rating_floor"), *(n.get("rating") for n in _ancestry(chain, node)))
         # deterministic per-(node,beat) seed: reproducible across reloads AND distinct across siblings, so each
         # card's path actually differs (a same-seed render of two prompts can converge).
         seed = ((_beat_seed(chain, node["id"]) + zlib.crc32(key.encode())) % (2**31 - 1)) or 1
