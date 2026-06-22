@@ -559,7 +559,10 @@ def free_vram():
     req = urllib.request.Request(
         BASE + "/free", data=data, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req) as r:
+        # bounded: a wedged /free (mid-eviction of a ~17 GB model) must NOT hang a synchronous caller holding the
+        # edit lock + TURN (ADR-0040 review). On timeout we swallow + return False; the caller's headroom read is
+        # the real admission gate, so a timed-out reclaim degrades to "free too low -> skip", never a stall.
+        with urllib.request.urlopen(req, timeout=10) as r:
             return 200 <= r.status < 300
     except Exception:
         return False
