@@ -45,6 +45,7 @@ import lucid_engine as E   # noqa: E402  (generation backend + workflow paramete
 import lucid_safety as S   # noqa: E402  (the deterministic gates)
 import lucid_store as ST   # noqa: E402  (persistent vs private/ephemeral storage — ADR-0016)
 import lucid_b2 as B2      # noqa: E402  (seed-image likeness guard — ADR-0017)
+import lucid_ground as G   # noqa: E402  (ADR-0037 grounding gates — L0 canon ledger + L2 palette flag)
 
 COORD_NAME = "org.agentos.Coordinator1"
 COORD_PATH = "/org/agentos/Coordinator1"
@@ -594,21 +595,45 @@ def remove_note(session, node_id, note_id):
     return True
 
 
+def _region_phrase(x, y):
+    """A coarse, deterministic location phrase for a normalized tap (origin top-left) — so a note's text is
+    understood as referring to THAT part of the frame (per-region steering, ADR-0025/0032). Code disposes: a
+    fixed 3x3 grid over the frame, never a model's guess at the object's name (which would need a caption pass;
+    the on-frame numbered pin is the precise spatial referent). Returns a phrase like 'the upper-left'."""
+    try:
+        x, y = float(x), float(y)
+    except (TypeError, ValueError):
+        return None
+    col = "left" if x < 0.34 else "right" if x > 0.66 else "center"
+    row = "top" if y < 0.34 else "bottom" if y > 0.66 else "middle"
+    if row == "middle" and col == "center":
+        return "the center"
+    if col == "center":
+        return "the " + row
+    if row == "middle":
+        return "the " + col
+    return "the %s-%s" % (row, col)
+
+
 def _steering_suffix(notes):
     """A SHORT deterministic prompt suffix that feeds a parent's notes forward to the next beat (code
     disposes — sorted by `t`, fixed phrasing per tag). Empty string when there are no notes. The caller
-    appends this to the base prompt and gates the COMBINED string, so steering text is red-line-gated too."""
+    appends this to the base prompt and gates the COMBINED string, so steering text is red-line-gated too.
+    When a note carries a region the deterministic phrasing names WHERE (the coarse grid phrase), so the
+    text-only fallback path still localizes the steer the same way the VLM decomposition does (ADR-0032)."""
     parts = []
     for n in sorted(notes, key=lambda x: x.get("t", 0.0)):
         tag, text = n.get("tag"), (n.get("text") or "").strip()
+        rloc = _region_phrase(n["x"], n["y"]) if ("x" in n and "y" in n) else None
+        loc = (" in " + rloc) if rloc else ""
         if tag == "more":
-            parts.append("; emphasize " + (text or "this"))
+            parts.append("; emphasize " + (text or "this") + loc)
         elif tag == "less":
-            parts.append("; less " + (text or "of this"))
+            parts.append("; less " + (text or "of this") + loc)
         elif tag == "hold":
             parts.append("; hold the framing and composition")
         elif tag == "change":
-            parts.append("; change " + (text or "this"))
+            parts.append("; change " + (text or "this") + loc)
     return "".join(parts)
 
 
@@ -652,7 +677,13 @@ def roll_menu(session, chain, n=4, node=None):
     rating = _max_rating(rating, chain.get("rating_floor"))   # user-declared floor wins (monotone, sticky-up)
     if caption and not S.red_line_ok(caption):     # a model-written caption is untrusted text too
         caption = None
-    beats = propose(context_for(session, caption=caption, node=node), n=n, rating=rating, frame_b64=frame_b64)
+    canon = _canon_for(chain, node, caption)       # ADR-0037 L0: fold this frame into the node's canon...
+    if canon:
+        node["canon"] = canon                      # ...persisted by beats_for_node's save_chain
+    # ...and pass it in so THIS roll steers on the fresh fold (context_for re-reads from disk, where this
+    # turn's canon isn't persisted yet — without this the canon would be one beat behind / inert on first roll).
+    beats = propose(context_for(session, caption=caption, node=node, canon=canon),
+                    n=n, rating=rating, frame_b64=frame_b64)
     return beats, caption, rating
 
 
@@ -746,6 +777,45 @@ def _with_subject(subject, render_prompt):
     body = (render_prompt or "").strip()
     prefix = subject if subject.endswith((".", "!", "?")) else subject + "."
     return (prefix + " " + body).strip() if body else prefix
+
+
+# ---------------- ADR-0037: grounding gates (L0 canon ledger + L2 palette flag) ----------------
+CANON_ENABLED = os.environ.get("LUCID_CANON", "1") != "0"      # L0 hybrid canon ledger (kill-switch)
+# L2 defaults OFF: the palette gate is "flag-only until a fixture sanity pass calibrates it" (lucid_ground
+# docstring) and its cv2 child runs inside the leased turn — opt in (LUCID_PALETTE=1) after calibration.
+PALETTE_ENABLED = os.environ.get("LUCID_PALETTE", "0") != "0"
+# The canon LLM fold is an EXTRA Ollama load that lands ADDITIVELY on top of a resident ComfyUI (~17GB warm
+# lease). Predict-before-load (ADR-0003): if measured free VRAM is below the narrator footprint + a
+# compositor reserve, skip the model half rather than risk an OOM the coordinator never sees.
+CANON_HEADROOM_MIB = int(os.environ.get("LUCID_CANON_HEADROOM_MIB", "4000"))
+
+
+def _canon_for(chain, node, caption, *, delta_fn=None):
+    """ADR-0037 L0: this node's canon = its PARENT's canon folded with (this beat's label + grounded
+    caption). Cached on the node — per-node like beats/caption, so a branch carries its OWN spine's canon
+    (re-derive-O(spine) by construction; a revert just reads the cached node). Code disposes
+    time_of_day/mood; the LLM delta (lucid_ground.ledger_delta_llm — qwen2.5vl on the 0.6 fidelity lane,
+    the model the on-box gate cleared) proposes who/what/story. `delta_fn` overrides the LLM seam (tests
+    inject a fake; defaults to the real one). Fail-open: kill-switch off / no caption / low VRAM headroom /
+    any error -> None and the steering degrades to today's labels chain. The caller's save_chain persists it
+    (private -> sealed tmpfs via ST.save_chain; canon is a chain FIELD, never a sidecar -> single-sink,
+    freed on burn with the chain)."""
+    if not CANON_ENABLED or not caption:
+        return None
+    try:
+        if node.get("canon"):
+            return node["canon"]                       # already folded for this frame — hold it
+        free = E._comfy_free_mib()                     # None = ComfyUI cold (no warm lease) -> VRAM is free
+        if free is not None and free < CANON_HEADROOM_MIB:
+            return None                                # under the warm lease + low headroom -> skip the load
+        pid = node.get("parent")
+        parent = _by_id(chain).get(pid) if pid is not None else None
+        prior = (parent.get("canon") if parent else None) or G.empty_canon()
+        seed = not (parent and parent.get("canon"))    # root / a chain predating canon -> a SEED pass
+        return G.update_canon(prior, node.get("label"), caption,
+                              delta_fn=(delta_fn or G.ledger_delta_llm), seed=seed)
+    except Exception:
+        return None                                    # fail-open: keep no canon, steering uses labels
 
 
 class GenerationError(Exception):
@@ -959,8 +1029,107 @@ def decorate_beats(session, node_id, beats):
     return out
 
 
+def _notes_digest(chain, parent):
+    """A stable hash binding a reviewed reading to the EXACT (parent, notes) it was derived from (ADR-0023
+    fuse-review). /api/fuse returns it with the reading it produced; /api/dream recomputes it before running
+    a user-edited reading and REFUSES on a mismatch — so an edit reviewed against one set of notes can never
+    silently run against a different set (the staleness gate). Deliberately NOTES-ONLY: the typed prompt is
+    NOT included (editing your words must not false-trigger a "your notes changed" error — the edited reading
+    is what runs regardless of the words), and the subject is NOT included (it is captured once and lives
+    inside the fused text already, and is in-memory-only at fuse time so it would spuriously diverge). The
+    fuse CACHE keys on the prompt separately, so the readback still updates as you type."""
+    h = hashlib.blake2b(digest_size=12)
+    h.update(str(parent.get("id")).encode())
+    for n in sorted(parent.get("notes") or [], key=lambda x: str(x.get("id", ""))):
+        region = "%s,%s,%s" % (n.get("x"), n.get("y"), n.get("r")) if "x" in n else ""
+        h.update(("\x00%s|%s|%s|%s|%s|%s" % (n.get("id"), n.get("tag"), n.get("text") or "",
+                                             n.get("t"), region, n.get("mask") or "")).encode("utf-8", "replace"))
+    return h.hexdigest()
+
+
+def _collect_note_frames(session, parent, notes, private):
+    """Screenshot each tagged MOMENT of the parent clip and return (tagged, guides) — the two channels a
+    note feeds forward (ADR-0023/0025/0032). `tagged` = [{b64,tag,text,t,region}] for the VLM decomposition
+    (BOTH engines — it authors the prompt); `guides` = [(abs_path,t,tag,region,mask_abs)] for the LTX engine
+    to pin as keyframe/attention conditioning (the pixel channel). `region` on a tagged item is the coarse
+    location phrase so the per-note text is read as referring to WHERE the viewer tapped. Fail-open: an
+    unresolved frame is skipped. Shared by step() AND fuse_direction() so the Shot Card readback shows the
+    SAME decomposition the render will run."""
+    tagged, guides = [], []
+    clip = parent.get("clip")
+    for i, note in enumerate(sorted(notes, key=lambda x: x.get("t", 0.0))):
+        b64 = None
+        region = (note["x"], note["y"], note["r"]) if ("x" in note and "y" in note) else None
+        if clip:
+            nm, ap = ST.frame_ref(session, private, f"{session}_note{i}.png")
+            fn = E.extract_frame_at(clip, note.get("t", 0.0), nm, out_path=ap)
+            if fn:
+                b64 = E.frame_to_b64(ap)
+                mask_abs = None
+                if note.get("mask"):
+                    cand = os.path.join(E.INPUT_DIR, note["mask"])
+                    mask_abs = cand if os.path.exists(cand) else None
+                guides.append((ap, float(note.get("t", 0.0)), note.get("tag"), region, mask_abs))
+        else:                                         # clip-less opening: use the parent's stored frame
+            b64 = E.frame_to_b64(_frame_abs(session, parent))
+        if b64:
+            tagged.append({"b64": b64, "tag": note.get("tag"), "text": note.get("text", ""),
+                           "t": float(note.get("t", 0.0)),
+                           "region": _region_phrase(region[0], region[1]) if region else None})
+    return tagged, guides
+
+
+def fuse_direction(session, parent_id, prompt, *, _decompose=None, _subject=None, allow_model=True):
+    """ADR-0023/0033: assemble the EXACT prompt the next beat would run — the notes decomposed (or the
+    deterministic suffix), with the persistent subject folded IN — WITHOUT any lease/GPU, so the surface can
+    show it and let the user correct it BEFORE committing minutes of generation. This is "model proposes,
+    code disposes" made visible at the one juncture it was previously invisible: the fused string a 3B VLM
+    authored, which used to drop straight into the render. NB the fuse runs ONE local VLM pass that LOADS
+    AND EVICTS the 3B narrator (`keep_alive:0`, the same residency profile as a menu roll) — it does not hold
+    it warm; the caller throttles it (TURN-phase backpressure) so an eager fuse never thrashes the slot.
+
+    Returns a JSON-able dict:
+      {ok, reason, fused, subject, source ('decompose'|'suffix'), rows, notes_digest}
+    `fused` is the RED-LINE-GATED final string (subject prefix included) or None if it can't be gated even
+    after the deterministic fallback. `rows` is the structured note channel (ordered by t) for the Shot Card.
+    `allow_model=False` skips the VLM decomposition entirely (straight to the deterministic suffix) — used by
+    the TURN-phase backpressure so a fuse fired while a beat is generating never competes for the narrator slot.
+    `_decompose(beat_prompt, tagged, premise)->str|None` and `_subject(session, chain)->str|None` are
+    injectable so the contract is testable without a model (and the deterministic path is then exercised)."""
+    try:
+        chain = load_chain(session)
+    except Exception as e:                            # noqa: BLE001 — no dream loaded yet
+        log(f"fuse: no chain ({e})")
+        return {"ok": False, "reason": "No dream is loaded.", "fused": None, "subject": "",
+                "source": "suffix", "rows": [], "notes_digest": ""}
+    parent = _node_or_tip(chain, parent_id)
+    notes = parent.get("notes") or []
+    prompt = prompt or ""
+    private = ST.is_private(session)
+    digest = _notes_digest(chain, parent)
+    rows = []
+    for n in sorted(notes, key=lambda x: x.get("t", 0.0)):
+        rows.append({"id": n.get("id"), "tag": n.get("tag"), "text": n.get("text") or "",
+                     "t": float(n.get("t", 0.0)), "region": ("x" in n and "y" in n),
+                     "mask": bool(n.get("mask"))})
+    tagged, _guides = _collect_note_frames(session, parent, notes, private) if notes else ([], [])
+    decompose = _decompose if _decompose is not None else E.decompose_notes
+    refined = decompose(prompt, tagged, premise=chain.get("premise")) if (allow_model and tagged) else None
+    source = "decompose" if refined else "suffix"
+    body = refined if refined else (prompt + _steering_suffix(notes))
+    subject = (_subject(session, chain) if _subject is not None else _subject_for(session, chain)) or ""
+    fused = S.gate_prompt(_with_subject(subject, body))
+    if fused is None:                                 # a red-lined fusion (e.g. a model embellishment) — fall
+        body = prompt + _steering_suffix(notes)       # back to the deterministic suffix (no model text) + re-gate
+        source = "suffix"
+        fused = S.gate_prompt(_with_subject(subject, body))
+    return {"ok": fused is not None,
+            "reason": None if fused is not None else "Lucid couldn't read that direction safely — edit your notes.",
+            "fused": fused, "subject": subject, "source": source, "rows": rows, "notes_digest": digest}
+
+
 def step(session, prompt, label, tier="batch", external_lease=False, is_current=None, length=None,
-         parent_id=None, quality="draft", raise_errors=False):
+         parent_id=None, quality="draft", raise_errors=False, fused_edited=None, anchor_override=None):
     """One leased turn: gate the prompt (both paths), generate under lease, append a node.
     `quality` ('draft'|'hero', ADR-0033) selects the Wan render lane; the interactive loop renders 'draft'
     and the node records a deterministic `seed` + `anchor` so rerender_hero() can refine the SAME shot.
@@ -973,12 +1142,23 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
     `external_lease=True` (warm-keep) threads through to generate_video so a caller holding the
     batch lease across beats (lucid_web) neither Spawns nor Releases ComfyUI per turn.
 
+    `fused_edited` (optional, ADR-0023): the user reviewed the composed prompt in the Shot Card and either
+    accepted or edited it. When given, step runs it VERBATIM — it skips the VLM decomposition AND the subject
+    prefix (both already reflected in the reviewed text), so what the user saw is exactly what renders. The
+    LTX pixel guides and the hold-anchor still derive from the notes, so a text edit never disables a region
+    mask. The string is still red-line-gated here (defense in depth; /api/dream gates it at the door too).
+
     `is_current` (optional) is a freshness predicate checked RIGHT BEFORE the chain persist — the one
     state mutation. A beat is minutes long; the chain is loaded at the top and held in memory across
     generation, so if the session was cleared/restarted/deleted meanwhile (a `/api/start`,
     `/api/delete`, or burn arrived), writing this stale in-memory chain back would resurrect deleted
     data or clobber the new dream. If the caller says the turn is no longer current, we discard the
-    clip (a cache artifact) and leave the chain untouched — fail-open, exactly like a preempt."""
+    clip (a cache artifact) and leave the chain untouched — fail-open, exactly like a preempt.
+
+    `anchor_override` (optional, ADR-0040): an INPUT_DIR-relative keyframe (a prompt-edited frame from
+    E.edit_frame) to seed this beat FROM instead of the parent's last frame. When given it IS the steering,
+    so the parent's moment-notes (decomposition + LTX guides + the hold-anchor) are skipped — the edited
+    keyframe shows the starting pose and `prompt` directs the motion (the subject prefix still applies)."""
     private = ST.is_private(session)
     chain = load_chain(session)
     parent = _node_or_tip(chain, parent_id)
@@ -987,50 +1167,32 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
     # deterministic suffix built from the notes is appended to the base prompt BEFORE the gate, so the
     # steering text is red-line-gated alongside the prompt (no note can carry text past the gate). With
     # no notes the suffix is "" and the prompt is unchanged — legacy behaviour intact.
-    notes = parent.get("notes") or []
-    # DECOMPOSITION (image-capable): screenshot each tagged MOMENT of the parent clip, hand the frames
-    # + their per-note intent to the VLM (E.decompose_notes) and let it author one refined i2v
-    # continuation prompt. The model SEES what the viewer pointed at; this is preferred over the blind
-    # text-suffix. Built BEFORE any GPU/lease work. Fail-open (ADR-0003): if there are no notes, or the
-    # model is unavailable / returns None, we fall back to the deterministic text-suffix path below, and
-    # with NO notes prompt_final == (prompt or "") — legacy behaviour exactly.
-    tagged = []
-    # GUIDES (image-conditioning, LTX-only): the SAME per-note frames screenshotted for the VLM are
-    # also collected as (abs_path, t, tag) so the LTX engine can pin guide-conditioning on each tagged
-    # MOMENT of the timeline. Only the clip-bearing parent contributes (the clip-less opening has no
-    # timeline to pin a guide on); applied to the engine below ONLY when the LTX engine is active.
-    guides = []
-    if notes:
-        clip = parent.get("clip")
-        for i, note in enumerate(sorted(notes, key=lambda x: x.get("t", 0.0))):
-            b64 = None
-            if clip:
-                nm, ap = ST.frame_ref(session, private, f"{session}_note{i}.png")
-                fn = E.extract_frame_at(clip, note.get("t", 0.0), nm, out_path=ap)
-                if fn:
-                    b64 = E.frame_to_b64(ap)
-                    # (abs_path, t, tag, region, mask_abs) — region=(x,y,r) is the WHERE (ADR-0025); mask_abs
-                    # is a stored SEGMENTATION mask (ADR-0032, preferred over the disc). None for legacy notes.
-                    region = (note["x"], note["y"], note["r"]) if ("x" in note and "y" in note) else None
-                    mask_abs = None
-                    if note.get("mask"):
-                        cand = os.path.join(E.INPUT_DIR, note["mask"])
-                        mask_abs = cand if os.path.exists(cand) else None
-                    guides.append((ap, float(note.get("t", 0.0)), note.get("tag"), region, mask_abs))  # LTX pin
-            else:                                       # clip-less opening: b64 the parent's stored frame
-                b64 = E.frame_to_b64(_frame_abs(session, parent))
-            if b64:
-                tagged.append({"b64": b64, "tag": note.get("tag"),
-                               "text": note.get("text", ""), "t": float(note.get("t", 0.0))})
-    refined = E.decompose_notes(prompt or "", tagged, premise=chain.get("premise")) if tagged else None
-    # VLM decomposition preferred; the deterministic steering suffix is the FALLBACK (model unavailable
-    # / returned None / no tagged frames). The model's own output is still red-line-gated below.
-    prompt_final = refined if refined else ((prompt or "") + _steering_suffix(notes))
-    # IDENTITY (ADR-0033): quietly prefix the persistent subject (captured once from the opening frame)
-    # so the face/clothing carry across the independent i2v cuts. Render-prompt ONLY — the beat MENU stays
-    # motion/idea-led (it must not be dampened, see [[lucid-beatgen-prompt-redesign]]). The COMBINED string
-    # is red-line-gated below, so the descriptor passes the same gate as any prompt. None -> unchanged.
-    prompt_final = _with_subject(_subject_for(session, chain), prompt_final)
+    # ADR-0040: an edited keyframe (anchor_override) IS the new direction — ignore the parent's moment-notes
+    # (decomposition / LTX guides / hold-anchor) so a stale per-moment steer can't fight the edited pose.
+    notes = [] if anchor_override else (parent.get("notes") or [])
+    # The two channels a note feeds forward (ADR-0023/0025/0032), collected ONCE: `tagged` (per-moment frames
+    # + intent + coarse region) for the VLM decomposition that authors the prompt, and `guides` (abs_path, t,
+    # tag, region, mask) for the LTX engine to pin as keyframe/attention conditioning. Built BEFORE any
+    # GPU/lease work; the GUIDES are applied to the engine below ONLY when LTX is active (Wan ignores them).
+    tagged, guides = (_collect_note_frames(session, parent, notes, private) if notes else ([], []))
+    if fused_edited is not None:
+        # ADR-0023: the user reviewed (and possibly edited) the composed prompt in the Shot Card. Run THAT
+        # verbatim — do NOT re-decompose and do NOT re-prepend the subject (it is already inside the reviewed
+        # text), so "what you saw is what runs". The structured channels still derive from the notes (the LTX
+        # `guides` above + the hold-anchor below): a text edit never silently disables a mask or the anchor.
+        prompt_final = fused_edited
+    else:
+        # DECOMPOSITION (image-capable, BOTH engines): hand the per-note frames + intent to the VLM
+        # (E.decompose_notes) and let it author one refined i2v continuation prompt — the model SEES what the
+        # viewer pointed at, preferred over the blind text-suffix. Fail-open (ADR-0003): no notes / model
+        # unavailable / returns None -> the deterministic text-suffix path, and with NO notes
+        # prompt_final == (prompt or "") — legacy behaviour exactly.
+        refined = E.decompose_notes(prompt or "", tagged, premise=chain.get("premise")) if tagged else None
+        prompt_final = refined if refined else ((prompt or "") + _steering_suffix(notes))
+        # IDENTITY (ADR-0033): quietly prefix the persistent subject (captured once from the opening frame)
+        # so the face/clothing carry across the independent i2v cuts. Render-prompt ONLY. The COMBINED string
+        # is red-line-gated below, so the descriptor passes the same gate as any prompt. None -> unchanged.
+        prompt_final = _with_subject(_subject_for(session, chain), prompt_final)
     gated = S.gate_prompt(prompt_final)
     if gated is None:
         raise SystemExit("prompt refused by red-line gate (B3)")
@@ -1038,12 +1200,12 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
     # computed up-front so the spatial anchor frame gets the new node's stable name.
     # ANCHOR (spatial): a `hold` note pins the next beat to a tagged MOMENT of the parent clip, not just
     # its last frame; falls back to parent["out_frame"] on no-hold / no-clip / extraction failure.
-    anchor = _anchor_for(session, parent, notes, f"{session}_n{nid}_anchor.png")
+    anchor = anchor_override or _anchor_for(session, parent, notes, f"{session}_n{nid}_anchor.png")
     # The monotone content floor governs the render LoRA — taken along the NEW beat's branch (parent's
     # ancestry), so a take consistent with the frame it grows from inherits that line's rating, and a
     # SFW branch off a SFW ancestor isn't dragged mature by an unrelated sibling. The opening (typed
     # before its first roll) falls back to "sfw" — the safe default. The red-line gate is independent.
-    rating = _max_rating(*(n.get("rating") for n in _ancestry(chain, parent)))
+    rating = _max_rating(chain.get("rating_floor"), *(n.get("rating") for n in _ancestry(chain, parent)))
     # GUIDES gate: hand the per-moment guide frames to the engine ONLY for the LTX engine (10eros),
     # which applies them as guide-conditioning (fail-open in the engine). Wan keeps its VLM-decomposed
     # prompt + single anchor path, so it gets guides=None. No notes -> guides is [] -> None either way.
@@ -1065,6 +1227,12 @@ def step(session, prompt, label, tier="batch", external_lease=False, is_current=
     node = {"id": nid, "parent": parent["id"], "label": label, "prompt": gated,
             "seed": beat_seed, "anchor": anchor, "quality": quality,
             "clip": clip, "out_frame": out_frame, "length": seg_len, "rating": rating}
+    if PALETTE_ENABLED:                              # ADR-0037 L2: flag-only palette drift vs the parent frame
+        try:                                         # keep-not-block; the verdict is steering telemetry + the
+            drift = G.palette_drift(_frame_abs(session, parent), abs_path)   # calm consistency chip, never a gate
+            node["palette"] = G.palette_verdict(drift)   # 'steady' | 'shifted' | 'unknown' (couldn't measure)
+        except Exception:
+            pass                                     # fail-open: a missing verdict simply shows no chip
     chain["nodes"].append(node)
     save_chain(session, chain)
     return node
@@ -1122,12 +1290,86 @@ def rerender_hero(session, node_id, tier="batch", external_lease=False, is_curre
     return fnode
 
 
-def context_for(session, caption=None, node=None):
+def replace_beat(session, node_id, anchor_override, prompt=None, length=None, tier="batch",
+                 external_lease=False, is_current=None, raise_errors=False):
+    """ADR-0040: re-render an existing beat IN PLACE from an edited keyframe (`anchor_override`, an
+    INPUT_DIR-relative name produced by E.edit_frame), replacing its clip + out_frame. The node's ORIGINAL
+    is backed up ONCE to node['prev'] so revert_beat() can restore it — the edit is reversible, never a
+    destructive overwrite (ADR-0005). `prompt` (the edit instruction) becomes the motion prompt; None reuses
+    the node's stored prompt verbatim. The opening (parent-less) node has no clip and can't be replaced.
+    Children are NOT re-rendered (they keep their own stored anchors) — replacing a shot doesn't retroactively
+    redraw its continuation; the user can edit those too. Returns the updated node, or None (unknown/opening
+    node, a fail-open yield, or a superseded turn). Mirrors step()/rerender_hero's lease + epoch discipline."""
+    private = ST.is_private(session)
+    chain = load_chain(session)
+    node = _by_id(chain).get(node_id)                 # STRICT lookup — never the tip-fallback (would edit the wrong shot)
+    if node is None or node.get("parent") is None:
+        return None                                   # the opening still has no clip to replace
+    seg_len = E.clamp_length(length if length is not None else node.get("length"))
+    rating = _max_rating(chain.get("rating_floor"), *(n.get("rating") for n in _ancestry(chain, node)))
+    if prompt:                                        # the edit instruction directs the motion; gate + subject-prefix it
+        gated = S.gate_prompt(_with_subject(_subject_for(session, chain), prompt))
+        if gated is None:
+            raise SystemExit("prompt refused by red-line gate (B3)")
+    else:
+        gated = node.get("prompt")                    # reuse the node's stored prompt (already gated + subject-prefixed)
+    seed = node.get("seed") or _beat_seed(chain, node["id"])
+    clip = generate_video(session, gated, anchor_override, tier=tier, external_lease=external_lease,
+                          length=seg_len, rating=rating, seed=seed, quality=node.get("quality", "draft"),
+                          raise_errors=raise_errors)
+    if clip is None:
+        log("edit-replace skipped (fail open) — chain unchanged")
+        return None
+    if is_current is not None and not is_current():
+        log("edit-replace superseded mid-render — discarding clip, chain unchanged")
+        return None
+    # Re-load the chain AFTER the minutes-long render (mirrors rerender_hero): a synchronous /api/note or
+    # /api/edit/revert may have written it meanwhile, so our top-of-function copy is stale — applying to the
+    # FRESH chain avoids clobbering that write (the append-only / lost-update guard, ADR-0005).
+    fresh = load_chain(session)
+    node = _by_id(fresh).get(node_id)
+    if node is None or node.get("parent") is None:        # node deleted/rebased under us — discard the clip
+        log("edit-replace target vanished mid-render — discarding clip, chain unchanged")
+        return None
+    # Back up the ORIGINAL once (a 2nd edit keeps the FIRST original, so revert always returns to the source
+    # shot). The new out_frame gets a FRESH name so prev's frame file survives for revert (append-only, ADR-0005).
+    node.setdefault("prev", {k: node.get(k) for k in
+                             ("clip", "out_frame", "anchor", "prompt", "seed", "length", "quality")})
+    edits = int(node.get("edits", 0)) + 1
+    ref_name, abs_path = ST.frame_ref(session, private, f"{session}_n{node['id']}_e{edits}.png")
+    out_frame = E.extract_last_frame(clip, ref_name, out_path=abs_path)
+    node.update({"clip": clip, "out_frame": out_frame, "anchor": anchor_override, "prompt": gated,
+                 "seed": seed, "length": seg_len, "edited": True, "edits": edits})
+    save_chain(session, fresh)
+    return node
+
+
+def revert_beat(session, node_id):
+    """ADR-0040: undo an in-place edit (replace_beat) — restore the node's backed-up ORIGINAL clip/frame/
+    prompt from node['prev']. Idempotent: a node with no backup (never edited / already reverted) returns
+    None and changes nothing. Returns the restored node, or None. The discarded edited clip/frame files are
+    left on disk (harmless extra scratch for a persistent dream; a private dream burns them on logout)."""
+    chain = load_chain(session)
+    node = _by_id(chain).get(node_id)
+    prev = node.get("prev") if isinstance(node, dict) else None
+    if not isinstance(prev, dict):
+        return None
+    node.update(prev)
+    for k in ("prev", "edited", "edits"):
+        node.pop(k, None)
+    save_chain(session, chain)
+    return node
+
+
+def context_for(session, caption=None, node=None, canon=None):
     """Story-so-far from the chain, led by the session's premise (the initial prompt) so every proposed
     beat stays on-theme. `node` (optional) scopes the labels to THAT beat's branch (root -> node), so a
     take growing from an earlier frame is proposed against its own line, not a sibling's; default None =
     the linear whole-chain spine (legacy). `caption` (optional) is the freshly-grounded description of
-    the current frame, used as "on screen now" before it has been sealed on the node."""
+    the current frame, used as "on screen now" before it has been sealed on the node. `canon` (optional,
+    ADR-0037) is the FRESHLY-folded canon for this node — passed in so the steering reflects the fold that
+    just happened (context_for re-reads the chain from disk, where this turn's canon isn't persisted yet);
+    None falls back to the node's persisted canon."""
     chain = load_chain(session)
     here = _by_id(chain).get(node["id"]) if node else None
     spine = _ancestry(chain, here) if here else chain["nodes"]
@@ -1137,7 +1379,17 @@ def context_for(session, caption=None, node=None):
     premise = chain.get("premise")
     if premise:
         parts.append("This dream is about: " + premise + ".")
-    parts.append("Story so far: " + " -> ".join(labels) + "." if labels else "The dream is just beginning.")
+    # ADR-0037 L0: the canon ledger REPLACES the literal labels-telephone join. The canon is scoped to THIS
+    # node (its spine's cached fold), so a branch is proposed against its own line. Fail-open: no canon
+    # (kill-switch off / not yet folded / old chain) -> today's labels chain exactly.
+    canon = canon if canon is not None else (here or chain["nodes"][-1]).get("canon")
+    canon_line = G.canon_to_context(canon) if (CANON_ENABLED and canon) else ""
+    if canon_line:
+        parts.append(canon_line)
+    elif labels:
+        parts.append("Story so far: " + " -> ".join(labels) + ".")
+    else:
+        parts.append("The dream is just beginning.")
     parts.append("On screen now: " + (cap or "the opening image."))
     # Reinforce the beat-gen prompt's DIAL 2 (advance-the-narrative) at the END of the user turn — the
     # spot a small model weights hardest. The system prompt carries this on its own; this just sharpens

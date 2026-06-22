@@ -106,6 +106,15 @@ _DOWNLOAD_SEM = threading.BoundedSemaphore(1)
 # Serialize SAM2 segmentations (ADR-0032): a rapid re-tap must not stack concurrent segment graphs against
 # one stale free-VRAM snapshot (the admission TOCTOU) — a second concurrent /api/segment fails open to a point.
 _SEG_SEM = threading.BoundedSemaphore(1)
+# Serialize the ADR-0040 keyframe-edit pass: the Qwen-Image-Edit graph evicts/reloads the i2v model, so two
+# concurrent edits would thrash VRAM — a second /api/edit/preview fails open. The previewed-but-uncommitted
+# keyframe lives in EDIT_PENDING (token -> {session,node,placement,prompt,keyframe}), single-use + TTL'd, so
+# /api/edit/commit animates EXACTLY the frame the user approved (the fuse->dream readback grammar, ADR-0023).
+_EDIT_SEM = threading.BoundedSemaphore(1)
+EDIT_PENDING = {}
+EDIT_PENDING_LOCK = threading.Lock()
+EDIT_PENDING_TTL = 1800     # an unclaimed preview keyframe expires after 30 min (kept in step with IDLE_SECS)
+EDIT_PENDING_MAX = 16       # explicit bound on the pending map; a new preview past this evicts the oldest
 # Serialize per-choice "potential path" previews (ADR-0023): ONE still render at a time, riding the WARM lease,
 # so the dwell-speculation never stacks two ~17 GB Wan admissions or co-resides with the real beat. A dedicated
 # epoch supersedes a stale node's queue the instant a new dwell (or a pick/start/burn) arrives; the active flag
@@ -197,13 +206,14 @@ def _skip_reason():
             "using it. Close it or wait for it to finish, then try again.")
 
 
-def _run_turn(prompt, label, epoch=None, length=None, parent_id=None, session=None):
+def _run_turn(prompt, label, epoch=None, length=None, parent_id=None, session=None, fused_edited=None):
     """Worker: drive ONE leased turn, then record an honest outcome (never a silent no-op).
     Warm-keep: ensure the session's batch lease (spawn ComfyUI once, reuse after) and hand it to
     step() as external — step neither Spawns nor Releases, so ComfyUI stays warm across beats.
     `epoch` (the turn generation captured at /api/dream) gates every state mutation: if a
     start/delete/burn supersedes this turn mid-beat, both step's chain persist and the terminal TURN
-    update are discarded. `epoch=None` (tests / untracked callers) keeps the legacy unguarded path."""
+    update are discarded. `epoch=None` (tests / untracked callers) keeps the legacy unguarded path.
+    `fused_edited` (ADR-0023) is the user-reviewed Shot Card prompt — step runs it verbatim when given."""
     global TOKEN_DEADLINE
     session = session or cur_session()   # captured at /api/dream time so a mid-beat switch can't reroute it
     try:
@@ -214,7 +224,7 @@ def _run_turn(prompt, label, epoch=None, length=None, parent_id=None, session=No
         else:
             is_current = (lambda: _epoch_current(epoch)) if epoch is not None else None
             node = L.step(session, prompt, label, external_lease=True, is_current=is_current,
-                          length=length, parent_id=parent_id, raise_errors=True)
+                          length=length, parent_id=parent_id, raise_errors=True, fused_edited=fused_edited)
             phase, err = ("done" if node else "skipped"), None
     except SystemExit as e:        # red-line gate refused the prompt (B3)
         phase, err = "refused", str(e)
@@ -250,6 +260,88 @@ def _run_hero(node_id, epoch=None, session=None):
             node = L.rerender_hero(session, node_id, external_lease=True, is_current=is_current,
                                    raise_errors=True)
             phase, err = ("done" if node else "skipped"), None
+    except L.GenerationError as e:  # a SUBSTANTIVE failure — surface honestly, not a calm "skipped"
+        phase, err = "error", e.user_msg
+    except Exception as e:         # noqa: BLE001 — fail open, but SAY SO
+        phase, err = "error", str(e)
+    with LEASE_LOCK:               # render done — restart the idle countdown only while this turn owns the session
+        if CURRENT_TOKEN and (epoch is None or TURN["epoch"] == epoch):
+            TOKEN_DEADLINE = time.monotonic() + IDLE_SECS
+    with TURN_LOCK:
+        if epoch is not None and TURN["epoch"] != epoch:
+            return                 # superseded mid-render — don't clobber the fresh state
+        TURN.update(phase=phase, error=err, started=None)
+
+
+def _unlink_pending_keyframe(rec):
+    """Best-effort remove an abandoned preview's keyframe file so un-clicked previews don't leave scratch in
+    INPUT_DIR (review Med). The keyframe is pure scratch until the edit is committed (then it's the node anchor),
+    INPUT_DIR-relative (the sealed subpath for a private dream). Total + best-effort."""
+    kf = (rec or {}).get("keyframe")
+    if not kf:
+        return
+    try:
+        os.remove(os.path.join(L.E.INPUT_DIR, kf))
+    except OSError:
+        pass
+
+
+def _edit_pending_put(token, rec):
+    """Stash a previewed-but-uncommitted edit (ADR-0040): prune expired entries (unlinking their keyframe
+    scratch) AND cap the map at EDIT_PENDING_MAX (evict the oldest) so an un-clicked preview can't pin a
+    keyframe forever or grow the map. `rec` carries {session,node,placement,prompt,keyframe}."""
+    now = time.monotonic()
+    with EDIT_PENDING_LOCK:
+        for k in [k for k, v in EDIT_PENDING.items() if now - v.get("ts", 0) > EDIT_PENDING_TTL]:
+            _unlink_pending_keyframe(EDIT_PENDING.pop(k, None))
+        EDIT_PENDING[token] = {**rec, "ts": now}
+        while len(EDIT_PENDING) > EDIT_PENDING_MAX:            # explicit bound, not just TTL + _EDIT_SEM rate-limit
+            oldest = min(EDIT_PENDING, key=lambda k: EDIT_PENDING[k].get("ts", 0))
+            _unlink_pending_keyframe(EDIT_PENDING.pop(oldest, None))
+
+
+def _edit_pending_pop(token):
+    """Single-use claim of a pending edit by token; None if unknown or expired (a stale 'Animate' click) —
+    an expired record's keyframe scratch is unlinked on the way out."""
+    now = time.monotonic()
+    with EDIT_PENDING_LOCK:
+        rec = EDIT_PENDING.pop(token, None)
+    if rec and now - rec.get("ts", 0) <= EDIT_PENDING_TTL:
+        return rec
+    if rec:
+        _unlink_pending_keyframe(rec)
+    return None
+
+
+def _edit_label(prompt):
+    """A short human label for an edit beat, from the instruction (the choice card / chain shows it)."""
+    s = " ".join((prompt or "").split())
+    return (s[:40] + "…") if len(s) > 40 else (s or "edit")
+
+
+def _run_edit_commit(node_id, placement, anchor_ref, prompt, label, length, epoch=None, session=None):
+    """Worker: animate a prompt-edited keyframe under the warm lease (ADR-0040). 'branch' grows a NEW beat
+    from the edited keyframe (step's anchor_override — the edit is the steering, parent notes skipped);
+    'replace' re-renders node_id IN PLACE (revertible). Mirrors _run_turn's lease + epoch discipline exactly:
+    a start/burn/delete mid-render discards both the chain persist and the terminal TURN update (fail-open)."""
+    global TOKEN_DEADLINE
+    session = session or cur_session()
+    try:
+        if epoch is not None and not _epoch_current(epoch):    # superseded before we spawned — skip
+            return
+        if _ensure_lease(epoch) is None:   # coordinator down / GPU busy / ComfyUI cold / superseded — fail open
+            phase, err = "skipped", _skip_reason()
+        else:
+            is_current = (lambda: _epoch_current(epoch)) if epoch is not None else None
+            if placement == "replace":
+                node = L.replace_beat(session, node_id, anchor_ref, prompt=prompt, length=length,
+                                      external_lease=True, is_current=is_current, raise_errors=True)
+            else:
+                node = L.step(session, prompt, label, external_lease=True, is_current=is_current,
+                              length=length, parent_id=node_id, anchor_override=anchor_ref, raise_errors=True)
+            phase, err = ("done" if node else "skipped"), None
+    except SystemExit as e:        # red-line gate refused the prompt (B3)
+        phase, err = "refused", str(e)
     except L.GenerationError as e:  # a SUBSTANTIVE failure — surface honestly, not a calm "skipped"
         phase, err = "error", e.user_msg
     except Exception as e:         # noqa: BLE001 — fail open, but SAY SO
@@ -460,6 +552,71 @@ def _run_previews(node_id, beats, epoch, session):
         _PREVIEW_SEM.release()
 
 
+# ---------------- ADR-0023: the fuse-review cache (the "how Lucid reads this" readback) ----------------
+# fuse_direction runs a VLM decompose pass (seconds, no lease/GPU) to assemble the EXACT prompt a beat would
+# run, so the Shot Card can show + let the user correct it before committing minutes of generation. Cache the
+# result by (session, parent, notes_digest) so reopening the readback — or hitting Dream-it right after — is
+# instant and STABLE (the user reviews and runs the same string, not a re-rolled one). In-memory, not on the
+# chain: it is derived/transient and embeds the subject + note text, so it should never persist to a saved or
+# sealed dream. Bounded crudely (a single local user) — a fresh notes edit mints a new digest/key.
+_FUSE_CACHE = {}
+_FUSE_LOCK = threading.Lock()
+# P1.6 cost instrumentation (council 2026-06-21): the eager fuse LOADS+EVICTS the 3B narrator per miss
+# (keep_alive:0, lucid_engine.py) — it does NOT hold it warm. Count hits/misses and log each miss's wall time
+# so the load/evict-thrash cost is measurable on real typing WITHOUT a GPU box. The full p50/p95 derives from
+# these log lines; the on-box number stays in the ADR "Owed" list.
+_FUSE_LOG = {"hit": 0, "miss": 0, "backpressured": 0}
+
+
+def _fuse_cached(session, parent_id, prompt):
+    """Return the fuse-review artifact for (session, parent, prompt), served from cache when the notes are
+    unchanged (keyed by notes_digest). Fully fail-open — any error returns fuse_direction's own honest
+    {ok:False} shape via the underlying call. The engine is stamped on so the surface can be honest about
+    whether the tagged regions ALSO steer pixels (LTX) or only inform the description (Wan).
+
+    TURN-phase BACKPRESSURE (council P1.6): if a beat is generating, never run the VLM fuse — the narrator
+    load/evict would thrash the slot against the in-flight render. Return the deterministic suffix reading
+    (allow_model=False), UNCACHED so a real reading is computed once the beat finishes. The client already
+    gates fuse off during a dream (showFutures); this is the server-side belt-and-suspenders."""
+    with TURN_LOCK:
+        dreaming = TURN["phase"] == "dreaming"
+    if dreaming:
+        _FUSE_LOG["backpressured"] += 1
+        res = L.fuse_direction(session, parent_id, prompt or "", allow_model=False)
+        return {**res, "engine": L.E.current_engine()}
+    digest = None
+    try:
+        chain = L.load_chain(session)
+        parent = L._node_or_tip(chain, parent_id)
+        digest = L._notes_digest(chain, parent)       # notes-only (the staleness token)
+    except Exception:
+        digest = None
+    # The CACHE keys on the typed prompt too (a different prompt -> a different reading), even though the
+    # staleness digest does not — so the readback updates as the user types, while a prompt edit never
+    # false-triggers the staleness gate.
+    pkey = hashlib.blake2b((prompt or "").encode("utf-8", "replace"), digest_size=8).hexdigest()
+    key = (session, parent_id, digest, pkey)
+    if digest:
+        with _FUSE_LOCK:
+            hit = _FUSE_CACHE.get(key)
+        if hit is not None:
+            _FUSE_LOG["hit"] += 1
+            return hit
+    _FUSE_LOG["miss"] += 1
+    t0 = time.monotonic()
+    res = L.fuse_direction(session, parent_id, prompt or "")
+    dt_ms = (time.monotonic() - t0) * 1000.0
+    res = {**res, "engine": L.E.current_engine()}
+    print(f"[lucid] fuse miss {dt_ms:.0f}ms source={res.get('source')} "
+          f"(hits={_FUSE_LOG['hit']} misses={_FUSE_LOG['miss']} backpressured={_FUSE_LOG['backpressured']})", flush=True)
+    if res.get("ok") and res.get("notes_digest"):
+        with _FUSE_LOCK:
+            if len(_FUSE_CACHE) > 64:                 # crude bound; a single local user, derived data
+                _FUSE_CACHE.clear()
+            _FUSE_CACHE[(session, parent_id, res["notes_digest"], pkey)] = res
+    return res
+
+
 def chain_or_none(session=None):
     try:
         return L.load_chain(session or cur_session())
@@ -518,16 +675,31 @@ def _decode_seed(raw):
     return p
 
 
+def _strip_canon(obj):
+    """ADR-0037 §5.2 (decided 2026-06-22): the L0 canon is INTERNAL steering and NEVER egresses. /api/state
+    ships the chain to the phone over Tailscale, so a private dream's canon (a concentrated synopsis+facts
+    profile) must not ride along (residue in caches/logs). RECURSIVELY drop every 'canon' key — chain-level,
+    per-node, and any nested backup (e.g. a reverted node's 'prev') — via copies, so the live in-memory chain
+    is never mutated and the chokepoint is self-policing (a future nested canon can't silently slip past).
+    The palette verdict is KEPT: it's a tiny non-content flag that drives the consistency chip."""
+    if isinstance(obj, dict):
+        return {k: _strip_canon(v) for k, v in obj.items() if k != "canon"}
+    if isinstance(obj, list):
+        return [_strip_canon(v) for v in obj]
+    return obj
+
+
 def state():
     """Fast — readiness + chain + private. The slow beat proposal (Ollama) is a SEPARATE endpoint
     (/api/beats) so the page renders instantly and never blocks on a model load."""
     sess = cur_session()
     chain = chain_or_none(sess)
     return {"session": sess, "name": (chain.get("name") if chain else None),
-            "readiness": readiness(), "chain": chain,
+            "readiness": readiness(), "chain": _strip_canon(chain),
             "private": L.ST.is_private(sess) or bool(chain and chain.get("private")),
             "turn": turn_snapshot(),
             "engine": {"active": L.E.current_engine(), "options": ["wan", "10eros"]},
+            "edit_enabled": L.E.edit_available(),   # ADR-0040: show/hide the Edit affordance (kill-switch AND model on disk)
             # ADR-0028: the encrypted private stash — status only (never an entry list here; that
             # requires an unlock and rides /api/stash). `saved` = is THIS dream already in the stash?
             "stash": {"exists": SH.exists(), "unlocked": SH.is_unlocked(),
@@ -1194,12 +1366,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         if path not in ("/api/dream", "/api/hero", "/api/burn", "/api/start", "/api/delete", "/api/engine",
-                        "/api/note", "/api/note/delete", "/api/segment", "/api/beat-previews",
+                        "/api/note", "/api/note/delete", "/api/segment", "/api/beat-previews", "/api/fuse",
                         "/api/queue/retry", "/api/queue/dismiss", "/api/queue/approve",
                         # ADR-0028: save & reopen + the encrypted private stash
                         "/api/open", "/api/rename", "/api/stash/init", "/api/stash/unlock",
                         "/api/stash/lock", "/api/stash/save", "/api/stash/open", "/api/stash/rename",
-                        "/api/stash/delete", "/api/stash/passphrase"):
+                        "/api/stash/delete", "/api/stash/passphrase",
+                        # ADR-0040: prompt-guided keyframe edit (edit-then-animate)
+                        "/api/edit/preview", "/api/edit/commit", "/api/edit/revert"):
             return self._send(404, "not found", "text/plain")
         # CSRF: a state-changing POST must carry the per-process token embedded in the page (a
         # cross-origin page can't read it). Fail closed. Defense-in-depth: reject a bad Origin too.
@@ -1250,6 +1424,175 @@ class Handler(BaseHTTPRequestHandler):
             # turn (never supersedes a dream), NO chain write — so it's safe during the dwell, fails honest,
             # and needs no can_dream gate (it only needs the narrator; an unreachable one returns a reason).
             return self._json200(L.refine_beat(cur_session(), req.get("text", ""), req.get("node")))
+        if path == "/api/fuse":   # ADR-0023: assemble the EXACT prompt the next beat would run (notes decomposed
+            # + subject folded in) so the Shot Card can show + let the user correct it before committing minutes
+            # of generation. A VLM text/vision call only — NO lease, NO turn, NO chain write — so it is safe
+            # during the dwell and needs no can_dream gate (an unreachable narrator fails open to the
+            # deterministic suffix reading). Cached by notes_digest (instant + stable on reopen). The frontend
+            # echoes the returned notes_digest back to /api/dream so a stale edit is caught (the staleness gate).
+            pv = req.get("parent")
+            parent_id = (int(pv) if isinstance(pv, (int, float))
+                         or (isinstance(pv, str) and pv.lstrip("-").isdigit()) else None)
+            return self._json200(_fuse_cached(cur_session(), parent_id, req.get("prompt", "")))
+        if path == "/api/edit/preview":   # ADR-0040: prompt-edit a node's frame -> a NEW keyframe to animate FROM
+            # Step 1 of edit-then-animate (the fuse->dream readback grammar): produce + SHOW the edited keyframe
+            # so the user approves the starting POSE before the minutes-long i2v. Synchronous (the edit is ~tens of
+            # seconds incl. the model swap) + serialized (_EDIT_SEM) + warm-only; TOTAL fail-open. Returns the
+            # keyframe INLINE as a no-store data-URL (never a new unauthenticated GET) + a single-use commit token.
+            if not L.E.EDIT_ENABLED:
+                return self._send(200, json.dumps({"ok": False, "reason": "Frame editing is turned off."}),
+                                  "application/json")
+            sess = cur_session()
+            nv = req.get("node")
+            node_id = (int(nv) if isinstance(nv, (int, float))
+                       or (isinstance(nv, str) and nv.lstrip("-").isdigit()) else None)
+            prompt = (req.get("prompt") or "").strip()
+            placement = "replace" if req.get("placement") == "replace" else "branch"
+            if node_id is None:
+                return self._send(200, json.dumps({"ok": False, "reason": "no frame to edit"}), "application/json")
+            if not prompt:
+                return self._send(200, json.dumps({"ok": False, "reason": "Describe the edit first."}),
+                                  "application/json")
+            if S.gate_prompt(prompt) is None:   # red-line the instruction BEFORE any GPU work (engine re-gates too)
+                return self._send(200, json.dumps(
+                    {"ok": False, "reason": "That edit isn't something Lucid can make. Try a different direction."}),
+                    "application/json")
+            chain = L.load_chain(sess)
+            node = next((nn for nn in chain.get("nodes", []) if nn.get("id") == node_id), None)
+            of = (node or {}).get("out_frame") or ""
+            # defense-in-depth (review Low): out_frame is server-minted today, but it becomes a ComfyUI LoadImage
+            # input — reject a traversal/absolute name fail-closed rather than trusting stored chain state.
+            if node is None or not of or ".." in of or of.startswith(("/", "\\")) or "\x00" in of:
+                return self._send(200, json.dumps({"ok": False, "reason": "no frame to edit"}), "application/json")
+            if placement == "replace" and node.get("parent") is None:
+                return self._send(200, json.dumps(
+                    {"ok": False, "reason": "The opening can't be replaced — branch a new beat instead."}),
+                    "application/json")
+            private = L.ST.is_private(sess) or bool(chain.get("private"))
+            # OPTIONAL reference image: decode -> B2 real-person likeness/consent gate (the SAME guard as a seed,
+            # ADR-0017 — a ref CAN be a real person) -> ingest as a sealed-for-private INPUT_DIR still.
+            ref_names = []
+            img_b64 = req.get("image_b64")
+            if img_b64:
+                if not readiness()["ollama"]:   # B2 needs the vision model; fail fast, don't hang
+                    return self._send(200, json.dumps(
+                        {"ok": False, "reason": "can't check the reference image — the narrator (Ollama) is unavailable"}),
+                        "application/json")
+                try:
+                    raw = base64.b64decode(img_b64, validate=True)
+                    if len(raw) > MAX_IMG:
+                        raise ValueError("image too large (max 20 MB)")
+                    seed_tmp = _decode_seed(raw)   # re-encode to a clean EXIF-stripped PNG temp
+                except Exception as e:
+                    return self._send(200, json.dumps({"ok": False, "reason": f"invalid image: {e}"}),
+                                      "application/json")
+                try:
+                    v = L.B2.check_seed(seed_tmp)
+                    if not v.ok and not (v.requires_consent and bool(req.get("consent"))):
+                        return self._send(200, json.dumps({"blocked": True, **v.as_dict()}), "application/json")
+                    with open(seed_tmp, "rb") as f:
+                        b = f.read()
+                    h = hashlib.blake2b(b, digest_size=6).hexdigest()
+                    ref_name, ref_abs = L.ST.frame_ref(sess, private, f"{sess}_editref_{h}.png")
+                    with open(ref_abs, "wb") as f:
+                        f.write(b)
+                    ref_names.append(ref_name)
+                finally:
+                    try:
+                        os.remove(seed_tmp)
+                    except OSError:
+                        pass
+            # The edit is a GPU op (warm lease + a Qwen<->i2v model swap) — serialize it and refuse a concurrent
+            # live beat. Hold the TURN as 'dreaming' for its duration so the idle reaper won't release the lease
+            # mid-edit and /api/dream is refused; reset it in `finally` so the next beat is free.
+            with TURN_LOCK:
+                if TURN["phase"] == "dreaming":
+                    return self._send(200, json.dumps(
+                        {"ok": False, "reason": "A dream is in flight — one GPU job at a time."}), "application/json")
+            if not _EDIT_SEM.acquire(blocking=False):
+                return self._send(200, json.dumps(
+                    {"ok": False, "reason": "An edit is already running — try again in a moment."}), "application/json")
+            with TURN_LOCK:
+                if TURN["phase"] == "dreaming":   # a dream slipped in between the checks — yield the GPU to it
+                    _EDIT_SEM.release()
+                    return self._send(200, json.dumps(
+                        {"ok": False, "reason": "A dream just started — try again."}), "application/json")
+                epoch = TURN["epoch"]
+                TURN.update(phase="dreaming", label="Editing the frame…", error=None, started=time.monotonic())
+            try:
+                if _ensure_lease(epoch) is None:   # spawn/own ComfyUI for the edit (may be a ~190s COLD spawn) —
+                    return self._send(200, json.dumps({"ok": False, "reason": _skip_reason()}), "application/json")
+                kf_name, kf_abs = L.ST.frame_ref(sess, private, f"{sess}_n{node_id}_edit_{secrets.token_hex(4)}.png")
+                # FENCE vs an in-flight SAM2 segment ONLY around the GPU op (edit_frame does free_vram + submit),
+                # NOT the cold spawn above (audit C1): edit_frame's free_vram would otherwise evict a segment that
+                # started but hadn't queued yet, and holding the segment serializer across a ~190s spawn would
+                # starve every /api/segment tap. Brief window; fail-open if a segment is mid-flight beyond 20s.
+                if not _SEG_SEM.acquire(timeout=20):
+                    return self._send(200, json.dumps(
+                        {"ok": False, "reason": "The GPU is busy — try again in a moment."}), "application/json")
+                try:
+                    edited = L.E.edit_frame(node["out_frame"], prompt, kf_abs, ref_names=ref_names)
+                finally:
+                    _SEG_SEM.release()
+                if not edited:
+                    return self._send(200, json.dumps({"ok": False, "reason":
+                        "Couldn't edit the frame just now — you can still animate this beat without the edit."}),
+                        "application/json")
+                with open(kf_abs, "rb") as f:
+                    data = f.read()
+                token = secrets.token_urlsafe(16)
+                _edit_pending_put(token, {"session": sess, "node": node_id, "placement": placement,
+                                          "prompt": prompt, "keyframe": kf_name})
+                preview = "data:image/png;base64," + base64.b64encode(data).decode()  # gated, no-store response
+                return self._send(200, json.dumps(
+                    {"ok": True, "token": token, "preview": preview, "placement": placement}), "application/json")
+            except Exception as e:   # noqa: BLE001 — total fail-open; the normal beat path is untouched
+                return self._send(200, json.dumps({"ok": False, "reason": f"edit failed: {e}"}), "application/json")
+            finally:
+                with TURN_LOCK:
+                    if TURN["epoch"] == epoch and TURN["phase"] == "dreaming":
+                        TURN.update(phase="idle", label="", started=None)
+                _EDIT_SEM.release()
+        if path == "/api/edit/commit":   # ADR-0040: animate a previewed keyframe (branch a new beat OR replace in place)
+            rd = readiness()
+            if not rd["can_dream"]:
+                return self._send(200, json.dumps({"error": "Not ready yet — " + "; ".join(rd["why"])}),
+                                  "application/json")
+            token = req.get("token")
+            pend = _edit_pending_pop(token) if isinstance(token, str) else None
+            if not pend or pend.get("session") != cur_session():
+                return self._send(200, json.dumps(
+                    {"error": "That edit expired — preview it again."}), "application/json")
+            length = req.get("length")
+            label = _edit_label(pend["prompt"])
+            with TURN_LOCK:
+                if TURN["phase"] == "dreaming":
+                    _edit_pending_put(token, pend)   # not consumed — let the user retry once the GPU frees
+                    return self._send(200, json.dumps(
+                        {"error": "A dream is already in flight — one beat at a time."}), "application/json")
+                epoch = TURN["epoch"]
+                TURN.update(phase="dreaming", error=None, started=time.monotonic(),
+                            label=("Replacing the shot" if pend["placement"] == "replace" else label))
+            _cancel_previews()   # the commit owns the GPU now — abandon any in-flight preview queue (ADR-0023)
+            threading.Thread(target=_run_edit_commit,
+                             args=(pend["node"], pend["placement"], pend["keyframe"], pend["prompt"],
+                                   label, length, epoch, cur_session()), daemon=True).start()
+            return self._send(202, json.dumps({"ok": True, "started": True}), "application/json")
+        if path == "/api/edit/revert":   # ADR-0040: undo an in-place edit (restore the backed-up shot, ADR-0005)
+            nv = req.get("node")
+            node_id = (int(nv) if isinstance(nv, (int, float))
+                       or (isinstance(nv, str) and nv.lstrip("-").isdigit()) else None)
+            if node_id is None:
+                return self._send(200, json.dumps({"ok": False, "reason": "no beat to revert"}), "application/json")
+            # R1 (audit High): refuse a revert while a render is in flight — a concurrent replace_beat commit re-loads
+            # the chain after its render and would silently un-revert (lost-update). The revert chain-write isn't
+            # epoch-guarded, so serialize it on the SAME TURN gate as the commit. (Mirrors the /api/edit/commit guard.)
+            with TURN_LOCK:
+                if TURN["phase"] == "dreaming":
+                    return self._send(200, json.dumps(
+                        {"ok": False, "reason": "A render is in flight — revert once it finishes."}), "application/json")
+            node = L.revert_beat(cur_session(), node_id)
+            return self._send(200, json.dumps({"ok": bool(node), "reverted": bool(node)}), "application/json")
         if path == "/api/segment":   # ADR-0032: tap -> SAM2 object mask (warm-only, headroom-gated, fail-open)
             # Extract the tapped frame into a SEALED input location, segment under the WARM lease (segment_at
             # gates on free VRAM; cold/contended -> None), validate the mask, and return it INLINE as a
@@ -1523,6 +1866,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(
                 {"error": "That direction isn't something Lucid can make. Try a different turn."}),
                 "application/json")
+        # ADR-0023: the Shot Card readback the user reviewed (and maybe edited) — the EXACT prompt to run.
+        # When present, step() runs it verbatim (no re-decompose, no subject re-prefix). It is untrusted user
+        # text, so: (1) a STALENESS gate — recompute the notes_digest and refuse if the notes changed since the
+        # reading was shown (never run an edit reviewed against a different note set); (2) the SAME red-line gate
+        # as a typed prompt (defense in depth; step re-gates too). Either failure surfaces honestly, no GPU work.
+        fused_edited = req.get("fused_edited")
+        fused_edited = fused_edited.strip() if isinstance(fused_edited, str) else None
+        if not fused_edited:
+            fused_edited = None
+        if fused_edited is not None:
+            client_digest = req.get("notes_digest")
+            try:
+                ch = L.load_chain(cur_session())
+                par = L._node_or_tip(ch, parent_id)
+                fresh_digest = L._notes_digest(ch, par)
+            except Exception:
+                fresh_digest = None
+            if not client_digest or fresh_digest != client_digest:
+                return self._send(200, json.dumps({"error":
+                    "Your notes changed since that reading — reopen “how Lucid reads this” to see the new one "
+                    "before you dream it."}), "application/json")
+            if S.gate_prompt(fused_edited) is None:
+                return self._send(200, json.dumps(
+                    {"error": "That direction isn't something Lucid can make. Try a different turn."}),
+                    "application/json")
         with TURN_LOCK:
             if TURN["phase"] == "dreaming":
                 return self._send(200, json.dumps(
@@ -1531,7 +1899,8 @@ class Handler(BaseHTTPRequestHandler):
             TURN.update(phase="dreaming", label=label, error=None, started=time.monotonic())
         _cancel_previews()   # the user picked — abandon any in-flight preview queue; the real beat wins (ADR-0023)
         # capture the session NOW so a switch mid-beat can't reroute this turn (the epoch still guards persist)
-        threading.Thread(target=_run_turn, args=(prompt, label, epoch, length, parent_id, cur_session()),
+        threading.Thread(target=_run_turn,
+                         args=(prompt, label, epoch, length, parent_id, cur_session(), fused_edited),
                          daemon=True).start()
         return self._send(202, json.dumps({"ok": True, "started": True}), "application/json")
 

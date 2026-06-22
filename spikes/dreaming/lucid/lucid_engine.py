@@ -355,6 +355,185 @@ def segment_at(frame_name, x, y, out_abs, timeout=60):
         return None
 
 
+# ── ADR-0040 producer: prompt-guided keyframe EDIT (edit-then-animate) ───────────────────────────────
+# Point at a frame, give an instruction (+ optional reference image), and Qwen-Image-Edit-2509 produces a
+# NEW keyframe the existing i2v path then animates FROM — fine-tuned direction of the action's STARTING
+# pose. Mirrors segment_at()'s warm-lease contract EXACTLY: runs as one prompt INSIDE the already-leased
+# warm ComfyUI under its existing batch token (NO second lease -> no self-preemption), free-VRAM
+# headroom-gated (_comfy_free_mib), queue-gated (_comfy_busy), and TOTAL fail-open (no exception escapes;
+# None -> the caller animates the un-edited frame = an ordinary beat). Unlike SAM2 (~1.5 GB, co-resident),
+# the edit model is large (~12 GB Q4) and CANNOT co-reside with a warm i2v model — ComfyUI evicts/reloads
+# between the two SEQUENTIAL prompts, so peak VRAM stays max(edit, i2v), not the sum (measured Phase-0).
+# Graph = the official ComfyUI template "Image Edit (Qwen 2509)" with the loader swapped to GGUF.
+EDIT_ENABLED = os.environ.get("LUCID_EDIT_ENABLED", "1") != "0"          # master kill-switch (fail-safe)
+EDIT_MODEL = os.environ.get("LUCID_EDIT_MODEL", "Qwen-Image-Edit-2509-Q4_K_M.gguf")     # models/unet (GGUF)
+EDIT_TE = os.environ.get("LUCID_EDIT_TE", "qwen_2.5_vl_7b_fp8_scaled.safetensors")       # models/text_encoders
+EDIT_VAE = os.environ.get("LUCID_EDIT_VAE", "qwen_image_vae.safetensors")               # models/vae
+# Lightning step-distill LoRA on the edit model: 4 steps @ cfg 1.0 (~5x fewer steps). "" disables it ->
+# the full 20-step @ cfg 4.0 lane (the template's other switch position). Default ON for interactivity.
+EDIT_LIGHTNING_LORA = os.environ.get(
+    "LUCID_EDIT_LIGHTNING_LORA", "Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors")
+EDIT_SHIFT = float(os.environ.get("LUCID_EDIT_SHIFT", "3.0"))           # ModelSamplingAuraFlow (template = 3)
+# VRAM the edit pass needs FREE to run (MiB) — the ADDED allocation over the desktop base, read AFTER the
+# free_vram reclaim below and gated before submit. MEASURED on the box 2026-06-21 (spike_qwen_edit_smoke.py):
+# Q4 unet + fp8 TE (offloaded during sampling) peaked at +13.85 GB over base (17.5 GB absolute), ~32 s/edit at
+# 4-step Lightning, output 752×1392. Set above the measured delta with margin — do NOT shave it (OOM is
+# asymmetric, like SEG_PEAK_MIB / est_mib). The fp8 TE never co-resides with the unet (ComfyUI offloads it).
+EDIT_PEAK_MIB = int(os.environ.get("LUCID_EDIT_PEAK_MIB", "14500"))
+EDIT_HEADROOM_MIB = int(os.environ.get("LUCID_EDIT_HEADROOM_MIB", "1024"))
+
+
+def edit_available():
+    """ADR-0040 (audit CP1): is the edit feature usable RIGHT NOW — the kill-switch is on AND the GGUF is on
+    disk. /api/state surfaces this so the UI hides the affordance when the weights are absent, rather than
+    leading the user through consent + a lease spawn only to fail-open at generate time. A cheap stat."""
+    return EDIT_ENABLED and os.path.exists(os.path.join(cc.COMFY_ROOT, "models", "unet", EDIT_MODEL))
+
+
+def _edit_graph(frame_name, instruction, ref_names=None, seed=0):
+    """The Qwen-Image-Edit-2509 api graph (official 'Image Edit (Qwen 2509)' template, GGUF loader swap).
+    `frame_name` and each `ref_names` entry are INPUT_DIR-relative (sealed subdir for private). Returns the
+    plain api dict cc.generate_image submits. Lightning (4-step/cfg 1.0) by default; EDIT_LIGHTNING_LORA=""
+    selects the full 20-step/cfg 4.0 lane. The source is VAE-encoded as the sampler latent (denoise 1.0) so
+    the output keeps the source size/aspect; TextEncodeQwenImageEditPlus carries it (+ refs) as the edit
+    reference. FluxKontextImageScale snaps the source to a model-supported bucket (shared by both paths)."""
+    refs = [r for r in (ref_names or []) if r][:2]              # Plus takes 3 images total: src + up to 2 refs
+    lightning = bool(EDIT_LIGHTNING_LORA)
+    steps, cfg = (4, 1.0) if lightning else (20, 4.0)
+    g = {
+        "unet":  {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": EDIT_MODEL}},
+        "clip":  {"class_type": "CLIPLoader",
+                  "inputs": {"clip_name": EDIT_TE, "type": "qwen_image", "device": "default"}},
+        "vae":   {"class_type": "VAELoader", "inputs": {"vae_name": EDIT_VAE}},
+        "src":   {"class_type": "LoadImage", "inputs": {"image": frame_name}},
+        "scale": {"class_type": "FluxKontextImageScale", "inputs": {"image": ["src", 0]}},
+    }
+    model_ref = ["unet", 0]
+    if lightning:
+        g["lora"] = {"class_type": "LoraLoaderModelOnly",
+                     "inputs": {"model": model_ref, "lora_name": EDIT_LIGHTNING_LORA, "strength_model": 1.0}}
+        model_ref = ["lora", 0]
+    g["shift"] = {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": model_ref, "shift": EDIT_SHIFT}}
+    g["cfgn"] = {"class_type": "CFGNorm", "inputs": {"model": ["shift", 0], "strength": 1.0}}
+    # The positive sees the scaled source (+ optional refs) — Plus slots: image1=src, image2/3=refs.
+    pos_in = {"clip": ["clip", 0], "prompt": instruction, "vae": ["vae", 0], "image1": ["scale", 0]}
+    for i, r in enumerate(refs):
+        g[f"ref{i}"] = {"class_type": "LoadImage", "inputs": {"image": r}}
+        pos_in[f"image{i + 2}"] = [f"ref{i}", 0]
+    g["pos"] = {"class_type": "TextEncodeQwenImageEditPlus", "inputs": pos_in}
+    g["enc"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["scale", 0], "vae": ["vae", 0]}}
+    # NEGATIVE: at cfg=1.0 (the Lightning lane) the unconditional is unused — out = neg + cfg·(pos−neg) = pos —
+    # so reuse `pos` and SKIP a 2nd VLM + 1024px VAE-encode (real latency on the synchronous preview path,
+    # ADR-0040 audit G2). The full lane (cfg>1) builds a real empty-instruction negative carrying the source.
+    if lightning:
+        neg_ref = ["pos", 0]
+    else:
+        g["neg"] = {"class_type": "TextEncodeQwenImageEditPlus",
+                    "inputs": {"clip": ["clip", 0], "prompt": "", "vae": ["vae", 0], "image1": ["scale", 0]}}
+        neg_ref = ["neg", 0]
+    g["ks"] = {"class_type": "KSampler",
+               "inputs": {"model": ["cfgn", 0], "positive": ["pos", 0], "negative": neg_ref,
+                          "latent_image": ["enc", 0], "seed": int(seed), "steps": steps, "cfg": cfg,
+                          "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}}
+    g["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["ks", 0], "vae": ["vae", 0]}}
+    g["save"] = {"class_type": "SaveImage", "inputs": {"images": ["dec", 0], "filename_prefix": "lucid/editkf"}}
+    return g
+
+
+def _cover_resize(img, size):
+    """Scale `img` to COVER `size` (w,h) then center-crop to exactly that — preserves proportions, no black bars,
+    no stretch. Used to fit the edited keyframe to the i2v input size so the approved still IS the animated seed."""
+    from PIL import Image
+    tw, th = size
+    sw, sh = img.size
+    scale = max(tw / sw, th / sh)
+    nw, nh = max(tw, round(sw * scale)), max(th, round(sh * scale))
+    img = img.resize((nw, nh), Image.LANCZOS)
+    left, top = (nw - tw) // 2, (nh - th) // 2
+    return img.crop((left, top, left + tw, top + th))
+
+
+def _save_validated_image(src_abs, out_abs, target_size=None):
+    """Validate the edit's output PNG is a real, untruncated raster of sane size, then write a clean RGB PNG
+    to out_abs. Pure + total — returns False on ANY reject (the caller then treats the edit as 'no edit').
+    `target_size` (w,h): cover-fit the keyframe to the i2v input size so what the user APPROVES is exactly what
+    gets animated — otherwise the Kontext bucket aspect (~1 MP) differs from the i2v target and WanImageToVideo
+    center-crops 5-7% at commit time (ADR-0040 audit G1: preview == committed == animated)."""
+    try:
+        from PIL import Image
+        with Image.open(src_abs) as im:
+            im.verify()                                  # catch truncation/corruption before we trust it
+        with Image.open(src_abs) as im:
+            rgb = im.convert("RGB")
+            if rgb.width < 64 or rgb.height < 64:        # a degenerate canvas is not a usable keyframe
+                return False
+            if target_size:
+                rgb = _cover_resize(rgb, target_size)
+            tmp = out_abs + ".tmp"
+            rgb.save(tmp, "PNG")
+        os.replace(tmp, out_abs)                         # atomic publish — no reader sees a half-written keyframe
+        return True
+    except Exception as e:
+        print(f"edit: output validation failed ({e}); treat as no-edit")
+        return False
+
+
+def _scrub_edit_scratch():
+    """Remove the SHARED-output SaveImage scratch (output/lucid/editkf_*) the edit graph leaves behind. The clean
+    keyframe is sealed to its (private-aware) out_abs, so the scratch is pure single-use and MUST NOT outlive the
+    call — the shared output dir is reached by neither the private burn nor logout. Safe to clear ALL editkf_*
+    because _EDIT_SEM serializes edits (no concurrent edit owns one). Total + best-effort."""
+    import glob
+    for p in glob.glob(os.path.join(cc.COMFY_ROOT, "output", "lucid", "editkf_*")):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def edit_frame(frame_name, instruction, out_abs, ref_names=None, seed=0, timeout=300):
+    """ADR-0040 producer: prompt-guided EDIT of `frame_name` (INPUT_DIR-relative) per `instruction` (+ optional
+    INPUT_DIR-relative `ref_names`), writing the edited keyframe to out_abs. Returns out_abs on success else
+    None (caller -> animate the un-edited frame). Warm-only + VRAM-headroom + queue gated; TOTAL fail-open
+    (no exception escapes). The raw SaveImage scratch in the SHARED output dir is scrubbed on EVERY path."""
+    if not EDIT_ENABLED:
+        return None
+    if not (instruction or "").strip():                  # an empty instruction can't direct an edit
+        return None
+    if not os.path.exists(os.path.join(INPUT_DIR, frame_name)):   # missing/burned source -> don't waste a VRAM swap
+        print(f"edit: source frame {frame_name!r} not found; animate un-edited")
+        return None
+    ref_names = [r for r in (ref_names or []) if os.path.exists(os.path.join(INPUT_DIR, r))]   # drop vanished refs
+    if _comfy_busy():                                    # a render is RUNNING — never evict it; bail (fail-open)
+        print("edit: ComfyUI busy (queue non-empty); animate un-edited")
+        return None
+    # The edit model can't co-reside with a warm i2v model (~12 GB + ~17 GB > 24 GB), so reclaim VRAM BEFORE the
+    # headroom read: unload ComfyUI's resident models (a no-op under --disable-smart-memory, which evicts after
+    # each prompt anyway). Best-effort — if /free is unreachable the headroom gate below still protects the desktop.
+    cc.free_vram()
+    free = _comfy_free_mib()                              # cold (None) or still-contended -> do not edit
+    if free is None or free < EDIT_PEAK_MIB + EDIT_HEADROOM_MIB:
+        print(f"edit: skip (free={free} MiB < need {EDIT_PEAK_MIB + EDIT_HEADROOM_MIB}); animate un-edited")
+        return None
+    _scrub_edit_scratch()                                # clear any leftover from a prior hard-crashed edit
+    try:
+        imgs, _hist = cc.generate_image(_edit_graph(frame_name, instruction, ref_names, seed), timeout=timeout)
+        if not imgs:
+            return None
+        # G1: cover-fit to the i2v input size so the APPROVED keyframe is exactly the animated seed (no Wan crop).
+        return out_abs if _save_validated_image(imgs[0], out_abs, target_size=(DEFAULT_W, DEFAULT_H)) else None
+    except Exception as e:
+        print(f"edit: keyframe edit failed ({e}); animate un-edited (fail-open)")
+        return None
+    finally:
+        # PRIVACY (ADR-0016/0040, review High): the raw SaveImage lands in the SHARED ~/ComfyUI/output/lucid/
+        # dir, which neither the private burn nor logout reaches. The clean keyframe is already sealed to out_abs
+        # (the store's private-aware path), so the scratch is pure single-use — scrub it on EVERY path (success,
+        # reject, OR an exception that left a partial), so no edited frame (incl. a private real-person one)
+        # outlives the call in shared output.
+        _scrub_edit_scratch()
+
+
 def _is_ltx(name):
     return (name or "").strip().lower() in ("10eros", "ltx", "ltx2", "ltx-2.3")
 
@@ -543,8 +722,10 @@ SYS_DECOMPOSE = (
     "You are a film-continuation assistant for a private, local, single-user dream-video tool. "
     "You receive several numbered frames taken from the clip the viewer just watched. Each frame has "
     "an intent tag from the viewer: more = emphasize this element going forward, less = reduce or "
-    "remove it, hold = keep this exact framing/composition, change = alter it. You are also given the "
-    "viewer's chosen next direction for the upcoming beat. "
+    "remove it, hold = keep this exact framing/composition, change = alter it. Some frames also note a "
+    "REGION of the frame (e.g. 'the upper-left', 'the center') and/or the viewer's words: when a region "
+    "is given, apply that intent and those words to the element in THAT part of the scene, not the whole "
+    "frame. You are also given the viewer's chosen next direction for the upcoming beat. "
     "DECOMPOSE all of this into ONE vivid, concrete image-to-video continuation prompt. Ground every "
     "detail ONLY in what is actually visible in the frames — do not invent elements that are not shown. "
     'Reply with ONLY JSON: {"prompt":"<one continuation prompt>"}.'
@@ -631,8 +812,9 @@ def ground_subject(frame_b64):
 
 def decompose_notes(beat_prompt, tagged, premise=None):
     """One VLM pass that SEES the viewer's tagged frames + their per-frame intent and decomposes them
-    into a single refined i2v continuation prompt. `tagged` is a list of {"b64","tag","text","t"}
-    already ordered by t. Returns the prompt (str, <=300 chars) or None on ANY failure/empty (the
+    into a single refined i2v continuation prompt. `tagged` is a list of {"b64","tag","text","t","region"?}
+    already ordered by t (`region` is an optional coarse location phrase so the text steers WHERE the viewer
+    tapped — ADR-0032). Returns the prompt (str, <=300 chars) or None on ANY failure/empty (the
     caller then falls back to the text-only path). Same image-message + fail-safe shape as
     ground_frame; safety is the downstream red-line gate's job, not ours."""
     if not tagged:
@@ -644,8 +826,10 @@ def decompose_notes(beat_prompt, tagged, premise=None):
     lines.append("Tagged frames (in order):")
     for i, t in enumerate(tagged):
         note = (t.get("text") or "").strip()
+        region = (t.get("region") or "").strip()          # coarse location phrase (ADR-0032 per-region steer)
+        loc = (" at %s" % region) if region else ""
         lines.append(
-            "Frame %d [%s]%s" % (i + 1, t.get("tag", ""), (" — " + note) if note else ""))
+            "Frame %d [%s]%s%s" % (i + 1, t.get("tag", ""), loc, (" — " + note) if note else ""))
     user = "\n".join(lines)
     try:
         data = json.loads(_ollama_json(

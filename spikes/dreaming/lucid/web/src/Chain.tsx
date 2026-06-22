@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type KeyboardEvent } from 'react'
 import type { DreamNode, LucidState, Beat, Note } from './api'
-import { clipUrl, frameUrl, previewUrl, downloadUrl, useBeats, useDream, useHero, useStartBeatPreviews, useRefine, useAddNote, useDeleteNote, segment, previewsEnabled } from './api'
+import { clipUrl, frameUrl, previewUrl, downloadUrl, useBeats, useDream, useHero, useStartBeatPreviews, useRefine, useAddNote, useDeleteNote, segment, previewsEnabled, fuse, useEditRevert, type FuseResult } from './api'
+import EditPanel from './EditPanel'
 
 // pointer-parallax rect cache — read once per card on mouseenter so mousemove never forces a reflow.
 const rectCache = new WeakMap<HTMLElement, DOMRect>()
@@ -15,21 +16,53 @@ const NO_PATHS: { key: string; d: string }[] = []
 const FPS = 16   // Wan i2v cadence (lucid_engine); a node's `length` is a frame count -> seconds = length / FPS
 const fmtDur = (secs: number) => `${Math.floor(secs / 60)}:${String(Math.round(secs % 60)).padStart(2, '0')}`
 
-// ADR-0023 spatial feed-forward: the four moment-tag intents. `hold` is the steering primitive (anchor the
-// next beat on this exact moment) so it leads; the others nudge direction. Order = how the chips are offered.
+// ADR-0023 spatial feed-forward: the four moment-NOTE directions. `hold` is the steering primitive (anchor
+// the next beat on this exact moment) so it leads; the others nudge direction. Order = how the chips are
+// offered. Vocabulary (ADR-0023): a "note" is the thing; these four are its "direction" — the imperative-to-
+// the-element form ("it" = the tapped element, or "this moment" frame-wide). The internal `tag` enum is
+// unchanged (no migration); only the words the user reads changed.
 const TAGS: { tag: Note['tag']; label: string }[] = [
-  { tag: 'hold', label: 'Hold here' },
-  { tag: 'more', label: 'More like this' },
-  { tag: 'less', label: 'Less of this' },
-  { tag: 'change', label: 'Change this' },
+  { tag: 'hold', label: 'Keep this' },
+  { tag: 'more', label: 'More of it' },
+  { tag: 'less', label: 'Less of it' },
+  { tag: 'change', label: 'Change it' },
 ]
 const tagLabel = (t: Note['tag']) => TAGS.find((x) => x.tag === t)?.label ?? t
+
+// The note as ONE human clause — for the Shot Card row's accessible name and the history list. The on-frame
+// numbered pin is the spatial referent (we don't name the object — that would need a caption pass), so the
+// sentence stays deictic; the optional text is the user's own words, appended after an em-dash.
+function noteSentence(n: Note): string {
+  const base = n.tag === 'hold' ? 'Keep this moment'
+    : n.tag === 'more' ? 'More of this'
+      : n.tag === 'less' ? 'Less of this'
+        : 'Change this'
+  const t = (n.text || '').trim()
+  return t ? `${base} — ${t}` : base
+}
 
 // next-segment length options (frames @16fps -> seconds). Mirrors lucid_engine MIN_LEN/MAX_LEN; the
 // engine clamps anything off-list, so this is purely the UI offer (folded in from the old <Choice>).
 const LENGTHS: { f: number; s: string }[] = [
   { f: 17, s: '1s' }, { f: 33, s: '2s' }, { f: 49, s: '3s' }, { f: 65, s: '4s' }, { f: 81, s: '5s' },
 ]
+
+// The default length is a STICKY personal preference (progressive disclosure: the per-moment picker the
+// user already touches IS the default-setter — no separate settings surface). The last length picked is
+// remembered (localStorage) and seeds the picker for every later beat AND every new dream. The built-in
+// fallback is 33f (~2s), matching lucid_engine DEFAULT_LEN. A stale/garbage stored value can't break the
+// picker — it's validated against the offered frames — and the engine clamps it again regardless.
+const LEN_KEY = 'lucid.defaultLen'
+function loadDefaultLen(): number {
+  try {
+    const v = parseInt(localStorage.getItem(LEN_KEY) || '', 10)
+    if (LENGTHS.some((o) => o.f === v)) return v
+  } catch { /* localStorage unavailable (private-mode quota / disabled) — fall through to the built-in */ }
+  return 33
+}
+function saveDefaultLen(f: number) {
+  try { localStorage.setItem(LEN_KEY, String(f)) } catch { /* non-fatal: the in-session pick still applies */ }
+}
 
 // The develop hero: the aurora forms while the GPU generates, then — when the finished frame arrives
 // (`posterSrc`) — that frame blooms IN over the aurora, in the SAME box, under the held serif caption,
@@ -138,6 +171,8 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   // TAGGING a moment, the "what happens next" choices/connectors clear off the stage so the whole clip is
   // tappable (ADR-0032 — they were covering the lower clip, leaving only the top reachable).
   const [draftOpen, setDraftOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)   // ADR-0040: the prompt-guided keyframe-edit panel
+  const editEnabled = state.edit_enabled !== false   // default available (legacy state w/o the flag)
   // Measure the displayed video/still CONTENT rect (object-fit:contain within the .vid element box) as % of
   // the stage, so the tag overlay lands exactly on the clip. Re-measures on resize, metadata-load, and when
   // the draft opens. Only runs while tagging (the overlay is only shown then).
@@ -174,10 +209,11 @@ export default function Chain({ state, revealing = false, onLatestReady }:
     if (v.paused) v.play().catch(() => {}); else { v.pause(); setDraftT(v.currentTime) }
   }
   // futures grow from the SELECTED beat: at the tip it's "continue", at an earlier beat it's "branch a new take"
-  const showFutures = !dreaming && !revealing && canDream && !draftOpen
+  const showFutures = !dreaming && !revealing && canDream && !draftOpen && !editOpen
   const branchingFrom = sel.id !== tipId
   const dream = useDream()
   const hero = useHero()                          // ADR-0033: re-render the selected beat at HD (the same shot)
+  const revert = useEditRevert()                  // ADR-0040: undo an in-place edit (restore the backed-up shot)
   const startBeatPreviews = useStartBeatPreviews()   // ADR-0023: render per-choice "potential path" stills on dwell
   const [own, setOwn] = useState('')
   // ADR-0023 juncture refine: ✨ sharpens the typed idea into a vivid, frame-grounded next beat (model
@@ -187,11 +223,30 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const refine = useRefine()
   const [refineMsg, setRefineMsg] = useState<string | null>(null)
   const ownRef = useRef<HTMLInputElement>(null)
+  // ADR-0023 the Shot Card readback ("how Lucid reads this"): when the selected beat carries notes, /api/fuse
+  // assembles the EXACT prompt the next beat would run (notes decomposed + subject folded in) so the user can
+  // SEE and EDIT it before committing minutes of generation. `fuseRes` is the server reading (held by digest);
+  // `fusedEdit` is the user's edit of it (null = unedited → run the server reading verbatim). The fuse fires
+  // during the dwell off a debounced copy of the typed line (a VLM call — never per-keystroke). `hotNote`
+  // is the hover/focus link between an on-frame numbered pin and its composite row.
+  const [fuseRes, setFuseRes] = useState<FuseResult | null>(null)
+  const [fusedEdit, setFusedEdit] = useState<string | null>(null)
+  const [fuseBusy, setFuseBusy] = useState(false)
+  const [ownDeb, setOwnDeb] = useState('')
+  const [hotNote, setHotNote] = useState<string | null>(null)
+  const fuseSeq = useRef(0)   // ignore a stale fuse response if a newer one was fired meanwhile
+  // ADR-0023 "the reset is the quiet hero" (delight): ↺ doesn't just snap the edit away — Lucid's words
+  // BLOOM back (a re-keyed sc-settle) and a brief warm echo confirms the revert is safe, not a cold value-snap.
+  const [reflow, setReflow] = useState(0)            // bump to re-bloom the reading on reset (re-keys the textarea)
+  const [resetEcho, setResetEcho] = useState(false)  // the transient "back to Lucid's reading" line
   // §1.4 (audit): a typed custom prompt is original user work with no second copy. Stash the last
   // fired text so a fail-open turn (skipped/error/refused) can restore it into the input instead of
   // losing it; cleared once a beat actually lands (the per-turn reset below).
   const lastCustom = useRef<string | null>(null)
-  const [len, setLen] = useState(33)            // default ~2s, matches lucid_engine DEFAULT_LEN
+  const [len, setLen] = useState(loadDefaultLen)   // seeded from the sticky default; built-in ~2s on first use
+  // picking a length is also how the user SETS their default — every pick is remembered (legible via the
+  // "your default" tag), so a preferred cadence never has to be re-chosen beat after beat.
+  const chooseLen = (f: number) => { setLen(f); saveDefaultLen(f) }
   const [flash, setFlash] = useState('')
   const [committed, setCommitted] = useState(false)
   // the just-committed beat's label — shown as the forming hero's caption to BRIDGE the gap between the click
@@ -246,7 +301,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   // which is just phase === 'dreaming'.)
   const [prevSelId, setPrevSelId] = useState(sel.id)
   const [prevPhase, setPrevPhase] = useState(state.turn.phase)
-  if (sel.id !== prevSelId) { setPrevSelId(sel.id); setDraftOpen(false); setDwell(false); setDraftMask(null); setDraftPreview(null); setSegmenting(false) }   // new beat: close any open draft, end the dwell, drop the segmentation
+  if (sel.id !== prevSelId) { setPrevSelId(sel.id); setDraftOpen(false); setEditOpen(false); setDwell(false); setDraftMask(null); setDraftPreview(null); setSegmenting(false); setFuseRes(null); setFusedEdit(null); setHotNote(null) }   // new beat: close any open draft/edit, end the dwell, drop the segmentation + the stale readback
   if (state.turn.phase !== prevPhase) { setPrevPhase(state.turn.phase); setCommitted(false); setDwell(false); setPendingLabel(null); setPeeking(false) }   // turn rolled over: unlock the menu, end the dwell, drop the optimistic caption, leave review (the new beat takes over)
   // §1.4: when the turn settles, restore a fired custom prompt if it FAILED OPEN (the user's typed sentence
   // is their original work — don't lose it), or clear the stash on a successful landing. In an effect (not the
@@ -355,18 +410,50 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   // swaps in the dreaming hero, then a fresh tip rolls new beats) — mirrors the old <Choice> unmount; the
   // unlock now lives in the per-turn reset block above (was a set-state-in-effect on state.turn.phase).
   function showFlash(m: string) { setFlash(m); window.setTimeout(() => setFlash(''), 6000) }
-  async function fire(prompt: string, label: string) {
+  // `review` (ADR-0023, compose path only): the Shot Card readback the user saw — the EXACT prompt to run
+  // (decompose + subject) plus the notes_digest it derived from. When present, the server runs it verbatim
+  // (no re-decompose, no subject re-prefix) and the digest catches a stale edit (notes changed since). A
+  // curated-beat pick never carries it — that stays a one-tap commitment with the notes folded in server-side.
+  async function fire(prompt: string, label: string, review?: { fused_edited: string; notes_digest: string }) {
     setFiredFrom(sel.id)   // remember the node we grew from so the carry line can read its notes count
     setPendingLabel(label && label !== 'custom' ? label : null)   // optimistic caption for the forming hero (cleared when the turn rolls over)
     const notTaken = beats.filter((b) => !(b.label === label && b.prompt === prompt))   // S2: remember the rest
     if (notTaken.length) setGhosts((g) => ({ ...g, [sel.id]: notTaken }))
     try {
-      const j = await dream.mutateAsync({ prompt, label, length: len, parent: sel.id })
+      const j = await dream.mutateAsync({ prompt, label, length: len, parent: sel.id, ...(review ?? {}) })
       if (j?.error) showFlash(j.error)
       else { setCommitted(true); branched.current = true }   // jump to the new beat once it generates
     } catch {
       showFlash('Could not reach Lucid — try again.')
     }
+  }
+
+  // Dream the composed direction (your words + your notes). When the selected beat carries notes and the
+  // Shot Card readback is ready, send that reading (edited or not) so WHAT YOU SAW IS WHAT RUNS; otherwise
+  // send the bare typed line and let the server fuse (legacy / readback-not-ready). The fast path — no notes
+  // — is unchanged: the typed line fires straight through.
+  function composeSubmit() {
+    const text = own.trim()
+    // block while the reading is recomputing (a note just changed) — a stale edit would hit the server's
+    // notes-digest refusal; the readback shows "reading…" in that window (mirrors the Dream-it disable).
+    if (!text || composeBusy || (selNotes.length > 0 && fuseBusy)) return
+    lastCustom.current = text
+    const reading = (selNotes.length > 0 && fuseRes?.ok && fuseRes.notes_digest)
+      ? { fused_edited: (fusedEdit ?? fuseRes.fused ?? '').trim(), notes_digest: fuseRes.notes_digest }
+      : undefined
+    fire(text, 'custom', reading && reading.fused_edited ? reading : undefined)
+    setOwn(''); setRefineMsg(null)
+  }
+
+  // ↺ reset: drop the edit and let Lucid's reading BLOOM back (re-key the textarea so sc-settle replays),
+  // with a brief warm echo so the revert feels safe — undo-as-delight, reduced-motion-safe, zero GPU.
+  const resetEchoT = useRef<number | null>(null)
+  function resetReading() {
+    setFusedEdit(null)
+    setReflow((n) => n + 1)
+    setResetEcho(true)
+    if (resetEchoT.current) window.clearTimeout(resetEchoT.current)
+    resetEchoT.current = window.setTimeout(() => setResetEcho(false), 1800)
   }
 
   // Sharpen the typed idea into a vivid, frame-grounded next beat WITHOUT firing it — the refined text
@@ -419,20 +506,22 @@ export default function Chain({ state, revealing = false, onLatestReady }:
     }
   }
 
-  // ---- the choice moment: a selected clip plays once clean, then (on `ended`) the choices appear and the
-  // clip LOOPS gently behind them — a living backdrop while you choose, not a frozen frame (user's call,
-  // overriding the council's frozen-dwell-with-a-breath; the Wan last≠first-frame hard-cut is accepted as
-  // the price of motion). EVERY choosable beat is a choice moment, not just the tip: an earlier beat loops
-  // into "branch from here" just as the tip loops into "continue".
-  const choiceMoment = !!sel.clip && showFutures
+  // ---- the "what happens next" choices are a HOVER / keyboard-focus affordance ----
+  // They no longer auto-appear when a clip ends (the old "dwell" choice-moment read as the panel "showing
+  // up a lot without the mouse-over"). A finished clip just loops on `repeat`; the choices reveal on hover
+  // or when you tab into them (CSS), and a clip-less opening still shows them (there's nothing to watch).
   // (dwell is cleared on beat/phase change by the per-turn reset block above — not a set-state-in-effect)
   // while choosing, the looping clip plays at 0.1× — a slow, dreamy backdrop behind the choices. Reset to
   // 1× when the dwell ends (a new beat remounts the <video> anyway, but this also covers a same-clip exit).
   useEffect(() => { const v = videoRef.current; if (v) v.playbackRate = dwell ? 0.1 : 1 }, [dwell, sel.id])
-  // desktop: keep the clip clean WHILE it plays — reveal the gutter choices when there's nothing to watch
-  // (a still/opening) or when the clip has ended (the dwell, = the choice moment). Hover/keyboard-focus also
-  // reveal (CSS). Mobile stacks the choices below the clip, so they stay visible there regardless.
-  const choicesRevealed = !sel.clip || dwell
+  // Drive playback on the STABLE <video> (see its note): when the selected clip changes — a Play-all advance,
+  // a beat switch, or a hero finalize swapping in the HD shot — the `src` changes, but autoPlay won't re-fire on
+  // an already-played element, so start it here. Keeping ONE element (not a key remount) is what lets Play-all run
+  // THROUGH fullscreen without the browser dropping out of it each segment. The clip is muted, so play() is allowed.
+  useEffect(() => { const v = videoRef.current; if (v && sel.clip) v.play().catch(() => {}) }, [sel.id, playClip, sel.clip])
+  // reveal the gutter choices only when there's nothing to watch (a clip-less still/opening). Otherwise
+  // they stay hidden until hover / keyboard-focus (CSS). Mobile stacks them below the clip regardless.
+  const choicesRevealed = !sel.clip
 
   // "Play all" — watch the dream end-to-end along the LIT SPINE (root→tip); advance on each segment's
   // `ended`, wrap if Repeat is on. Sequencing is over playSpine, not the flat clip list, so a branched
@@ -449,12 +538,8 @@ export default function Chain({ state, revealing = false, onLatestReady }:
       if (next) setSelId(next.id)
       else if (repeat) setSelId(playSpine[0].id)
       else setPlayAll(false)
-      return
     }
-    if (choiceMoment) {
-      setDwell(true)                             // the beat finished and a choice is waiting → choices appear...
-      videoRef.current?.play().catch(() => {})   // ...and the clip LOOPS gently behind them (not a frozen frame)
-    }
+    // not playing-all: the clip loops on `repeat` (the loop attr); the choices no longer auto-appear here.
   }
   const pos = playAll ? playSpine.findIndex((n) => n.id === sel.id) + 1 : 0
   const totalSecs = playSpine.reduce((a, n) => a + (n.length ? n.length / FPS : 0), 0)
@@ -466,6 +551,45 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const markerLeft = (t: number) => selDur > 0 ? Math.min(100, Math.max(0, (t / selDur) * 100)) : 0
   // the tag button surfaces only on a real, settled node (a clip OR the opening still), never mid-dream
   const canTag = !dreaming && !revealing && !busy && (!!sel.clip || idx === 0)   // !busy: no tap during the fire→dream bridge (ADR-0032)
+
+  // ---- ADR-0023 the Shot Card composite (notes + words → "how Lucid reads this") ----
+  // The notes that carry a place (a tapped point/mask): they get a 1-based PIN ①②③ on the frame, echoed as
+  // the leading badge of their composite row — a number is the spatial↔textual link (survives a same-hue
+  // frame + colour-blindness + a screen reader, unlike a colour). pinOf maps a note id to its pin number.
+  const regionNotes = selNotes.filter((n) => n.x != null)
+  const pinOf = (id: string) => { const i = regionNotes.findIndex((n) => n.id === id); return i < 0 ? null : i + 1 }
+  // a note's effect on the ACTIVE engine, in plain words (never plumbing): on 10eros a placed region ALSO
+  // steers the picture (the pixel guide); on wan it only shapes the description; a `hold` anchors either way.
+  // Read the LIVE engine first (state.engine), not the engine stamped on the last reading — so a wan↔10eros
+  // toggle mid-compose flips the footer/effect copy immediately (the council's engine-toggle honesty seam);
+  // the decomposed text itself is engine-independent, so no re-fuse is needed to stay honest.
+  const ltx = (state.engine?.active ?? fuseRes?.engine) === '10eros'
+  const noteEffect = (n: Note): string =>
+    n.tag === 'hold' ? 'grows from here'
+      : (n.x != null || n.mask) ? (ltx ? 'steers the picture here' : 'shapes the words')
+        : ''
+  // debounce the typed line for the fuse trigger (the fuse is a VLM call — never per-keystroke). 900ms is
+  // imperceptible against a minutes-long beat; the readback's purpose is review, not live preview.
+  useEffect(() => { const id = window.setTimeout(() => setOwnDeb(own), 900); return () => window.clearTimeout(id) }, [own])
+  // a stable signature of the selected node's notes — re-fuse when a note is added / removed / edited / re-tapped
+  const notesSig = selNotes.map((n) => `${n.id}:${n.tag}:${n.text ?? ''}:${n.t}:${n.x ?? ''},${n.y ?? ''}:${n.mask ?? ''}`).join('|')
+  // EAGER readback: when the selected beat carries notes and the choices are up, assemble "how Lucid reads
+  // this" so it's ready (or close) by the time the user looks. Re-fires on a note change or a settled typed
+  // line. Fail-open: an unreachable narrator returns the deterministic suffix reading (source:'suffix'); any
+  // transport error just leaves the last reading. NOT during a dream / reveal (showFutures already gates that).
+  useEffect(() => {
+    // clearing on no-notes is idempotent (null===null bails out, no cascade); the disable matches the
+    // measurement-effect convention already used for the gutter-link layout effect below.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!showFutures || selNotes.length === 0) { setFuseRes(null); setFusedEdit(null); return }
+    const seq = ++fuseSeq.current
+    setFuseBusy(true)
+    fuse({ parent: sel.id, prompt: ownDeb })
+      .then((res) => { if (seq !== fuseSeq.current) return; setFuseBusy(false); setFuseRes(res); setFusedEdit(null) })
+      .catch(() => { if (seq === fuseSeq.current) setFuseBusy(false) })
+    // selId/notesSig/ownDeb drive a re-fuse; showFutures gates it off during a dream. (fuse is a stable import.)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showFutures, selId, notesSig, ownDeb])
 
   // keep the selected node in view as the story advances (own scroll only; honour reduced-motion).
   useEffect(() => {
@@ -640,14 +764,44 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   // compose-your-own now lives WITH the curated beats in the gutters (not demoted to the tree) — the two
   // halves of "what happens next" are one surface; it reveals/hides with the choices and stacks on mobile.
   const composeBusy = busy || refine.isPending
+  // The Shot Card: with no notes it is exactly the old compose card (the fast path is untouched). When the
+  // selected beat carries notes it GROWS — the notes become composite rows (each with its on-frame pin + an
+  // honest per-engine effect badge), and a "how Lucid reads this" tier shows the EXACT prompt the next beat
+  // will run, editable before you commit (ADR-0023; "model proposes, code disposes" made visible).
+  const hasNotes = selNotes.length > 0
+  const readbackText = fusedEdit ?? fuseRes?.fused ?? ''
+  const readbackEdited = fusedEdit != null && fusedEdit !== (fuseRes?.fused ?? '')
   const composeCard = (
-    <div className="gchoice compose" key="__compose" data-gkey="__compose"
+    <div className={'gchoice compose' + (hasNotes ? ' shot-card' : '')} key="__compose" data-gkey="__compose"
       onMouseEnter={cardEnter} onMouseMove={cardMove} onMouseLeave={cardLeave}>
-      <span className="geyebrow">or describe your own</span>
-      <form className="gc-form"
-        onSubmit={(e) => { e.preventDefault(); if (own.trim() && !composeBusy) { lastCustom.current = own.trim(); fire(own.trim(), 'custom'); setOwn(''); setRefineMsg(null) } }}>
-        <input ref={ownRef} type="text" value={own} placeholder="the next moment…" disabled={composeBusy}
-          aria-label="Compose your own next moment"
+      <span className="geyebrow">{hasNotes ? 'your direction for the next moment' : 'or describe your own'}</span>
+
+      {hasNotes && (
+        <ul className="sc-notes" aria-label="Your notes for the next moment">
+          {selNotes.map((n) => {
+            const pin = pinOf(n.id)
+            const eff = noteEffect(n)
+            return (
+              <li key={n.id} className={'sc-row note-' + n.tag + (hotNote === n.id ? ' lit' : hotNote ? ' dim' : '')}
+                onMouseEnter={() => setHotNote(n.id)} onMouseLeave={() => setHotNote(null)}>
+                <span className={'sc-pin' + (pin == null ? ' frame' : '')} aria-hidden="true">{pin ?? '▢'}</span>
+                <span className="sc-ic" aria-hidden="true" />
+                <b className="sc-tag">{tagLabel(n.tag)}</b>
+                <span className="sc-t">{n.t.toFixed(1)}s</span>
+                {n.text && <span className="sc-txt">{n.text}</span>}
+                {eff && <span className="sc-eff" aria-hidden="true">{eff}</span>}
+                <button type="button" className="nc-x" disabled={delNote.isPending}
+                  aria-label={`Remove note — ${noteSentence(n)}`}
+                  onClick={() => delNote.mutate({ node: sel.id, id: n.id })}>×</button>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+
+      <form className="gc-form" onSubmit={(e) => { e.preventDefault(); composeSubmit() }}>
+        <input ref={ownRef} type="text" value={own} placeholder={hasNotes ? 'your words for the next moment…' : 'the next moment…'}
+          disabled={composeBusy} aria-label="Compose your own next moment"
           onChange={(e) => { setOwn(e.target.value); if (refineMsg) setRefineMsg(null) }} />
         <div className="gc-actions">
           {/* ✦ Refine: the model PROPOSES a sharper, frame-grounded rewrite of your words; you still edit + dispose.
@@ -660,12 +814,56 @@ export default function Chain({ state, revealing = false, onLatestReady }:
             <span className="fr-spark" aria-hidden="true">✦</span>
             <span className="fr-label">{refine.isPending ? 'Sharpening…' : 'Refine'}</span>
           </button>
-          <button className="future-go" type="submit" disabled={composeBusy} aria-label="Dream this">
+          {/* while the reading is recomputing (a note just changed), block the commit so a click can't fire a
+              stale edit into the server's notes-digest refusal — the readback says "reading…" in that window. */}
+          <button className="future-go" type="submit" disabled={composeBusy || (hasNotes && fuseBusy)} aria-label="Dream this">
             <span className="fg-label">Dream it</span><span className="fg-arrow" aria-hidden="true">→</span>
           </button>
         </div>
       </form>
       {refineMsg && <span className="gc-msg" role="status" aria-live="polite">{refineMsg}</span>}
+
+      {/* HOW LUCID READS THIS — the EXACT prompt the next beat will run (notes decomposed + subject folded
+          in), editable before you commit. Only appears with notes; mounts as the reading arrives, fail-open
+          to the deterministic suffix reading. Editing it sets the run-verbatim text; ↺ restores Lucid's. */}
+      {hasNotes && (
+        <div className="sc-fuse-wrap">
+          <div className={'sc-fuse-k' + (fuseBusy && !readbackText ? ' reading' : '')}>
+            <span className="sc-fuse-spark" aria-hidden="true">✦</span>
+            {fuseBusy && !readbackText ? 'reading your direction…' : 'how Lucid reads this'}
+          </div>
+          {/* the reading sits in a relative box so a calm light-sweep can pass over it WHILE Lucid composes
+              (the "is being written" cue, reusing the Refine sweep grammar), and the finished text SETTLES
+              in rather than popping — keyed on the server reading so a NEW reading re-animates but typing
+              (which changes only the edit) never remounts/loses the cursor. Reduced-motion → it just appears. */}
+          {/* the settle gesture plays ONLY when the model genuinely composed — the deterministic floor (suffix)
+              path gets a plain, instant appearance (.plain), so the gesture means "Lucid wrote this", honestly. */}
+          <div className={'sc-fuse-box' + (fuseBusy && !readbackText ? ' is-reading' : '')}>
+            {/* keyed on the server reading AND `reflow` — a NEW reading OR a ↺ reset re-mounts the textarea so
+                sc-settle replays (Lucid's words bloom back); typing changes only the edit, so it never remounts. */}
+            <textarea key={(fuseRes?.fused ?? 'pending') + ':' + reflow}
+              className={'sc-fuse' + (fuseRes?.source === 'suffix' ? ' plain' : '')} value={readbackText} disabled={composeBusy}
+              rows={3} spellCheck={false} placeholder={fuseBusy ? '' : 'Lucid will compose this when you dream it.'}
+              aria-label="How Lucid will make the next moment — edit it, or leave it"
+              onChange={(e) => setFusedEdit(e.target.value)} />
+            {fuseBusy && !readbackText && <span className="sc-fuse-sweep" aria-hidden="true" />}
+          </div>
+          <div className="sc-fuse-note" role="status" aria-live="polite">
+            {ltx
+              ? (regionNotes.length > 0
+                ? 'Your marked regions steer the picture; these words set the mood.'
+                : 'Your tagged moments guide the picture; these words shape it.')
+              : 'Lucid dreams from these words — your tags shape them.'}
+            {/* the suffix path is reached on an unreachable narrator OR a red-lined model fusion — so the
+                disclosure is cause-agnostic + honest (NOT "offline", which is false on the red-line branch). */}
+            {fuseRes && fuseRes.source === 'suffix' && fuseRes.ok && ' (A plain reading — Lucid kept to your exact notes.)'}
+            {readbackEdited && (
+              <button type="button" className="sc-reset" onClick={resetReading}>↺ reset to Lucid’s reading</button>
+            )}
+            {resetEcho && !readbackEdited && <span className="sc-reset-echo">↺ back to Lucid’s reading</span>}
+          </div>
+        </div>
+      )}
     </div>
   )
 
@@ -700,11 +898,17 @@ export default function Chain({ state, revealing = false, onLatestReady }:
           <div className="clipwrap">
             {sel.clip ? (
               <video
-                key={playClip ?? sel.id} ref={videoRef} className="vid"
+                // ONE STABLE element (constant key) — never remounted on a Play-all advance or a beat switch.
+                // Remounting a <video> that's in FULLSCREEN drops the browser out of fullscreen (and restarts the
+                // load), which is why advancing used to minimize fullscreen on every segment. Instead we keep the
+                // element and only swap its `src` — the ?id= differs per node, so the URL changes even when two
+                // beats share a clip filename (the private-dream collision). A useEffect calls play() on each change
+                // (autoPlay only fires once per element), so Play-all advances and plays THROUGH fullscreen.
+                key="stage-clip" ref={videoRef} className="vid"
                 src={clipUrl(sel.id, playClip)} poster={frameUrl(sel.id, sel.out_frame)}
                 aria-label={`Dream clip: ${sel.label || 'opening'}`}
                 autoPlay muted playsInline controls
-                loop={!playAll && (dwell || (repeat && !choiceMoment))}
+                loop={!playAll && repeat}
                 onEnded={onEnded} onLoadedData={onLatestReady} onError={onLatestReady}
                 onPlay={() => setPaused(false)} onPause={() => setPaused(true)}
               />
@@ -748,17 +952,21 @@ export default function Chain({ state, revealing = false, onLatestReady }:
           {/* honest, calm status across the segmentation lifecycle — announced to assistive tech */}
           {canTag && draftOpen && (
             <div className="seg-status" role="status" aria-live="polite">
-              {segmenting ? 'finding the object…'
-                : draftPreview ? 'object highlighted — confirm to keep'
-                : draftPt ? 'the GPU was busy — saved as a point' : ''}
+              {segmenting ? 'finding what you tapped…'
+                : draftPreview ? 'got it — save the note to keep this'
+                : draftPt ? 'couldn’t trace the edges just now — saved where you tapped' : ''}
             </div>
           )}
-          {/* existing notes that carry a point: faint dots on the frame (in addition to the timeline track) */}
-          {!draftOpen && selNotes.some((n) => n.x != null) && (
-            <div className="aim-marks" aria-hidden="true">
-              {selNotes.filter((n) => n.x != null).map((n) => (
-                <span key={n.id} className={'aim-dot static aim-' + n.tag}
-                  style={{ left: (n.x as number) * 100 + '%', top: (n.y as number) * 100 + '%' }} />
+          {/* existing notes that carry a place: NUMBERED PINS on the frame (①②③…) — the spatial half of the
+              spatial↔textual link. The same number leads its composite row in the Shot Card; hovering either
+              side lights the pair (hotNote) and dims the rest. Pins are the colour-blind/same-hue-safe link. */}
+          {!draftOpen && regionNotes.length > 0 && (
+            <div className="aim-marks">
+              {regionNotes.map((n, i) => (
+                <span key={n.id} className={'aim-pin aim-' + n.tag + (hotNote === n.id ? ' lit' : hotNote ? ' dim' : '')}
+                  style={{ left: (n.x as number) * 100 + '%', top: (n.y as number) * 100 + '%' }}
+                  onMouseEnter={() => setHotNote(n.id)} onMouseLeave={() => setHotNote(null)}
+                  aria-hidden="true">{i + 1}</span>
               ))}
             </div>
           )}
@@ -798,8 +1006,26 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                 {sel.length ? <span style={{ opacity: 0.7 }}>· {fmtDur(sel.length / FPS)}</span> : null}
                 {canTag && !draftOpen && (
                   <button type="button" className="tag-btn" disabled={busy} onClick={openDraft}
-                    aria-label="Tag a moment in this clip to steer the next beat">
-                    <span className="ic" aria-hidden="true">✦</span> Tag a moment
+                    aria-label="Leave a note on this moment to steer the next moment">
+                    <span className="ic" aria-hidden="true">✦</span> Note this moment
+                  </button>
+                )}
+                {/* ADR-0040: prompt-guided keyframe edit — direct the action by editing this frame, then animate from it */}
+                {canTag && editEnabled && !draftOpen && !editOpen && (
+                  <button type="button" className="tag-btn" disabled={busy} onClick={() => setEditOpen(true)}
+                    aria-label="Edit this frame with a prompt to direct the action, then animate from it">
+                    <span className="ic" aria-hidden="true">✎</span> Edit the action
+                  </button>
+                )}
+                {sel.edited && !editOpen && (
+                  <button type="button" className="tag-btn" disabled={busy || dreaming || revert.isPending}
+                    onClick={() => revert.mutate({ node: sel.id }, {
+                      onSuccess: (r: { reverted?: boolean; reason?: string }) =>
+                        showFlash(r && r.reverted ? 'Edit reverted — original restored.' : (r && r.reason) || 'Nothing to revert.'),
+                      onError: () => showFlash('Couldn’t revert — try again.'),
+                    })}
+                    aria-label="Undo the edit to this shot — restore the original">
+                    <span className="ic" aria-hidden="true">↺</span> Revert edit
                   </button>
                 )}
                 {/* ADR-0033: finalize THIS beat in HD — re-renders the same shot on the 20-step lane (minutes). */}
@@ -813,7 +1039,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
               <p className="beat-q">{`“${sel.prompt || sel.caption}”`}</p>
               <span className="stage-ix beat-ix">{idx + 1} / {nodes.length}</span>
               {canTag && draftOpen && (
-                <div className="tag-draft" role="group" aria-label="Tag this moment">
+                <div className="tag-draft" role="group" aria-label="Leave a note on this moment">
                   <div className="tag-draft-head">
                     {sel.clip && (
                       <button type="button" className="tag-play" onClick={togglePlay}
@@ -821,10 +1047,10 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                         <span aria-hidden="true">{paused ? '▶' : '⏸'}</span> {paused ? 'Play' : 'Pause'}
                       </button>
                     )}
-                    Tag at <b>{draftT.toFixed(1)}s</b> — steers the next beat
-                    <span className="aim-hint">{draftPt ? ' · point set ✓ (tap to move)' : ' · tap a spot on the clip'}</span>
+                    A note at <b>{draftT.toFixed(1)}s</b> — steers the next moment
+                    <span className="aim-hint">{draftPt ? ' · marked ✓ (tap to move it)' : ' · tap what this is about'}</span>
                   </div>
-                  <div className="tagchips" role="radiogroup" aria-label="What kind of note">
+                  <div className="tagchips" role="radiogroup" aria-label="How should it change?">
                     {TAGS.map((o) => (
                       <button key={o.tag} type="button" className={'tagchip' + (draftTag === o.tag ? ' on' : '')}
                         role="radio" aria-checked={draftTag === o.tag} disabled={busy}
@@ -832,19 +1058,23 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                     ))}
                   </div>
                   {/* the optional text detail reveals (animates in) only AFTER a location is placed —
-                      the tap is the primary gesture; the detail is a refinement on top of it (ADR-0032) */}
+                      the tap is the primary gesture; the words are about WHAT YOU POINTED AT (ADR-0032) */}
                   {draftPt && (
                     <input type="text" className="tag-text reveal" value={draftText} disabled={busy}
-                      placeholder="add a detail (optional)…" aria-label="Optional note detail"
+                      placeholder="say more (optional)…" aria-label="Add a detail to this note (optional)"
                       onChange={(e) => setDraftText(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveNote() }
                         else if (e.key === 'Escape') { e.preventDefault(); setDraftOpen(false) } }} />
                   )}
                   <div className="tag-draft-row">
-                    <button type="button" className="tag-save" disabled={busy} onClick={saveNote}>Save tag</button>
+                    <button type="button" className="tag-save" disabled={busy} onClick={saveNote}>Save note</button>
                     <button type="button" className="tag-cancel" onClick={() => setDraftOpen(false)}>Cancel</button>
                   </div>
                 </div>
+              )}
+              {canTag && editOpen && (
+                <EditPanel node={sel.id} canReplace={sel.id !== 0 && !!sel.clip} disabled={busy}
+                  onClose={() => setEditOpen(false)} />
               )}
             </div>
           )}
@@ -925,13 +1155,17 @@ export default function Chain({ state, revealing = false, onLatestReady }:
           <div className="tree-title">{treeTitle}</div>
           {showFutures && !busy && (
             <div className="seglen" style={{ margin: 0 }}>
-              <span className="seglen-label">Length of the next moment</span>
-              <div className="seglen-opts" role="group" aria-label="Next segment length">
+              <span className="seglen-label">
+                Length of the next moment
+                <span className="seglen-default"><span aria-hidden="true">✓ </span>your default</span>
+              </span>
+              <div className="seglen-opts" role="group" aria-label="Next segment length (your pick is remembered as the default)">
                 {LENGTHS.map((o) => (
                   <button key={o.f} type="button" className={'lenbtn' + (len === o.f ? ' on' : '')}
-                    aria-pressed={len === o.f} disabled={busy} onClick={() => setLen(o.f)}>{o.s}</button>
+                    aria-pressed={len === o.f} disabled={busy} onClick={() => chooseLen(o.f)}>{o.s}</button>
                 ))}
               </div>
+              <span className="seglen-hint">Sticks as your default · tap any length to change</span>
             </div>
           )}
         </div>
@@ -942,10 +1176,12 @@ export default function Chain({ state, revealing = false, onLatestReady }:
         </div>
 
 
-        {/* moment tags steering the NEXT beat grown from this node (spatial feed-forward) */}
-        {!dreaming && !revealing && selNotes.length > 0 && (
-          <div className="notes-row" role="group" aria-label="Moment tags steering the next beat">
-            <span className="notes-k">Notes → next beat</span>
+        {/* your notes steering the next moment — the at-a-glance HISTORY view. Hidden while composing
+            (!showFutures): the Shot Card in the gutter already shows them as composable rows, so this would
+            duplicate. Shown when reviewing a beat without composing, so a node's notes are never invisible. */}
+        {!dreaming && !revealing && !showFutures && selNotes.length > 0 && (
+          <div className="notes-row" role="group" aria-label="Your notes steering the next moment">
+            <span className="notes-k">Your notes for the next moment</span>
             <ul className="notes-list">
               {selNotes.map((n) => (
                 <li key={n.id} className={'notechip note-' + n.tag}>
@@ -953,7 +1189,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                   <b className="nc-tag">{tagLabel(n.tag)}</b>
                   {n.text && <span className="nc-text">{n.text}</span>}
                   <button type="button" className="nc-x" disabled={delNote.isPending}
-                    aria-label={`Remove the ${tagLabel(n.tag)} note at ${n.t.toFixed(1)} seconds`}
+                    aria-label={`Remove note — ${noteSentence(n)}, at ${n.t.toFixed(1)} seconds`}
                     onClick={() => delNote.mutate({ node: sel.id, id: n.id })}>×</button>
                 </li>
               ))}
@@ -961,10 +1197,10 @@ export default function Chain({ state, revealing = false, onLatestReady }:
           </div>
         )}
 
-        {/* carry indicator: the dream now forming is steered by the notes left on the node it grew from */}
+        {/* carry indicator: the dream now forming is steered by the notes left on the moment it grew from */}
         {dreaming && carryCount > 0 && (
           <div className="notes-carry" role="status">
-            Guided by your {carryCount} note{carryCount === 1 ? '' : 's'} on the last beat
+            Guided by your {carryCount} note{carryCount === 1 ? '' : 's'} on the last moment
           </div>
         )}
 

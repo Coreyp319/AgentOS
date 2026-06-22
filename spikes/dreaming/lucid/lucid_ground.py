@@ -344,7 +344,7 @@ def ledger_delta_llm(prior, beat_label, caption, *, seed=False, model=None, temp
     if seed:
         user = "Opening caption: " + (caption or "(unknown)")
     else:
-        user = ("Canon so far: " + json.dumps(prior["facts"], ensure_ascii=False) + "\n"
+        user = ("Canon so far: " + json.dumps(prior.get("facts") or {}, ensure_ascii=False) + "\n"
                 "Beat the viewer chose: " + (beat_label or "(none)") + "\n"
                 "On screen now: " + (caption or "(unknown)"))
     try:
@@ -376,6 +376,9 @@ print(json.dumps({"corr": float(cv2.compareHist(hist(a), hist(b), cv2.HISTCMP_CO
 # Unmeasured (ADR-0037 ships L2 flag-only until a fixture sanity pass calibrates it): below this HSV-hist
 # correlation the palette is flagged "shifted". Tunable, NOT yet a gate that rejects.
 PALETTE_STEADY = float(os.environ.get("LUCID_PALETTE_STEADY", "0.50"))
+# A 2-frame HSV histogram is sub-second; the short timeout caps a hung interpreter so the cv2 child can't
+# delay a lease release (resource-safety review 2026-06-22) — it never sits 30s on a turn's critical path.
+PALETTE_TIMEOUT_S = float(os.environ.get("LUCID_PALETTE_TIMEOUT_S", "10"))
 
 
 def palette_drift(path_a, path_b):
@@ -387,7 +390,7 @@ def palette_drift(path_a, path_b):
         return None
     try:
         r = subprocess.run([VENV_PY, "-c", _PALETTE_CHILD, path_a, path_b],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=PALETTE_TIMEOUT_S)
         if r.returncode != 0:
             return None
         c = json.loads(r.stdout.strip()).get("corr")

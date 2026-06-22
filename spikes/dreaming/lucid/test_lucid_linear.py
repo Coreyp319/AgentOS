@@ -524,5 +524,248 @@ class GuidesTest(unittest.TestCase):
         self.assertIsNone(self.gen_kwargs[-1].get("guides"))
 
 
+class RegionPhraseTest(unittest.TestCase):
+    """ADR-0032 per-region steering: a tap (x,y) becomes a coarse, DETERMINISTIC location phrase (a 3x3 grid
+    over the frame), and _steering_suffix names that location so the text-only fallback localizes the steer
+    the same way the VLM decomposition does. Pure functions — no chain/model/GPU."""
+    def test_region_phrase_grid(self):
+        self.assertEqual(L._region_phrase(0.5, 0.5), "the center")
+        self.assertEqual(L._region_phrase(0.1, 0.1), "the top-left")
+        self.assertEqual(L._region_phrase(0.9, 0.9), "the bottom-right")
+        self.assertEqual(L._region_phrase(0.5, 0.1), "the top")
+        self.assertEqual(L._region_phrase(0.1, 0.5), "the left")
+        self.assertIsNone(L._region_phrase(None, 0.5))            # bad coord -> None (code disposes)
+
+    def test_steering_suffix_localizes_a_regional_note(self):
+        notes = [{"id": "nt0", "t": 0.5, "tag": "more", "text": "glow brighter", "x": 0.1, "y": 0.1},
+                 {"id": "nt1", "t": 1.0, "tag": "less", "text": "", "x": 0.9, "y": 0.5}]
+        s = L._steering_suffix(notes)
+        self.assertIn("emphasize glow brighter in the top-left", s)
+        self.assertIn("less of this in the right", s)             # no text -> default phrase + location
+
+    def test_steering_suffix_legacy_note_has_no_location(self):
+        s = L._steering_suffix([{"id": "nt0", "t": 0.0, "tag": "more", "text": "the lamp"}])
+        self.assertEqual(s, "; emphasize the lamp")               # no region -> unchanged (byte-compat)
+
+
+class NotesDigestTest(unittest.TestCase):
+    """ADR-0023 staleness gate: the notes_digest binds a reviewed/edited reading to the EXACT
+    (parent, notes, typed-prompt) it derived from, so /api/dream can refuse an edit reviewed against a
+    different note set. Pure hash over the chain — no model/GPU."""
+    def _chain(self):
+        return {"session": "t", "nodes": [
+            {"id": 0, "parent": None, "label": "opening", "out_frame": "t_n0.png", "clip": None},
+            {"id": 1, "parent": 0, "label": "a", "out_frame": "t_n1.png", "clip": "c.mp4",
+             "notes": [{"id": "nt0", "t": 0.5, "tag": "more", "text": "the lamp"}]}]}
+
+    def test_digest_stable_and_note_sensitive(self):
+        ch = self._chain(); par = ch["nodes"][1]
+        d0 = L._notes_digest(ch, par)
+        self.assertEqual(d0, L._notes_digest(ch, par))                      # stable for identical notes
+        par["notes"][0]["text"] = "the candle"
+        self.assertNotEqual(d0, L._notes_digest(ch, par))                   # note edit -> new digest
+
+    def test_digest_is_prompt_independent(self):
+        # NOTES-ONLY by design: editing the typed words must NOT change the staleness token (the edited
+        # reading is what runs regardless of the words), so a prompt edit can't false-trigger the gate.
+        ch = self._chain(); par = ch["nodes"][1]
+        self.assertEqual(L._notes_digest(ch, par), L._notes_digest(ch, par))
+
+    def test_digest_changes_when_a_note_is_added(self):
+        ch = self._chain(); par = ch["nodes"][1]
+        d0 = L._notes_digest(ch, par)
+        par["notes"].append({"id": "nt1", "t": 1.0, "tag": "hold", "text": ""})
+        self.assertNotEqual(d0, L._notes_digest(ch, par))
+
+
+class FuseDirectionTest(unittest.TestCase):
+    """ADR-0023 fuse-review: fuse_direction assembles the EXACT prompt the next beat would run — notes
+    decomposed (or the deterministic suffix), subject folded IN — with NO lease/GPU, so the Shot Card can
+    show + let the user correct it. decompose/subject are injected; the frame seams are stubbed so the
+    deterministic assembly + the red-line fallback are assertable without a model."""
+    def setUp(self):
+        self._ispriv, self._frame_ref = L.ST.is_private, L.ST.frame_ref
+        self._extract_at, self._to_b64, self._gate = L.E.extract_frame_at, L.E.frame_to_b64, L.S.gate_prompt
+        self._load = L.load_chain
+        self.chain = {"session": "t", "private": False, "premise": "a winter dream", "nodes": [
+            {"id": 0, "parent": None, "label": "opening", "out_frame": "t_n0.png", "clip": None},
+            {"id": 1, "parent": 0, "label": "a", "out_frame": "t_n1.png", "clip": "c.mp4",
+             "notes": [{"id": "nt0", "t": 0.5, "tag": "more", "text": "the lamp", "x": 0.1, "y": 0.1, "r": 0.2}]}]}
+        L.load_chain = lambda s: self.chain
+        L.ST.is_private = lambda s: False
+        L.ST.frame_ref = lambda s, p, name: (name, f"/tmp/{name}")
+        L.E.extract_frame_at = lambda clip, t, name, out_path=None: out_path or name
+        L.E.frame_to_b64 = lambda path: "B64"
+        L.S.gate_prompt = lambda p: None if "BLOCK" in p else p          # identity-ish; refuses a BLOCK string
+
+    def tearDown(self):
+        L.load_chain = self._load
+        L.ST.is_private, L.ST.frame_ref = self._ispriv, self._frame_ref
+        L.E.extract_frame_at, L.E.frame_to_b64, L.S.gate_prompt = self._extract_at, self._to_b64, self._gate
+
+    def test_fuse_uses_decompose_and_folds_subject(self):
+        seen = {}
+        def _dec(bp, tagged, premise=None):
+            seen["bp"], seen["tagged"], seen["premise"] = bp, tagged, premise
+            return "REFINED CONTINUATION"
+        res = L.fuse_direction("t", 1, "a calm aurora", _decompose=_dec, _subject=lambda s, c: "A lone figure")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["source"], "decompose")
+        self.assertEqual(res["subject"], "A lone figure")
+        self.assertEqual(res["fused"], "A lone figure. REFINED CONTINUATION")   # subject folded into the text
+        self.assertEqual(seen["bp"], "a calm aurora")
+        self.assertEqual(seen["premise"], "a winter dream")
+        self.assertEqual(seen["tagged"][0]["region"], "the top-left")           # per-region location threaded
+        self.assertEqual(len(res["rows"]), 1)
+        self.assertEqual(res["rows"][0]["tag"], "more")
+        self.assertTrue(res["rows"][0]["region"])                               # row marks it as regional
+        self.assertTrue(res["notes_digest"])
+
+    def test_fuse_falls_back_to_suffix_when_decompose_none(self):
+        res = L.fuse_direction("t", 1, "a quiet sea", _decompose=lambda *a, **k: None,
+                               _subject=lambda s, c: "")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["source"], "suffix")
+        self.assertIn("a quiet sea", res["fused"])
+        self.assertIn("emphasize the lamp in the top-left", res["fused"])       # deterministic + localized
+
+    def test_fuse_redline_model_output_falls_back_to_suffix(self):
+        # a model that returns a red-lined fusion is NOT shown — fall back to the deterministic suffix + re-gate.
+        res = L.fuse_direction("t", 1, "a quiet sea", _decompose=lambda *a, **k: "BLOCK this",
+                               _subject=lambda s, c: "")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["source"], "suffix")
+        self.assertNotIn("BLOCK", res["fused"])
+
+    def test_allow_model_false_skips_decompose(self):
+        # TURN-phase backpressure: allow_model=False never touches the VLM seam, straight to the suffix reading.
+        called = []
+        res = L.fuse_direction("t", 1, "a calm aurora",
+                               _decompose=lambda *a, **k: called.append(1) or "REFINED",
+                               _subject=lambda s, c: "", allow_model=False)
+        self.assertEqual(called, [])                                            # decompose NOT called
+        self.assertEqual(res["source"], "suffix")
+        self.assertIn("emphasize the lamp in the top-left", res["fused"])       # deterministic reading
+
+    def test_fuse_no_notes_is_just_the_subject_folded_prompt(self):
+        self.chain["nodes"][1]["notes"] = []
+        called = []
+        res = L.fuse_direction("t", 1, "the lamp flickers",
+                               _decompose=lambda *a, **k: called.append(1) or "X",
+                               _subject=lambda s, c: "A figure")
+        self.assertEqual(called, [])                                            # no notes -> decompose untouched
+        self.assertEqual(res["fused"], "A figure. the lamp flickers")
+        self.assertEqual(res["rows"], [])
+
+
+class FusedEditedStepTest(unittest.TestCase):
+    """ADR-0023: step(fused_edited=...) runs the user-reviewed prompt VERBATIM — no re-decompose, no subject
+    re-prefix — while the LTX pixel guides still derive from the notes (a text edit never disables a mask).
+    Heavy seams stubbed like GuidesTest; decompose/_subject_for are tripwires that must NOT fire."""
+    def setUp(self):
+        self._orig = {k: getattr(L, k) for k in ("load_chain", "save_chain", "generate_video", "_subject_for")}
+        self._ispriv, self._frame_ref = L.ST.is_private, L.ST.frame_ref
+        self._extract_last, self._extract_at = L.E.extract_last_frame, L.E.extract_frame_at
+        self._to_b64, self._decompose = L.E.frame_to_b64, L.E.decompose_notes
+        self._gate, self._engine = L.S.gate_prompt, L.E.current_engine
+        self.chain = {"session": "t", "private": False, "premise": None, "nodes": [
+            {"id": 0, "parent": None, "label": "opening", "out_frame": "t_n0.png", "rating": "sfw", "clip": None},
+            {"id": 1, "parent": 0, "label": "a", "out_frame": "t_n1.png", "rating": "sfw", "clip": "clip1.mp4"}]}
+        self.gen_prompts, self.gen_kwargs, self.decompose_calls, self.subject_calls = [], [], [], []
+
+        def _gen(session, prompt, anchor_frame, **k):
+            self.gen_prompts.append(prompt); self.gen_kwargs.append(k); return "clip.mp4"
+
+        L.load_chain = lambda s: self.chain
+        L.save_chain = lambda s, c: setattr(self, "chain", c)
+        L.generate_video = _gen
+        L._subject_for = lambda s, c: self.subject_calls.append(1) or "SHOULD-NOT-PREFIX"
+        L.ST.is_private = lambda s: False
+        L.ST.frame_ref = lambda s, p, name: (name, f"/tmp/{name}")
+        L.E.extract_last_frame = lambda clip, ref, out_path=None: ref
+        L.E.extract_frame_at = lambda clip, t, name, out_path=None: out_path
+        L.E.frame_to_b64 = lambda path: "B64"
+        L.E.decompose_notes = lambda *a, **k: self.decompose_calls.append(1) or "SHOULD-NOT-DECOMPOSE"
+        L.S.gate_prompt = lambda p: "GATED:" + p
+        L.E.current_engine = lambda: "10eros"
+
+    def tearDown(self):
+        for k, v in self._orig.items():
+            setattr(L, k, v)
+        L.ST.is_private, L.ST.frame_ref = self._ispriv, self._frame_ref
+        L.E.extract_last_frame, L.E.extract_frame_at = self._extract_last, self._extract_at
+        L.E.frame_to_b64, L.E.decompose_notes = self._to_b64, self._decompose
+        L.S.gate_prompt, L.E.current_engine = self._gate, self._engine
+
+    def test_fused_edited_runs_verbatim_skipping_decompose_and_subject(self):
+        L.add_note("t", 1, 0.5, "more", "the lamp", x=0.3, y=0.4)
+        node = L.step("t", "a calm aurora", "custom", is_current=lambda: True,
+                      fused_edited="A figure. the lamp flares as the room dims")
+        self.assertIsNotNone(node)
+        self.assertEqual(self.decompose_calls, [])                  # the VLM seam is NOT touched
+        self.assertEqual(self.subject_calls, [])                    # subject is NOT re-prefixed
+        self.assertEqual(node["prompt"], "GATED:A figure. the lamp flares as the room dims")
+        guides = self.gen_kwargs[-1].get("guides")                  # structured channel still derives from notes
+        self.assertIsNotNone(guides)
+        self.assertEqual(len(guides), 1)
+        self.assertEqual(guides[0][3], (0.3, 0.4, L.DEFAULT_NOTE_RADIUS))   # the region survived the text edit
+
+    def test_no_fused_edited_keeps_the_decompose_path(self):
+        L.add_note("t", 1, 0.5, "more", "the lamp")
+        node = L.step("t", "a calm aurora", "custom", is_current=lambda: True)   # no fused_edited
+        self.assertEqual(len(self.decompose_calls), 1)              # legacy path: decompose IS called
+        self.assertEqual(len(self.subject_calls), 1)                # ...and subject IS prefixed
+
+
+class DeclaredRatingFloorTest(unittest.TestCase):
+    """The user-declared 'Mature dream' floor (chain['rating_floor']). The per-frame VLM is conservative,
+    so a mature-INTENDED dream off a tame frame must still steer mature from frame 0. Stubs the model seams
+    (frame->b64, ground_frame returns sfw with no model, propose) and asserts the floor wins, monotone-up,
+    and is a strict no-op when absent (today's behaviour). Pure logic — no model/GPU/store."""
+    def setUp(self):
+        import lucid_engine as E
+        self.E = E
+        self._orig = {"f2b": E.frame_to_b64, "fabs": L._frame_abs,
+                      "propose": L.propose, "load": L.load_chain}
+        E.frame_to_b64 = lambda p: None           # ungrounded -> ground_frame returns (None,'sfw'), no model
+        L._frame_abs = lambda session, node: "x.png"
+        L.load_chain = lambda s: self.chain        # context_for re-loads the chain -> serve the test one
+        self.chain = None
+        self.seen = {}
+
+        def _propose(ctx, n=4, rating="sfw", frame_b64=None):
+            self.seen["rating"] = rating          # capture the steering tier the menu was rolled with
+            return [{"label": "x", "prompt": "y"}]
+        L.propose = _propose
+
+    def tearDown(self):
+        self.E.frame_to_b64 = self._orig["f2b"]
+        L._frame_abs = self._orig["fabs"]
+        L.propose = self._orig["propose"]
+        L.load_chain = self._orig["load"]
+
+    def _chain(self, floor):
+        return {"session": "t", "premise": None, "rating_floor": floor,
+                "nodes": [{"id": 0, "parent": None, "label": "opening", "out_frame": "t_n0.png"}]}
+
+    def test_declared_floor_steers_mature_on_a_sfw_frame(self):
+        self.chain = self._chain("mature")
+        _beats, _cap, rating = L.roll_menu("t", self.chain)
+        self.assertEqual(rating, "mature")             # floor wins over the sfw VLM rating
+        self.assertEqual(self.seen["rating"], "mature")  # ...and the menu was actually steered mature
+
+    def test_absent_floor_is_a_no_op(self):
+        self.chain = self._chain(None)
+        _beats, _cap, rating = L.roll_menu("t", self.chain)
+        self.assertEqual(rating, "sfw")                # unchanged: pure-VLM behaviour
+        self.assertEqual(self.seen["rating"], "sfw")
+
+    def test_start_persists_only_a_valid_floor(self):
+        # start() builds chain['rating_floor'] = 'mature' iff exactly 'mature', else None (validated, not trusted).
+        import inspect
+        src = inspect.getsource(L.start)
+        self.assertIn('"rating_floor": "mature" if rating_floor == "mature" else None', src)
+
+
 if __name__ == "__main__":
     unittest.main()

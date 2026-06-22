@@ -13,6 +13,14 @@
   --display:"Fraunces Variable",Georgia,"Times New Roman",serif; /* serif never rendered in a warm token */
   --fs-sm:.8125rem; --fs-xs:.75rem;
   --radius-sm:9px; --radius-md:16px; --blur-raised:14px;
+  /* ADR-0025/0032 the four NOTE-direction triads (hue · ink-on-glass · shape glyph), named once so a re-hue
+     is one tx against a named triad, not a scatter of bare hex — the --brand-warm re-hue-desync this file
+     already learned about. NB --dir-change-hue is deliberately distinct from --brand-warm (copper = the
+     scarce "authored act that needs you" warmth; a direction tint must never be mistaken for it). */
+  --dir-hold-hue:#7aa2ff;   --dir-hold-ink:#a9c4ff;   --dir-hold-gly:"\25C6";
+  --dir-more-hue:#7fd49a;   --dir-more-ink:#8fe0aa;   --dir-more-gly:"\25B2";
+  --dir-less-hue:#a8a8be;   --dir-less-ink:#bcbcd0;   --dir-less-gly:"\25BC";
+  --dir-change-hue:#e6a86e; --dir-change-ink:#f0bd86; --dir-change-gly:"\270E";
 }
 @media (prefers-reduced-transparency:reduce){ :root{ --glass:rgba(24,28,40,.94) } .card,.stage{ backdrop-filter:none } }
 
@@ -89,7 +97,12 @@ button{ font:inherit }
 /* next-segment length picker — a calm segmented control above the beats; the chosen length
    applies to whichever beat (or custom turn) you fire next. */
 .seglen{ margin:6px 0 12px }
-.seglen-label{ display:block; color:var(--inst-label); font-size:var(--fs-xs); margin-bottom:6px }
+.seglen-label{ display:flex; align-items:baseline; justify-content:space-between; gap:8px;
+  flex-wrap:wrap; color:var(--inst-label); font-size:var(--fs-xs); margin-bottom:6px }
+/* the sticky-default tag: marks that the highlighted length is the saved default, so the picker's
+   memory reads as a setting the user made (legible stickiness), not a surprising recall. */
+.seglen-default{ color:var(--inst-blue); font-weight:600; letter-spacing:.02em; white-space:nowrap }
+.seglen-hint{ display:block; color:var(--inst-label); opacity:.8; font-size:var(--fs-xs); margin-top:6px }
 .seglen-opts{ display:flex; gap:6px; flex-wrap:wrap }
 .lenbtn{ flex:1 1 0; min-width:44px; text-align:center; background:transparent;
   border:1px solid var(--hairline); color:var(--inst-muted); border-radius:var(--radius-sm);
@@ -345,6 +358,27 @@ a{ color:var(--inst-blue) }
   border-radius:var(--radius-sm); padding:7px 14px; font:inherit; cursor:pointer; min-height:34px }
 .tag-cancel:hover{ border-color:var(--inst-muted); color:var(--inst-text) }
 
+/* ADR-0040 the inline edit panel: describe an edit, optionally drop a reference image, preview the edited
+   keyframe, then animate. Shares the draft panel's warm "director's note" surface + the chip/Save/Cancel kit. */
+.edit-panel{ margin-top:12px; padding:12px 13px; border-radius:var(--radius-sm);
+  border:1px solid color-mix(in srgb,var(--inst-blue) 32%,transparent);
+  background:color-mix(in srgb,var(--inst-blue) 9%,transparent); backdrop-filter:blur(var(--blur-raised)) }
+.edit-head{ font-size:var(--fs-xs); color:var(--inst-label); margin-bottom:9px }
+.edit-instr{ width:100%; box-sizing:border-box; resize:vertical; min-height:48px; font:inherit;
+  color:var(--inst-text); background:rgba(10,12,20,.5); border:1px solid var(--hairline);
+  border-radius:var(--radius-sm); padding:8px 10px }
+.edit-instr:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:1px; border-color:transparent }
+.edit-row{ display:flex; align-items:center; gap:9px; margin:9px 0 }
+.edit-file{ font:inherit; font-size:var(--fs-xs); color:var(--inst-muted); max-width:62% }
+.edit-imgclear{ background:transparent; border:1px solid var(--hairline); color:var(--inst-muted);
+  border-radius:999px; padding:3px 10px; font:inherit; font-size:11px; cursor:pointer }
+.edit-imgclear:hover{ border-color:var(--inst-blue); color:var(--inst-blue) }
+.edit-msg{ margin:8px 0 0; font-size:var(--fs-xs); color:var(--inst-muted) }
+/* the edited keyframe preview — the still the next clip would animate FROM (a clear before-you-commit look) */
+.edit-keyframe{ display:block; width:100%; max-height:46vh; object-fit:contain; margin:4px 0 2px;
+  border-radius:var(--radius-sm); border:1px solid color-mix(in srgb,var(--inst-blue) 24%,transparent);
+  background:#06080e }
+
 /* marker track: a hairline strip along the bottom of the stage with a dot per tagged moment */
 .mk-track{ position:absolute; left:0; right:0; bottom:0; height:3px; z-index:3; pointer-events:none;
   background:color-mix(in srgb,var(--inst-blue) 14%,transparent) }
@@ -369,8 +403,25 @@ a{ color:var(--inst-blue) }
   box-shadow:0 0 10px -1px color-mix(in srgb,var(--aim,var(--inst-blue)) 80%,transparent); pointer-events:none }
 .aim-dot.static{ width:10px; height:10px; opacity:.5; border-width:1.5px }   /* a saved note's point, quiet */
 .aim-dot.seg{ opacity:.75 }                                                  /* segmenting — tap landed, awaiting mask */
-/* ADR-0032: tag-coded tints (redundant to the draft chip — never tint alone) used by the dot AND the mask */
-.aim-more{ --aim:#7fd49a } .aim-hold{ --aim:#7aa2ff } .aim-change{ --aim:#e6a86e } .aim-less{ --aim:#a8a8be }
+/* ADR-0032/0023 per-direction TOKEN BUNDLE (redundant to the chip/label — never tint alone): `--aim` is the
+   hue (used by the on-frame dot/mask/pin), `--tag-ink` an AA-safe text tone on glass (the Shot Card row), and
+   `--tag-gly` a SHAPE glyph that carries the meaning in grayscale (▲ up=more / ▼ down=less / ◆ planted=hold /
+   ✎ edit=change). One language across the frame pin, the timeline marker, and the composite row. */
+.aim-hold,.note-hold,.sc-row.note-hold      { --aim:var(--dir-hold-hue);   --tag-ink:var(--dir-hold-ink);   --tag-gly:var(--dir-hold-gly) }
+.aim-more,.note-more,.sc-row.note-more      { --aim:var(--dir-more-hue);   --tag-ink:var(--dir-more-ink);   --tag-gly:var(--dir-more-gly) }
+.aim-less,.note-less,.sc-row.note-less      { --aim:var(--dir-less-hue);   --tag-ink:var(--dir-less-ink);   --tag-gly:var(--dir-less-gly) }
+.aim-change,.note-change,.sc-row.note-change{ --aim:var(--dir-change-hue); --tag-ink:var(--dir-change-ink); --tag-gly:var(--dir-change-gly) }
+/* the numbered pin (① on the frame): the spatial half of the spatial↔textual link. Same number leads its
+   Shot Card row; hovering either side lights the pair. Interactive (pointer-events) so the frame can drive it. */
+.aim-pin{ position:absolute; z-index:3; transform:translate(-50%,-50%); display:grid; place-items:center;
+  width:18px; height:18px; border-radius:50%; font:700 10px/1 system-ui,sans-serif; font-variant-numeric:tabular-nums;
+  color:var(--tag-ink,var(--inst-blue)); border:1.5px solid var(--aim,var(--inst-blue)); cursor:default;
+  background:color-mix(in srgb,var(--aim,var(--inst-blue)) 26%,rgba(6,8,16,.82)); box-shadow:0 0 0 1px rgba(0,0,0,.55);
+  pointer-events:auto; transition:opacity .18s ease, transform .18s ease }   /* hoverable (the parent is none) */
+.aim-pin.lit{ transform:translate(-50%,-50%) scale(1.18);
+  box-shadow:0 0 0 1px rgba(0,0,0,.6), 0 0 12px 1px color-mix(in srgb,var(--aim,var(--inst-blue)) 80%,transparent) }
+.aim-pin.dim{ opacity:.4 }
+@media (prefers-reduced-motion:reduce){ .aim-pin{ transition:none } .aim-pin.lit{ transform:translate(-50%,-50%) } }
 /* figure/ground object highlight: a darkening scrim everywhere + the tag-tinted silhouette lifted out of it
    (reads on any frame, hue is not the only signal — the draft chip names the tag, the status narrates it) */
 .aim-scrim{ position:absolute; inset:0; z-index:1; background:rgba(6,8,16,.5); pointer-events:none }
@@ -403,6 +454,83 @@ a{ color:var(--inst-blue) }
   background:transparent; border:none; color:var(--inst-muted); font-size:15px; line-height:1; cursor:pointer }
 .nc-x:hover:not(:disabled){ background:color-mix(in srgb,var(--inst-blue) 18%,transparent); color:var(--inst-text) }
 .nc-x:disabled{ opacity:.4; cursor:default }
+
+/* ADR-0023 the Shot Card: the compose card GROWS when the selected beat carries notes — the notes become
+   composite rows (pin · direction · time · words · honest per-engine effect), and "how Lucid reads this"
+   shows the EXACT prompt the next beat will run, editable before commit. With no notes none of .sc-* mounts,
+   so the fast path is byte-for-byte the old compose card. */
+/* the Shot Card deepens the compose card into the director's panel. copper = the scarce "authored act that
+   needs you" warmth — in the Shot Card it's demoted to a quiet HAIRLINE boundary (not compose's head-wash
+   fill), so warm never competes with the model-voice-blue readback rail; just a touch more elevation too. */
+.shot-card{ box-shadow:0 20px 46px -22px rgba(0,0,0,.92); gap:11px;
+  background:rgba(12,14,21,.86); border-color:color-mix(in srgb,var(--brand-warm) 30%,var(--hairline)) }
+@media (prefers-reduced-transparency:reduce){ .shot-card{ background:rgba(17,15,13,.97) } }
+.sc-notes{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px }
+/* a row arrives with the codebase's calm transform-only rise (gbloom); the tag-hued LIT rail + wash pair it
+   with the on-frame pin's glow, so hovering EITHER side lights the whole pair (the spatial↔textual link). */
+.sc-row{ display:flex; align-items:center; gap:7px; min-height:28px; padding:2px 4px 2px 3px; border-radius:7px;
+  font-size:var(--fs-xs); color:var(--inst-text); animation:gbloom .42s ease;
+  transition:opacity .18s ease, background .18s ease, box-shadow .2s ease }
+.sc-row.dim{ opacity:.4 }
+.sc-row.lit{ background:color-mix(in srgb,var(--aim,var(--inst-blue)) 9%,transparent);
+  box-shadow:inset 2px 0 0 0 var(--aim,var(--inst-blue)) }
+.sc-pin{ flex:0 0 auto; display:grid; place-items:center; width:17px; height:17px; border-radius:50%;
+  font:700 10px/1 system-ui,sans-serif; font-variant-numeric:tabular-nums; color:var(--tag-ink,var(--inst-blue));
+  border:1.5px solid var(--aim,var(--inst-blue)); background:color-mix(in srgb,var(--aim,var(--inst-blue)) 20%,rgba(6,8,16,.6));
+  transition:box-shadow .2s ease }
+.sc-pin.frame{ border-style:dashed; border-color:var(--inst-muted); color:var(--inst-muted); background:transparent; font-size:9px }
+.sc-row.lit .sc-pin{ box-shadow:0 0 10px -1px color-mix(in srgb,var(--aim,var(--inst-blue)) 85%,transparent) }
+.sc-ic{ flex:0 0 auto; color:var(--aim,var(--inst-blue)); font-size:11px; line-height:1 }
+.sc-ic::before{ content:var(--tag-gly,"\2022") }
+.sc-tag{ flex:0 0 auto; color:var(--tag-ink,var(--inst-blue)); font-weight:600 }
+.sc-t{ flex:0 0 auto; color:var(--inst-label); font-variant-numeric:tabular-nums }
+.sc-txt{ flex:1 1 auto; min-width:0; color:var(--inst-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+/* the honest per-engine effect — a quiet tag-hued dot + label, so "steers the picture here" reads as a
+   deliberate signal, not throwaway gray (the dot is the only NON-text carrier — the words carry the meaning) */
+.sc-eff{ flex:0 0 auto; display:inline-flex; align-items:center; gap:4px; color:var(--inst-label);
+  font-size:10px; font-style:italic; opacity:.92 }
+.sc-eff::before{ content:''; width:5px; height:5px; border-radius:50%; background:var(--aim,var(--inst-blue)); opacity:.85 }
+.sc-row .nc-x{ flex:0 0 auto }
+/* the readback — Lucid's reading of your direction. A serif whisper (the dream's voice, like .gc-msg) in an
+   AUTHORED frame: a left accent rail in the model-voice blue, set apart from your own <input> above it. */
+.sc-fuse-wrap{ margin-top:3px; padding-top:10px; border-top:1px solid var(--hairline);
+  display:flex; flex-direction:column; gap:6px }
+.sc-fuse-k{ display:flex; align-items:center; gap:6px; font-size:var(--fs-xs); text-transform:uppercase;
+  letter-spacing:.07em; color:var(--inst-label) }
+.sc-fuse-spark{ color:var(--inst-blue); font-size:10px; opacity:.9 }
+.sc-fuse-k.reading .sc-fuse-spark{ animation:fr-twinkle 1.1s ease-in-out infinite }
+.sc-fuse-box{ position:relative; border-radius:var(--radius-sm) }
+.sc-fuse{ display:block; width:100%; resize:vertical; min-height:62px; margin:0; padding:10px 12px 10px 14px;
+  background:linear-gradient(90deg, color-mix(in srgb,var(--inst-blue) 15%,transparent), transparent 10px), var(--inst-deep);
+  border:1px solid var(--hairline); border-left:2px solid color-mix(in srgb,var(--inst-blue) 48%,transparent);
+  border-radius:var(--radius-sm); font-family:var(--display); font-style:italic; font-weight:380; font-size:.9rem;
+  line-height:1.42; color:color-mix(in srgb,var(--inst-blue) 24%,var(--inst-text)); animation:sc-settle .5s ease both }
+/* the deterministic floor (suffix) reading appears plainly — the "Lucid composed this" settle is reserved
+   for a genuine model fusion, so the gesture stays honest (the floor path didn't earn it). */
+.sc-fuse.plain{ animation:none }
+.sc-fuse:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:2px }
+.sc-fuse:disabled{ opacity:.72 }
+/* WHILE Lucid composes the reading: a calm sliver of light sweeps the empty box (the "being written" cue,
+   reusing the Refine fr-sweep grammar) and the box breathes faintly (formpulse). Only shown with no text yet. */
+.sc-fuse-box.is-reading{ overflow:hidden; animation:formpulse 1.8s ease-in-out infinite }
+.sc-fuse-sweep{ position:absolute; inset:0; pointer-events:none; z-index:2; border-radius:var(--radius-sm);
+  background:linear-gradient(108deg, transparent 34%, color-mix(in srgb,var(--inst-blue) 26%,transparent) 50%, transparent 66%);
+  transform:translateX(-110%); animation:fr-sweep 1.3s ease-in-out infinite }
+.sc-fuse-note{ font-size:11px; line-height:1.45; color:var(--inst-label) }
+.sc-reset{ margin-left:6px; background:none; border:none; padding:0; cursor:pointer; color:var(--inst-blue);
+  font:inherit; font-size:11px; text-decoration:underline }
+/* the warm echo after a ↺ reset — a brief, calm confirmation the revert is safe (undo-as-delight) */
+.sc-reset-echo{ margin-left:6px; font-size:11px; font-style:italic;
+  color:color-mix(in srgb,var(--inst-blue) 40%,var(--inst-label)); animation:sc-settle .4s ease both }
+@media (prefers-reduced-motion:reduce){ .sc-reset-echo{ animation:none } }
+/* the reading SETTLES in (a soft rise+fade), never types in — the delight pass's "reads it back, and waits" */
+@keyframes sc-settle{ from{ opacity:0; transform:translateY(5px) } to{ opacity:1; transform:none } }
+@media (prefers-reduced-motion:reduce){
+  .sc-row{ animation:none; transition:none }
+  .sc-fuse{ animation:none }
+  .sc-fuse-sweep{ display:none }
+  .sc-fuse-box.is-reading{ animation:none }
+  .sc-fuse-k.reading .sc-fuse-spark{ animation:none } }
 
 /* carry indicator while the next beat forms — the notes are steering it */
 .notes-carry{ font-size:var(--fs-xs); color:var(--inst-blue); margin:2px 0 12px }

@@ -23,6 +23,7 @@ export type DreamNode = {
   notes?: Note[]                     // moment tags steering the next beat (spatial feed-forward)
   quality?: 'draft' | 'hero'         // ADR-0033 render lane this beat was generated in (absent on legacy nodes = draft)
   hero_clip?: string | null          // ADR-0033 the finalized HD re-render of THIS beat (the same shot at 20-step fidelity)
+  edited?: boolean                   // ADR-0040 this shot was replaced in place by a prompt-guided edit (revertible)
 }
 export type Chain = { nodes: DreamNode[] } | null
 export type TurnPhase = 'idle' | 'dreaming' | 'done' | 'skipped' | 'refused' | 'error'
@@ -35,6 +36,7 @@ export type LucidState = {
   session: string; name?: string | null
   readiness: Readiness; chain: Chain; private: boolean; turn: Turn
   engine?: Engine   // ADR-0023: which i2v backend run_beat uses ('wan' | '10eros')
+  edit_enabled?: boolean   // ADR-0040: is the prompt-guided keyframe edit available (model present + not killed)
   stash?: StashStatus
 }
 // ADR-0023: a "what happens next" choice. `key` is the backend's content-address (label+prompt) and `preview`
@@ -147,7 +149,7 @@ function useStateMutation<V>(fn: (v: V) => Promise<any>, resets: unknown[][] = [
   })
 }
 
-export const useDream = () => useStateMutation((b: { prompt: string; label: string; length?: number; parent?: number }) => post('/api/dream', b))
+export const useDream = () => useStateMutation((b: { prompt: string; label: string; length?: number; parent?: number; fused_edited?: string; notes_digest?: string }) => post('/api/dream', b))
 // ADR-0033: re-render a chosen beat at HERO quality (the 20-step lane) — the same shot, finalized in HD.
 export const useHero = () => useStateMutation((b: { node: number }) => post('/api/hero', b))
 // ADR-0023: fire-and-forget trigger that asks the server to start rendering per-choice "potential path" stills
@@ -196,6 +198,25 @@ export const segment = (b: { node: number; t: number; x: number; y: number }): P
   post('/api/segment', b)
 export const useDeleteNote = () =>
   useStateMutation((b: { node: number; id: string }) => post('/api/note/delete', b))
+
+// ---- ADR-0040 prompt-guided keyframe edit (edit-then-animate) ----
+// STEP 1 — preview: prompt-edit a node's frame (+ optional reference image) into a NEW keyframe, returned
+// inline as a no-store data-URL with a single-use `token`. A one-off (NOT a state mutation — nothing is
+// committed yet; the chain is unchanged). Fails honest: {ok:false, reason}; {blocked:true,...} when the
+// reference image trips the B2 real-person likeness guard (the caller offers the consent re-try).
+export type EditPreviewResult = {
+  ok: boolean; token?: string; preview?: string; placement?: 'branch' | 'replace'
+  reason?: string; blocked?: boolean; requires_consent?: boolean
+}
+export const editPreview = (b: { node: number; prompt: string; placement: 'branch' | 'replace'; image_b64?: string; consent?: boolean }): Promise<EditPreviewResult> =>
+  post('/api/edit/preview', b)
+// STEP 2 — commit: animate the approved keyframe. 'branch' grows a NEW beat from it; 'replace' re-renders
+// the shot in place. A state mutation — it starts a leased turn (the page's TURN poll shows progress).
+export const useEditCommit = () =>
+  useStateMutation((b: { token: string; length?: number }) => post('/api/edit/commit', b))
+// Undo an in-place edit (restore the backed-up shot, ADR-0005). A state mutation.
+export const useEditRevert = () =>
+  useStateMutation((b: { node: number }) => post('/api/edit/revert', b))
 
 // ---- ADR-0019 reviewable request queue (the durable held + needs-review board) ----
 // Mirrors lucid_hub.board(): path-free by design (no snapshot, no spool location ever reaches here).
