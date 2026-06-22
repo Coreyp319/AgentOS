@@ -203,15 +203,33 @@ fn should_push(last: f64, val: f64) -> bool {
 // The RC call body — the EXACT §B wire contract (allowlisted setter, structured fields).
 // ---------------------------------------------------------------------------
 
-/// `parameters` of the `SetScalarParameterValue` call. `WorldContextObject: null` is the documented
-/// CDO-call form (`remote_control_setup.md`); whether `null` resolves for the material library is
-/// the one `[VERIFY-LIVE]` of §B (fallback: a thin allowlisted `UAgentOSReactive::SetMood` UFUNCTION
-/// that grabs the world itself — still never the property/preset route). `ParameterName` comes from
-/// `AXES` only.
+/// The world-bearing object RC binds as `WorldContextObject` so `SetScalarParameterValue` resolves the
+/// RUNNING world. A `null` (or a bare world-path string) does NOT bind — `GetWorldFromContextObject(null)`
+/// returns null and the setter silently NO-OPS (confirmed live on 2026-06-21; this was the §B
+/// `[VERIFY-LIVE]` that made every push a no-op despite the 200s — "no light shift whatsoever"). The
+/// map's PERSISTENT LEVEL resolves cleanly via RC's `{objectPath}` form. Map-specific (the AgentOS
+/// wallpaper map is `CalmWallpaper`); override with `AGENTOSD_RC_WORLD_CONTEXT` for another map.
+const WORLD_CONTEXT_DEFAULT: &str = "/Game/AgentOS/CalmWallpaper.CalmWallpaper:PersistentLevel";
+
+fn world_context_path() -> &'static str {
+    static P: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    P.get_or_init(|| std::env::var("AGENTOSD_RC_WORLD_CONTEXT").unwrap_or_else(|_| WORLD_CONTEXT_DEFAULT.to_string()))
+}
+
+/// A UObject reference on the wire — RC binds an object-typed parameter from `{"objectPath": "<path>"}`
+/// (a bare string does NOT resolve the running world; see `WORLD_CONTEXT_DEFAULT`).
+#[derive(Serialize)]
+struct ObjRef {
+    #[serde(rename = "objectPath")]
+    object_path: &'static str,
+}
+
+/// `parameters` of the `SetScalarParameterValue` call. `WorldContextObject` carries the running world
+/// (`world_context_path()`); `ParameterName` comes from `AXES` only.
 #[derive(Serialize)]
 struct CallParams {
     #[serde(rename = "WorldContextObject")]
-    world_context_object: Option<()>, // serializes to JSON `null`
+    world_context_object: ObjRef,
     #[serde(rename = "Collection")]
     collection: &'static str,
     #[serde(rename = "ParameterName")]
@@ -239,7 +257,7 @@ impl CallBody {
             object_path: KISMET_MAT_CDO,
             function_name: SET_SCALAR_FN,
             parameters: CallParams {
-                world_context_object: None,
+                world_context_object: ObjRef { object_path: world_context_path() },
                 collection: MPC_PATH,
                 parameter_name: name,
                 parameter_value: value,
@@ -513,7 +531,8 @@ fn push_once(
                 if !st.rejecting {
                     eprintln!(
                         "[{}] rc: RC rejected {} (status non-2xx) — check the SetScalarParameterValue \
-                         allowlist + WorldContextObject:null resolution [ADR-0029 §B VERIFY-LIVE]",
+                         allowlist is cooked in (ADR-0029 §B) and AGENTOSD_RC_WORLD_CONTEXT resolves \
+                         in the running map",
                         crate::now_hms(),
                         AXES[i].name
                     );
@@ -667,7 +686,10 @@ mod tests {
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["objectPath"], KISMET_MAT_CDO);
         assert_eq!(v["functionName"], "SetScalarParameterValue");
-        assert!(v["parameters"]["WorldContextObject"].is_null());
+        // WorldContextObject MUST be a real world ref ({objectPath:...}), not null (a null world
+        // no-ops SetScalarParameterValue — the bug that produced "no light shift").
+        assert!(!v["parameters"]["WorldContextObject"].is_null());
+        assert_eq!(v["parameters"]["WorldContextObject"]["objectPath"], world_context_path());
         assert_eq!(v["parameters"]["Collection"], MPC_PATH);
         assert_eq!(v["parameters"]["ParameterName"], "Motion");
         assert_eq!(v["parameters"]["ParameterValue"], 1.25);
@@ -784,7 +806,7 @@ mod tests {
         assert!(req.contains("\"functionName\":\"SetScalarParameterValue\""), "verb: {req}");
         assert!(req.contains("\"ParameterName\":\"Fog\""), "param name: {req}");
         assert!(req.contains("\"ParameterValue\":1.3"), "param value: {req}");
-        assert!(req.contains("\"WorldContextObject\":null"), "world ctx: {req}");
+        assert!(req.contains("\"WorldContextObject\":{\"objectPath\":"), "world ctx: {req}");
     }
 
     #[test]
