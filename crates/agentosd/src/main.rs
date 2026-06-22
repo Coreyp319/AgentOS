@@ -50,6 +50,7 @@ mod governor;
 mod keyhole;
 mod lease;
 mod mcp;
+mod queue;
 mod rc;
 mod rc_throttle;
 mod reclaim;
@@ -119,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "keyhole" => keyhole::run(std::env::args().any(|a| a == "--once")),
         "coord" => coord::run(std::env::args().skip(2).collect()),
         "lease" => lease::run(),
+        "queue" => queue::run(),
         "telemetry" => telemetry::run(std::env::args().skip(2).collect()),
         "coexist" => analyze::run(std::env::args().skip(2).collect()),
         "mcp" => mcp::run(std::env::args().skip(2).collect()),

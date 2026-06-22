@@ -106,6 +106,22 @@ Built in `crates/agentosd/src/lease.rs` (47 tests, clippy clean; live-proven via
   same-uid `GetConnectionUnixUser` authz check is marginal on a single-user box and was skipped. The
   real closer is the `0600` peer socket — sequence it with the Hermes plugin (ADR-0006), which needs
   a socket-aware client anyway (it would also break `busctl`/`dream.sh`, so it's a deliberate later step).
+  - **RESOLVED 2026-06-22 (ADR-0041 §5b) — declined for the single-user box; identity rests on the
+    session bus's per-connection name, not a socket.** When ADR-0041's VRAM-demand-queue arbiter
+    needed "enforceable per-principal authz" (waiter-cancel binding, per-principal flood caps,
+    no-leak), a fresh look confirmed a `0600` peer socket buys ~nothing here: (1) the per-user session
+    bus already keeps *other users* out (the only boundary `SO_PEERCRED uid==self` would add — and it
+    is a tautology on a single-user bus, exactly as line 106 says); (2) a `0600` socket does NOT stop a
+    *same-uid* confused-deputy either (every same-uid process can open it), so it doesn't close the
+    residual it was filed against; (3) **same-uid peers are NOT indistinguishable on the session bus** —
+    each connection has a unique bus name the bus daemon vouches for, which is exactly what the LIVE
+    GO-2 binding (`holder_peer`/`may_release`, ADR-0021) already uses for per-connection release/renew
+    authz. So the arbiter reuses that per-connection identity for waiter-cancel binding, and caps flood
+    by **per-connection + global** bounds (per-*uid* = global on a single-user box). Migrating every
+    client (mcp.rs, the jeepney/busctl Hermes plugin, `dream.sh`) to a raw socket for a marginal,
+    already-provided property is rejected. A1 (the socket) is reopened only if AgentOS ever serves a
+    *multi-user* or *system-bus* deployment; the cheap `GetConnectionUnixUser==geteuid()` belt-and-
+    suspenders check is the documented forward path for that day, not a single-user requirement.
 
 **Commit note:** these changes are interleaved with the in-flight keyhole work in `lease.rs`/`main.rs`/
 `CLAUDE.md`, so they were left uncommitted at the time of writing (Corey commits the combined set).

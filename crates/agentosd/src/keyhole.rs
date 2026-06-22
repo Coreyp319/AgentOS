@@ -131,6 +131,21 @@ pub struct Lease {
     pub holder: String,
     #[serde(default)]
     pub preempt: String,
+    /// ADR-0041 drain-on-free signal: a monotonic counter the lease daemon bumps whenever the lease
+    /// transitions to holder-none (a workflow released / exited / its TTL expired) — i.e. cross-workflow
+    /// VRAM capacity MAY have increased. It is an OPTIMISTIC re-check hint, NOT a confirmed-free signal:
+    /// it is bumped on the holder-none edge (before a Spawned victim's async reap completes), so a
+    /// consumer must always re-verify via the daemon's live-NVML `admit` — never drive a destructive act
+    /// off it. The VRAM-demand arbiter (`agentosd queue`) polls `lease.json` (this counter is the future
+    /// inotify latency optimization) and offers a waiter a turn when the lease reads free. NOT a keyhole
+    /// field (the tray ignores it); `skip_serializing_if` keeps it OUT of the at-rest keyhole.json so the
+    /// ADR-0012 contract is byte-unchanged until the lease has actually freed at least once.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub freed_seq: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -619,7 +634,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Lease>("{}").unwrap(), Lease::default());
         assert_eq!(
             serde_json::from_str::<Lease>(r#"{"tier":"interactive","holder":"Hermes","preempt":""}"#).unwrap(),
-            Lease { tier: "interactive".into(), holder: "Hermes".into(), preempt: String::new() }
+            Lease { tier: "interactive".into(), holder: "Hermes".into(), preempt: String::new(), ..Default::default() }
         );
     }
 
@@ -660,6 +675,7 @@ mod tests {
                 tier: "interactive".into(),
                 holder: "Hermes".into(),
                 preempt: "wallpaper yielded ~1.5GB -> qwen2.5 loaded".into(),
+                ..Default::default()
             },
             vram: Vram { used_mib: 6240, total_mib: 8192 },
             residency: vec![Residency { name: "qwen2.5:14b".into(), loaded_secs: 240 }],

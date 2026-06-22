@@ -1,0 +1,21 @@
+[Unit]
+Description=AgentOS VRAM-demand arbiter (org.agentos.Queue1 — cross-workflow wait-queue, ADR-0041 Layer 1)
+# The cross-workflow queue: when a model workflow loses the single VRAM lease it can WaitTurn here and
+# be nominated (highest tier, then FIFO) the instant the lease frees, instead of blind-retrying. A
+# SEPARATE process from the coordinator ON PURPOSE — it holds no lease, no PID, no kill primitive, so a
+# queue bug can never delay a SIGKILL or freeze the desktop. It only READS the daemon's lease.json
+# mirror and PROPOSES order; the coordinator's admit stays the sole grant gate. Like the coordinator it
+# is headless (not graphical-session bound). A restart is fail-safe: the wait-queue is transient
+# in-memory state, so on restart every parked WaitTurn caller's call drops and it falls back to direct
+# Acquire/busy_retry/self-retry — exactly the pre-queue behavior, never a wedge.
+Requires=agentos-lease.service
+After=agentos-lease.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/agentosd queue
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

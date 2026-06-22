@@ -70,6 +70,14 @@ const EEVEE_RENDER_EST_MIB: u32 = 3000;
 const SCOPE_RECLAIM_POLLS: u32 = 30;
 const SCOPE_RECLAIM_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Bound on AWAITING a SIGKILLed owned child's reap before a preempt grant returns (ADR-0041 §5a —
+/// the over-admit guard: a SIGKILL returns when the signal is *queued*, not when the driver freed the
+/// VRAM, so the prior detached reap let a successor allocate into not-yet-freed memory). A SIGKILLed
+/// process reaps in ms; this generous ceiling matches the Scope path's confirm budget
+/// (`SCOPE_RECLAIM_POLLS` × interval ≈ 3 s). On timeout we detach a reaper and proceed (fail-open,
+/// ADR-0003 — the next admission's true-free NVML read governs; a hung child can't stall the caller).
+const SPAWNED_REAP_TIMEOUT: Duration = Duration::from_secs(3);
+
 const BUS_NAME: &str = "org.agentos.Coordinator1";
 const OBJ_PATH: &str = "/org/agentos/Coordinator1";
 
@@ -584,6 +592,14 @@ struct Inner {
     /// Consecutive supervisor ticks the lease has been FREE while UE is throttled — the restore-edge
     /// anti-strobe (a chained session re-grabs the lease before `WALLPAPER_RESTORE_FREE_TICKS` elapses).
     wallpaper_free_ticks: u32,
+    /// ADR-0041 drain-on-free signal: a monotonic counter bumped whenever the lease transitions to
+    /// holder-none (released / natural-exit / TTL / peer-disconnect) — i.e. cross-workflow VRAM
+    /// capacity may have increased. Stamped into the `lease.json` mirror (`lease_snapshot`) so the
+    /// VRAM-demand arbiter (`agentosd queue`, ADR-0041 Layer 1) wakes (inotify) and re-nominates a
+    /// waiter, with the poll floor as the fail-open backstop. NEVER bumped on a fresh grant or a
+    /// preempt — those don't free capacity for a waiter (the preemptor took the lease). Per-instance
+    /// (one daemon per process) so the bump is unit-testable; the daemon gains NO wait-queue state.
+    freed_seq: u64,
 }
 
 impl Inner {
@@ -602,6 +618,7 @@ impl Inner {
             wallpaper_throttle_inflight: None,
             last_wallpaper_throttle: None,
             wallpaper_free_ticks: 0,
+            freed_seq: 0,
         }
     }
 }
@@ -635,6 +652,9 @@ fn short_label(label: &str) -> String {
 /// holding `Inner`, then write OFF the lock. No holder → all-empty (the UI shows "no contention").
 /// A cooperative holder has no agentosd-known name, so `holder` stays empty (honest, not faked).
 fn lease_snapshot(inner: &Inner) -> Lease {
+    // ADR-0041: every mirror write carries the current drain-on-free counter, so the arbiter sees the
+    // latest `freed_seq` whether the lease is held or idle.
+    let freed_seq = inner.freed_seq;
     match inner.lease.holder_tier() {
         Some(t) => {
             let token = inner.lease.holder_token();
@@ -644,9 +664,9 @@ fn lease_snapshot(inner: &Inner) -> Lease {
                 .filter(|j| j.token == token)
                 .map(|j| short_label(&j.label))
                 .unwrap_or_default();
-            Lease { tier: t.as_str().to_string(), holder, preempt: inner.last_preempt.clone() }
+            Lease { tier: t.as_str().to_string(), holder, preempt: inner.last_preempt.clone(), freed_seq }
         }
-        None => Lease::default(),
+        None => Lease { freed_seq, ..Lease::default() },
     }
 }
 
@@ -702,6 +722,22 @@ fn sigkill_group(pid: u32) {
     // Safe: a kill(2) syscall with a constant signal; negative pid targets the group.
     unsafe {
         libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+}
+
+/// Reap an already-SIGKILLed child, BOUNDED (ADR-0041 §5a / ADR-0003 fail-open). Returns `true` iff the
+/// leader was confirmed reaped within `budget` (so its CUDA context is torn down and its VRAM is
+/// freeing); on timeout it detaches a background reaper (so the child can never zombie) and returns
+/// `false` — the caller proceeds rather than stalling forever on an unkillable (e.g. D-state) child.
+/// A free fn (no NVML) so the bound + fail-open behaviour is unit-testable without a GPU.
+async fn reap_bounded(mut child: Child, budget: Duration) -> bool {
+    if tokio::time::timeout(budget, child.wait()).await.is_ok() {
+        true
+    } else {
+        tokio::spawn(async move {
+            let _ = child.wait().await; // background reap — never leave a zombie
+        });
+        false
     }
 }
 
@@ -794,6 +830,9 @@ async fn release_token(
             g.holder_ttl = None; // ADR-0021 #3: no holder → no remembered TTL
             if g.lease.holder_tier().is_none() {
                 g.last_preempt.clear();
+                // ADR-0041: the lease just freed → bump the drain-on-free signal so the arbiter wakes
+                // and re-nominates a waiter. The snapshot below carries the new value.
+                g.freed_seq = g.freed_seq.wrapping_add(1);
             }
         }
         (freed, to_reap, lease_snapshot(&g))
@@ -1342,21 +1381,27 @@ impl Coordinator {
         }
     }
 
-    /// Reap an evicted/released child, then prove reclaim. The SIGKILL (to the group) has
-    /// already been sent; we `wait()` the leader so the Δ is read after *actual* exit (H2),
-    /// not a fixed-sleep guess. Off the response path so the handler stays snappy.
-    fn spawn_reclaim_task(&self, mut child: Child, before: u64) {
-        let nvml = Arc::clone(&self.nvml);
-        tokio::spawn(async move {
-            let _ = child.wait().await; // reap the leader (no zombie)
-            tokio::time::sleep(Duration::from_millis(150)).await; // brief driver settle
-            if let Some(after) = free_mib(&nvml).await {
-                println!(
-                    "coordd: post-evict free {after}M (was {before}M; Δ {}M reclaimed)",
-                    after.saturating_sub(before)
-                );
-            }
-        });
+    /// CONFIRM an evicted owned child's VRAM is actually freed before the caller's grant returns
+    /// (ADR-0041 §5a — close the over-admit window). The SIGKILL (to the group) has already been sent;
+    /// `reap_bounded` waits for the leader so the Δ is read after *actual* exit (H2), not a fixed-sleep
+    /// guess — and, unlike the prior DETACHED reap, the `do_acquire` preempt path AWAITS this, so a
+    /// successor can never allocate into not-yet-freed VRAM (the cardinal sin: UE crashes, not degrades).
+    /// Mirrors `reclaim_scope`'s confirm-then-read backpressure. Fail-open on a stuck child: `reap_bounded`
+    /// detaches a reaper and we proceed (the next admission's true-free NVML read governs).
+    async fn confirm_spawned_reclaim(&self, child: Child, before: u64) {
+        if !reap_bounded(child, SPAWNED_REAP_TIMEOUT).await {
+            eprintln!(
+                "coordd: WARNING evicted child not reaped within {SPAWNED_REAP_TIMEOUT:?} — \
+                 proceeding (fail-open, ADR-0003; next admission's true-free read governs)"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await; // brief driver settle
+        if let Some(after) = free_mib(&self.nvml).await {
+            println!(
+                "coordd: post-evict free {after}M (was {before}M; Δ {}M reclaimed)",
+                after.saturating_sub(before)
+            );
+        }
     }
 
     /// Reclaim an evicted owned holder's GPU — the destructive lever, run OFF the `Inner` lock (review
@@ -1370,7 +1415,9 @@ impl Coordinator {
                     short_label(&label)
                 );
                 sigkill_group(pid);
-                self.spawn_reclaim_task(child, before_free); // reap + prove reclaim off-path (H2)
+                // ADR-0041 §5a: AWAIT confirm-free before the grant returns (was a detached reap → the
+                // over-admit window). Mirrors the Scope arm's backpressure below.
+                self.confirm_spawned_reclaim(child, before_free).await;
             }
             Reclaim::Scope { handle, dir, lane_pid } => {
                 self.reclaim_scope(handle, dir, lane_pid, fit, before_free).await;
@@ -1682,6 +1729,8 @@ async fn supervise(inner: Arc<Mutex<Inner>>, mirror: Option<PathBuf>, conn: zbus
                 g.holder_ttl = None;
                 if g.lease.holder_tier().is_none() {
                     g.last_preempt.clear();
+                    // ADR-0041: a naturally-exited owned job freed the lease → wake the arbiter.
+                    g.freed_seq = g.freed_seq.wrapping_add(1);
                 }
             }
             (done, lease_snapshot(&g))
@@ -2239,5 +2288,72 @@ mod tests {
         // Cooperative victim (not reclaimable) frees nothing → only current free counts.
         assert!(!fits_after_evict(4_000, 19_000, false, 18_000, 512));
         assert!(fits_after_evict(20_000, 0, false, 18_000, 512));
+    }
+
+    // --- ADR-0041 §5a: bounded reap = the over-admit-window confirm-free ---
+
+    #[tokio::test]
+    async fn reap_bounded_confirms_a_quickly_exiting_child() {
+        // A child that exits immediately is confirmed reaped within the budget → true: its CUDA context
+        // is torn down and the preempt grant may safely proceed (no over-admit into not-yet-freed VRAM).
+        let child = Command::new("/usr/bin/true").spawn().expect("spawn true");
+        assert!(
+            reap_bounded(child, Duration::from_secs(3)).await,
+            "a quickly-exiting child must be confirmed reaped within the budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn reap_bounded_times_out_on_a_live_child_without_hanging() {
+        // A still-running child is NOT confirmed within a tiny budget → false, returning PROMPTLY
+        // (fail-open: the daemon proceeds rather than stalling on an unkillable/D-state child; the next
+        // admission's true-free read governs). kill_on_drop lets the detached reaper's Child clean up.
+        let child = Command::new("/usr/bin/sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn sleep");
+        assert!(
+            !reap_bounded(child, Duration::from_millis(50)).await,
+            "a live child must not be falsely confirmed reaped within a 50ms budget (and must not hang)"
+        );
+    }
+
+    // --- ADR-0041 drain-on-free signal (freed_seq) ---
+
+    #[tokio::test]
+    async fn freed_seq_advances_on_a_real_release_but_not_a_no_op_release() {
+        let inner = Arc::new(Mutex::new(Inner::new()));
+        // A COOPERATIVE holder (no owned child → release_token does no SIGKILL and touches no NVML).
+        let token = {
+            let mut g = inner.lock().await;
+            match g.lease.acquire(Tier::Batch, &fits()) {
+                AcquireResult::Granted { token } => token,
+                other => panic!("expected Granted, got {other:?}"),
+            }
+        };
+        let before = inner.lock().await.freed_seq;
+        // A real release frees the lease → bump the drain signal (the arbiter's wake).
+        assert!(release_token(&inner, None, token, None).await);
+        let after = inner.lock().await.freed_seq;
+        assert_eq!(after, before + 1, "releasing the lease must bump freed_seq");
+        // A second release of the now-stale token frees nothing → no bump (capacity unchanged).
+        assert!(!release_token(&inner, None, token, None).await);
+        assert_eq!(inner.lock().await.freed_seq, after, "a no-op release must NOT bump freed_seq");
+    }
+
+    #[tokio::test]
+    async fn freed_seq_is_unchanged_by_grant_and_preempt_and_is_mirrored() {
+        let inner = Arc::new(Mutex::new(Inner::new()));
+        let mut g = inner.lock().await;
+        // A fresh grant TAKES the lease; it frees no capacity for a waiter → no bump.
+        g.lease.acquire(Tier::Batch, &fits());
+        assert_eq!(g.freed_seq, 0, "acquiring frees nothing → freed_seq stays 0");
+        // A preempt hands the lease to the preemptor (still held) → also no bump.
+        assert!(matches!(g.lease.acquire(Tier::Interactive, &fits()), AcquireResult::Preempted { .. }));
+        assert_eq!(g.freed_seq, 0, "a preempt frees no capacity for a waiter → freed_seq stays 0");
+        // The mirror stamps the live counter so the arbiter reads it off lease.json.
+        g.freed_seq = 7;
+        assert_eq!(lease_snapshot(&g).freed_seq, 7, "the lease.json mirror must carry the live freed_seq");
     }
 }

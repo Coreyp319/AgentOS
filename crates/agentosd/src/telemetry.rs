@@ -557,7 +557,7 @@ mod tests {
                 loaded_secs: 12,
             }],
             events: vec!["load:gemma4:latest".into()],
-            lease: Lease { tier: "batch".into(), holder: "ComfyUI".into(), preempt: String::new() },
+            lease: Lease { tier: "batch".into(), holder: "ComfyUI".into(), preempt: String::new(), ..Default::default() },
             tokens_per_sec: None,
         };
         assert_eq!(

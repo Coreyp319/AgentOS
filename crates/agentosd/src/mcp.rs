@@ -123,6 +123,21 @@ fn tools_list() -> Value {
             }, "required": ["tier", "estimate_mib"]},
         },
         {
+            "name": "gpu_wait",
+            "description": "ACQUIRE a GPU lease, WAITING for your turn in the cross-workflow VRAM queue if \
+                            the lease is busy (ADR-0041). Like gpu_request, but on busy_retry it parks you \
+                            behind the queue (highest tier, then first-come) and blocks until it's your turn, \
+                            then retries — instead of returning immediately. Same statuses (granted{token} | \
+                            denied{short_mib} | busy_retry | unavailable) plus waited:true when the queue gave \
+                            you a turn. Tier clamped to 'batch'. Use this when you're willing to wait for the \
+                            GPU; use gpu_request for an immediate answer. Call gpu_release(token) when done.",
+            "inputSchema": {"type": "object", "properties": {
+                "tier": {"type": "string", "enum": ["batch", "best-effort"],
+                         "description": "requested tier; 'interactive' is clamped to 'batch', 'yielding' raised to 'best-effort'"},
+                "estimate_mib": {"type": "integer", "description": "estimated VRAM footprint, MiB"},
+            }, "required": ["tier", "estimate_mib"]},
+        },
+        {
             "name": "gpu_release",
             "description": "RELEASE a lease you hold (the token from gpu_request). Only the session that \
                             acquired the lease may release it. Returns status: released | not_holder | unavailable.",
@@ -152,6 +167,12 @@ fn tools_call(req: &Value) -> Value {
             let tier = arg("tier").and_then(Value::as_str).unwrap_or("best-effort");
             let est = arg("estimate_mib").and_then(Value::as_u64).unwrap_or(0).min(u32::MAX as u64) as u32;
             (gpu_request(tier, est), false)
+        }
+        "gpu_wait" => {
+            // Same least-privilege defaults as gpu_request (lower 'best-effort', saturated est).
+            let tier = arg("tier").and_then(Value::as_str).unwrap_or("best-effort");
+            let est = arg("estimate_mib").and_then(Value::as_u64).unwrap_or(0).min(u32::MAX as u64) as u32;
+            (gpu_wait(tier, est), false)
         }
         "gpu_release" => {
             let token = arg("token").and_then(Value::as_u64).unwrap_or(0);
@@ -374,9 +395,20 @@ const COORD_BUS: &str = "org.agentos.Coordinator1";
 const COORD_PATH: &str = "/org/agentos/Coordinator1";
 const COORD_IFACE: &str = "org.agentos.Coordinator1";
 
+/// The VRAM-demand arbiter (ADR-0041 Layer 1) — `gpu_wait` parks here on a busy lease.
+const QUEUE_BUS: &str = "org.agentos.Queue1";
+const QUEUE_PATH: &str = "/org/agentos/Queue1";
+const QUEUE_IFACE: &str = "org.agentos.Queue1";
+
 /// Bound on every act→daemon round-trip so the call NEVER hangs (ADR-0021 #4, fail-closed): a slow or
 /// wedged coordinator yields `unavailable`, not a stuck agent.
 const ACT_DBUS_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Bound on the `WaitTurn` round-trip for `gpu_wait` — GENEROUS, because the arbiter's `WaitTurn`
+/// legitimately blocks up to its own server-side timeout (default 30s) while the caller waits its turn.
+/// This is only a backstop against a WEDGED arbiter (→ fail-open: fall back to the first busy_retry),
+/// so it must exceed the arbiter's wait window with margin.
+const ACT_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The single MCP-session key for this stdio process. The MCP frame carries no session field and stdio
 /// is one session per process (ADR-0021 §Ratification spike), so the live server registers all tokens
@@ -636,6 +668,30 @@ async fn call_renew(conn: &zbus::Connection, token: u64) -> Result<bool, String>
     reply.body().deserialize::<bool>().map_err(|e| e.to_string())
 }
 
+/// One `org.agentos.Queue1.WaitTurnAgent` round-trip → `(turn, reason)` (ADR-0041): block until this
+/// session is nominated (`turn=true`) or the arbiter gives up (`turn=false`, reason timeout/queue_full/…).
+/// Agent-class verb → the daemon-side clamp keeps the queue tier in {best-effort, batch}. Err ⇒ no
+/// arbiter / bus error ⇒ `gpu_wait` falls back to a plain busy_retry (fail-open, the pre-queue world).
+async fn call_wait_turn_agent(
+    conn: &zbus::Connection,
+    tier: &str,
+    estimate_mib: u32,
+) -> Result<(bool, String), String> {
+    let reply = conn
+        .call_method(Some(QUEUE_BUS), QUEUE_PATH, Some(QUEUE_IFACE), "WaitTurnAgent", &(tier, estimate_mib))
+        .await
+        .map_err(|e| e.to_string())?;
+    reply.body().deserialize::<(bool, String)>().map_err(|e| e.to_string())
+}
+
+/// Should a first `AcquireAgent` status lead `gpu_wait` to PARK on the arbiter? ONLY `busy_retry` (the
+/// lease was held by an equal/higher tier) is worth waiting out: `granted` is already done, `denied`
+/// won't fit even on a free lease, and `unavailable`/`error` are substrate blindness the queue can't
+/// cure. Pure → unit-testable (the load-bearing "don't park a no-fit/blind request" decision).
+fn should_park(first_status: &str) -> bool {
+    first_status == "busy_retry"
+}
+
 /// The heartbeat's "was this lease taken from under us?" decision (ADR-0021 #10) — factored out of the
 /// async loop so the load-bearing guard is unit-testable without a bus. The daemon has just told us
 /// (`Renew → false`) it no longer holds `token`. Record a `lease_lost` contention ONLY if THIS session
@@ -718,6 +774,77 @@ fn gpu_request(requested_tier: &str, estimate_mib: u32) -> String {
     // ADR-0021 #10: on a LOSS, record a holder-free per-caller contention so a later `gpu_why` can
     // narrate why THIS request waited without naming who held the lease. Keyed off the agent-facing
     // status (the single source of truth `request_json` already produced), never the daemon prose.
+    if let Some(status) = v.get("status").and_then(Value::as_str) {
+        let short = v.get("short_mib").and_then(Value::as_u64).unwrap_or(0);
+        if let Some((kind, why)) = contention_why(status, requested_tier, short) {
+            lock_contention().record(LOCAL_SESSION, request_id, kind, why);
+        }
+    }
+    v.to_string()
+}
+
+/// `gpu_wait` — ACQUIRE a lease, WAITING for this session's turn on the cross-workflow VRAM queue if the
+/// lease is busy (ADR-0041). Try `AcquireAgent` once; on `busy_retry`, park on the arbiter's
+/// `WaitTurnAgent` (blocks until nominated or it gives up), then retry the acquire ONCE. Same agent
+/// contract as `gpu_request` (granted|busy_retry|denied|unavailable + request_id) plus `waited:true` when
+/// the queue gave us a turn. Fail-open at every step: a down coordinator ⇒ `unavailable` (never a faked
+/// grant, #4); a down/unhelpful arbiter ⇒ return the first `busy_retry` (the pre-queue world). The
+/// daemon's `admit` stays the SOLE grant gate — the queue only decides WHEN to re-ask, never whether.
+fn gpu_wait(requested_tier: &str, estimate_mib: u32) -> String {
+    let request_id = lock_contention().mint_id();
+    let (handle, conn, sessions) = match act_handles() {
+        Ok(h) => h,
+        Err(e) => {
+            let mut v = act_unavailable(&format!("act unavailable: {e} — is `agentosd lease` running?"));
+            v["request_id"] = json!(request_id);
+            return v.to_string();
+        }
+    };
+    // 1. First shot — bounded + fail-closed, exactly like gpu_request.
+    let first: Option<(bool, u64, String, String, u32, u32)> = match handle.block_on(async {
+        tokio::time::timeout(ACT_DBUS_TIMEOUT, call_acquire_agent(&conn, requested_tier, estimate_mib)).await
+    }) {
+        Ok(Ok(tuple)) => Some(tuple),
+        _ => None,
+    };
+    // Owned status string (no borrow held across the move of `first` below).
+    let first_status: String = match &first {
+        Some((granted, _, code, ..)) => if *granted { "granted".to_string() } else { code.clone() },
+        None => "unavailable".to_string(),
+    };
+    // 2. If (and only if) the lease was BUSY, wait for our turn on the arbiter, then retry the acquire once.
+    let (reply, waited) = if should_park(&first_status) {
+        let turn = handle.block_on(async {
+            tokio::time::timeout(ACT_WAIT_TIMEOUT, call_wait_turn_agent(&conn, requested_tier, estimate_mib)).await
+        });
+        match turn {
+            // Our turn — retry the acquire once (the daemon's admit is still the gate; we may still lose a
+            // race to a non-queued caller, in which case the agent re-calls gpu_wait).
+            Ok(Ok((true, _reason))) => {
+                let retry = match handle.block_on(async {
+                    tokio::time::timeout(ACT_DBUS_TIMEOUT, call_acquire_agent(&conn, requested_tier, estimate_mib)).await
+                }) {
+                    Ok(Ok(tuple)) => Some(tuple),
+                    _ => None,
+                };
+                (retry, true)
+            }
+            // turn=false (timeout/queue_full/per_conn_limit/no_identity) OR the arbiter is unreachable →
+            // fail-open: return the FIRST busy_retry reply so the agent re-calls or backs off.
+            _ => (first, false),
+        }
+    } else {
+        (first, false) // granted / denied / unavailable → the queue can't help; return the first reply
+    };
+    // Record a genuine grant (layer 2) — only an internally-consistent one (mirrors gpu_request).
+    if let Some((granted, token, ref code, ..)) = reply {
+        if granted && token != 0 && code == "granted" {
+            lock_sessions(&sessions).acquired(LOCAL_SESSION, token);
+        }
+    }
+    let mut v = request_json(requested_tier, reply);
+    v["request_id"] = json!(request_id);
+    v["waited"] = json!(waited);
     if let Some(status) = v.get("status").and_then(Value::as_str) {
         let short = v.get("short_mib").and_then(Value::as_u64).unwrap_or(0);
         if let Some((kind, why)) = contention_why(status, requested_tier, short) {
@@ -839,13 +966,27 @@ mod tests {
         let tools = tools_list();
         let arr = tools["tools"].as_array().unwrap();
         let names: Vec<String> = arr.iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
-        assert_eq!(names, ["gpu_status", "gpu_residency", "gpu_why", "gpu_request", "gpu_release"]);
+        // ADR-0041: gpu_wait (park on the cross-workflow queue) sits between gpu_request and gpu_release.
+        assert_eq!(names, ["gpu_status", "gpu_residency", "gpu_why", "gpu_request", "gpu_wait", "gpu_release"]);
         // gpu_request takes (tier, estimate_mib); gpu_release takes (token) — both REQUIRED.
         let req = arr.iter().find(|t| t["name"] == "gpu_request").unwrap();
         assert_eq!(req["inputSchema"]["required"], json!(["tier", "estimate_mib"]));
         assert!(req["inputSchema"]["properties"]["tier"].is_object());
+        // gpu_wait shares gpu_request's required (tier, estimate_mib) input schema.
+        let wait = arr.iter().find(|t| t["name"] == "gpu_wait").unwrap();
+        assert_eq!(wait["inputSchema"]["required"], json!(["tier", "estimate_mib"]));
         let rel = arr.iter().find(|t| t["name"] == "gpu_release").unwrap();
         assert_eq!(rel["inputSchema"]["required"], json!(["token"]));
+    }
+
+    #[test]
+    fn should_park_only_on_busy_retry() {
+        // ADR-0041: gpu_wait parks on the arbiter ONLY when the lease was busy — never on a grant (done),
+        // a denial (won't fit even free), or substrate blindness (the queue can't cure unavailable/error).
+        assert!(should_park("busy_retry"));
+        for s in ["granted", "denied", "unavailable", "error", "cooling", ""] {
+            assert!(!should_park(s), "must not park on {s:?}");
+        }
     }
 
     #[test]

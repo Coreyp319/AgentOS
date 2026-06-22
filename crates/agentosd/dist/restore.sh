@@ -2,7 +2,7 @@
 # Revert apply.sh. Pass --purge to also remove the installed binary + the telemetry history.
 set -euo pipefail
 
-UNITS=(agentos-lease.service nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service \
+UNITS=(agentos-lease.service agentos-queue.service nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service \
        nimbus-aurora-scene.service nimbus-aurora-rc.service \
        agentos-coexist-report.timer agentos-coexist-report.service)
 UNIT_DIR="$HOME/.config/systemd/user"

@@ -10,7 +10,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 BIN_DEST="$HOME/.local/bin/agentosd"
-UNITS=(agentos-lease.service nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service nimbus-aurora-scene.service)
+UNITS=(agentos-lease.service agentos-queue.service nimbus-aurora-agent.service nimbus-aurora-keyhole.service agentos-telemetry.service nimbus-aurora-scene.service)
 # Timer-triggered (install both, enable only the .timer).
 REPORT_UNITS=(agentos-coexist-report.service agentos-coexist-report.timer)
 # ADR-0030 reactive UE pusher: installed but NOT started here — `rc` PUTs to the UE MPC, which is inert
