@@ -58,7 +58,7 @@ use crate::feed::{
 /// GPU compute process by VRAM (from NVML), the slice neither Ollama-residency nor the lease
 /// daemon can see. Both additions are purely additive; an older consumer ignores the unknown
 /// field and the serializer always emits an honest-empty default, never absent.
-const SCHEMA: u32 = 3;
+const SCHEMA: u32 = 4;
 
 /// Negative sentinel for an unreadable integer datum — distinct from a real `0` (ADR-0012 §4).
 const UNK: i64 = -1;
@@ -106,6 +106,10 @@ pub struct KeyholeFeed {
     /// lines, per the load-bearing held(deferred) vs needs-review distinction (ADR-0019 §3, §6).
     /// Always present (default `{0,0}`), never `null`: an empty queue is a real datum, not UNKNOWN.
     pub pending_requests: Pending,
+    /// schema 4 (ADR-0041): the LIVE cross-workflow VRAM-demand queue (arbiter `queue.json`) — who is
+    /// waiting their turn at the lease right now + the tier served next. Always present (default
+    /// `{0,""}`), never `null`. Distinct from `pending_requests` (the durable deferral buffer).
+    pub queue: Queue,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -203,6 +207,21 @@ pub struct Pending {
     /// itself is produced by the lucid→`feed.rs` sidecar (G1), NOT by the keyhole writing it here.
     #[serde(default)]
     pub needs_review: i64,
+}
+
+/// schema 4 (ADR-0041): the LIVE cross-workflow VRAM-demand queue — workflows blocked on
+/// `WaitTurn` for their turn at the lease RIGHT NOW. DISTINCT from `pending_requests`: that is the
+/// durable defer-don't-deny buffer (intents to run later); this is who is actively in line for the GPU
+/// this moment. Read from the arbiter's `queue.json` mirror (`agentosd queue`, org.agentos.Queue1);
+/// absent → `{0,""}`. CALM weather like `held` — count only, never warm; an empty queue collapses the
+/// row. `next_tier` is the tier served next (highest waiting) — an aggregate, NEVER a waiter's identity
+/// (the arbiter's no-leak contract). `depth` clamped ≥ 0; a missing mirror reads as nothing-waiting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct Queue {
+    #[serde(default)]
+    pub depth: i64,
+    #[serde(default)]
+    pub next_tier: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +392,18 @@ fn read_pending(path: &Path) -> Pending {
         .unwrap_or_default()
 }
 
+/// schema 4 (ADR-0041): the OPTIONAL arbiter live-queue mirror
+/// (`$XDG_RUNTIME_DIR/nimbus-aurora/queue.json`), written atomically by `agentosd queue`. Absent/
+/// unparseable → `{depth:0,next_tier:""}` — the calm fail-open posture (no arbiter == nothing waiting,
+/// never a fabricated backlog, never UNKNOWN). `depth` clamped ≥ 0. Pure read mirror, like `read_pending`.
+fn read_queue(path: &Path) -> Queue {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Queue>(&s).ok())
+        .map(|q| Queue { depth: q.depth.max(0), next_tier: q.next_tier })
+        .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // The pure assembly — fleet/gateway/needs_you → {state, gateway, floats, fleet}.
 // ---------------------------------------------------------------------------
@@ -462,6 +493,7 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
     let needs_you_path = hermes_path("needs_you.json");
     let lease_mirror = dir.join("lease.json");
     let pending_mirror = dir.join("pending.json");
+    let queue_mirror = dir.join("queue.json");
     println!("agentosd keyhole → {}", out.display());
 
     // Own NVML handle (like `monitor`), never the lease daemon's. None → VRAM degrades to
@@ -491,6 +523,7 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
         let workload = read_workload(nvml.as_ref(), vram.total_mib);
         let lease = read_lease(&lease_mirror);
         let pending_requests = read_pending(&pending_mirror);
+        let queue = read_queue(&queue_mirror);
 
         // Promote an idle fleet to `working` when the GPU is genuinely busy with a real workload
         // (not the shader wallpaper) — gated on util AND (heavy VRAM OR a resident model).
@@ -509,7 +542,8 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
             residency,
             workload,             // schema 3: dominant GPU compute process (NVML); empty == none.
             tokens_per_sec: None, // P2: summed from the ADR-0002 proxy stream. Never faked.
-            pending_requests,     // schema 2: lucid queue mirror; {0,0} until the sidecar exists.
+            pending_requests,     // schema 2: lucid deferral buffer; {0,0} until the sidecar exists.
+            queue,                // schema 4: live arbiter wait-queue; {0,""} until `agentosd queue` runs.
         };
 
         let changed = last.as_ref() != Some(&feed);
@@ -665,8 +699,9 @@ mod tests {
         // this string changes, bump SCHEMA and update KeyholeModel.qml in lockstep.
         // schema 2 (ADR-0019 §6): `pending_requests` appended additively after `tokens_per_sec`.
         // schema 3 (workload attribution): `workload` inserted after `residency`.
+        // schema 4 (ADR-0041): `queue` (live arbiter wait-queue) appended after `pending_requests`.
         let feed = KeyholeFeed {
-            schema: 3,
+            schema: 4,
             state: "working".into(),
             gateway: "running".into(),
             floats: Floats { busy: 0.85, warm: 0.0, snag: 0.0 },
@@ -682,10 +717,11 @@ mod tests {
             workload: Workload { name: "ComfyUI".into(), used_mib: 21000 },
             tokens_per_sec: None,
             pending_requests: Pending { held: 2, needs_review: 1 },
+            queue: Queue { depth: 3, next_tier: "batch".into() },
         };
         assert_eq!(
             serde_json::to_string(&feed).unwrap(),
-            r#"{"schema":3,"state":"working","gateway":"running","floats":{"busy":0.85,"warm":0.0,"snag":0.0},"fleet":{"running":3,"queued":2,"snagged":0},"lease":{"tier":"interactive","holder":"Hermes","preempt":"wallpaper yielded ~1.5GB -> qwen2.5 loaded"},"vram":{"used_mib":6240,"total_mib":8192},"residency":[{"name":"qwen2.5:14b","loaded_secs":240}],"workload":{"name":"ComfyUI","used_mib":21000},"tokens_per_sec":null,"pending_requests":{"held":2,"needs_review":1}}"#
+            r#"{"schema":4,"state":"working","gateway":"running","floats":{"busy":0.85,"warm":0.0,"snag":0.0},"fleet":{"running":3,"queued":2,"snagged":0},"lease":{"tier":"interactive","holder":"Hermes","preempt":"wallpaper yielded ~1.5GB -> qwen2.5 loaded"},"vram":{"used_mib":6240,"total_mib":8192},"residency":[{"name":"qwen2.5:14b","loaded_secs":240}],"workload":{"name":"ComfyUI","used_mib":21000},"tokens_per_sec":null,"pending_requests":{"held":2,"needs_review":1},"queue":{"depth":3,"next_tier":"batch"}}"#
         );
     }
 
@@ -719,6 +755,26 @@ mod tests {
     }
 
     #[test]
+    fn queue_defaults_to_empty_not_unknown() {
+        // schema 4 (ADR-0041): an empty live arbiter queue is a REAL datum — {depth:0,next_tier:""},
+        // serialized, never absent, never UNKNOWN. A missing/unreadable arbiter mirror (no `agentosd
+        // queue` running) reads as nothing-waiting — calm, fail-open, never a fabricated backlog.
+        assert_eq!(Queue::default(), Queue { depth: 0, next_tier: String::new() });
+        assert_eq!(read_queue(Path::new("/nonexistent/queue.json")), Queue::default());
+        assert_eq!(
+            serde_json::from_str::<Queue>(r#"{"depth":2,"next_tier":"batch"}"#).unwrap(),
+            Queue { depth: 2, next_tier: "batch".into() }
+        );
+        // a pre-schema-4 / blank file round-trips to empty via serde defaults.
+        assert_eq!(serde_json::from_str::<Queue>("{}").unwrap(), Queue::default());
+        // negative depth is clamped to 0 (a cardinality; -1/UNKNOWN must never leak into the count).
+        let tmp = std::env::temp_dir().join(format!("agentosd_queue_test_{}.json", std::process::id()));
+        std::fs::write(&tmp, r#"{"depth":-3,"next_tier":"interactive"}"#).unwrap();
+        assert_eq!(read_queue(&tmp), Queue { depth: 0, next_tier: "interactive".into() });
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
     fn unknown_numerics_serialize_as_negative_sentinels_and_null_tokens() {
         let feed = KeyholeFeed {
             schema: SCHEMA,
@@ -732,6 +788,7 @@ mod tests {
             workload: Workload::default(),
             tokens_per_sec: None,
             pending_requests: Pending::default(),
+            queue: Queue::default(),
         };
         let s = serde_json::to_string(&feed).unwrap();
         assert!(s.contains(r#""fleet":{"running":-1,"queued":-1,"snagged":-1}"#));

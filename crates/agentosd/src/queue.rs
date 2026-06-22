@@ -28,6 +28,7 @@
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
@@ -147,6 +148,14 @@ impl WaitQueue {
         let mut v: Vec<&Waiter> = self.waiters.iter().collect();
         v.sort_by_key(|w| (Reverse(w.tier), w.seq)); // tier DESC, then seq ASC (FIFO)
         v.into_iter().map(|w| (w.ticket, w.est_mib)).collect()
+    }
+
+    /// `(depth, next-tier)` for the keyhole mirror (ADR-0012/0041): how many workflows are waiting, and
+    /// the tier that will be nominated next (highest tier, earliest seq). NO-LEAK — a count + an
+    /// aggregate tier, never a waiter's identity/est/connection. Pure.
+    pub fn snapshot(&self) -> (usize, Option<Tier>) {
+        let head = self.waiters.iter().max_by_key(|w| (w.tier, Reverse(w.seq))).map(|w| w.tier);
+        (self.waiters.len(), head)
     }
 
     /// Remove a waiter by ticket (the nominee won the lease, cancelled, or timed out). True if present.
@@ -371,8 +380,20 @@ impl Arbiter {
 /// time out to self-retry), and the watcher NEVER calls the lease daemon — it only READS the mirror the
 /// daemon publishes (the decoupling seam: a queue bug can't reach the SIGKILL path).
 async fn watch_and_nominate(state: Arc<Mutex<QueueState>>) {
+    // ADR-0041/0012: publish the queue depth to `queue.json` for the keyhole — on CHANGE, off the lock,
+    // each tick (250ms granularity is ample for a 2s-polling tray). Decoupled, fail-open: a write hiccup
+    // never delays a nomination. `usize::MAX` forces the first write so the file always exists.
+    let qpath = feed_dir().ok().map(|d| d.join("queue.json"));
+    let mut last_published: (usize, Option<Tier>) = (usize::MAX, None);
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
+        if let Some(qp) = &qpath {
+            let snap = lock_recover(&state).q.snapshot();
+            if snap != last_published {
+                write_queue_mirror(qp, snap.0, snap.1);
+                last_published = snap;
+            }
+        }
         if !lease_is_free() {
             continue; // held / unreadable → fire no one (never wake blind)
         }
@@ -402,6 +423,35 @@ fn read_lease_mirror() -> Option<Lease> {
     serde_json::from_str(&s).ok()
 }
 
+const QUEUE_MIRROR_SCHEMA: u32 = 1;
+
+/// The arbiter's read-only mirror for the keyhole (ADR-0012/0041): how many workflows are waiting for
+/// the GPU right now + the tier that will be served next. NO-LEAK — a count + an aggregate tier, never a
+/// waiter's identity. The keyhole producer reads `queue.json` like it reads `lease.json` (file-based,
+/// strictly downstream — a render can never delay a nomination, let alone a SIGKILL).
+#[derive(serde::Serialize)]
+struct QueueMirror {
+    schema: u32,
+    depth: usize,
+    /// Tier nominated next ("interactive"|"batch"|"best-effort"|"yielding"), or "" when nothing waits.
+    next_tier: &'static str,
+}
+
+/// Atomic temp+rename publish of `queue.json` (mirrors `write_lease_mirror`). Best-effort/fail-open —
+/// a failed write just leaves the keyhole showing the last depth (or nothing).
+fn write_queue_mirror(path: &Path, depth: usize, next_tier: Option<Tier>) {
+    let snap = QueueMirror {
+        schema: QUEUE_MIRROR_SCHEMA,
+        depth,
+        next_tier: next_tier.map(Tier::as_str).unwrap_or(""),
+    };
+    let Ok(json) = serde_json::to_string(&snap) else { return };
+    let tmp = path.with_file_name(format!(".queue.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(serve())
@@ -409,6 +459,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(Mutex::new(QueueState::new()));
+    // Publish an initial empty `queue.json` so the keyhole has a file to read from the first tick (the
+    // watcher then republishes on every depth change). ADR-0012 mirror pattern, like the lease daemon.
+    if let Some(qp) = feed_dir().ok().map(|d| d.join("queue.json")) {
+        write_queue_mirror(&qp, 0, None);
+    }
     let obj = Arbiter { state: Arc::clone(&state) };
     // A SEPARATE process + bus name from the lease daemon — so a queue bug can never delay a SIGKILL.
     let _conn = zbus::connection::Builder::session()?
@@ -481,6 +536,16 @@ mod tests {
         assert_eq!(order, vec![t_inter, t_batch0, t_batch1, _be]);
         assert_eq!(q.ordered().first().map(|(t, _)| *t), q.select_next().map(|(t, _)| t));
         assert_eq!(q.ordered().len(), 4);
+    }
+
+    #[test]
+    fn snapshot_reports_depth_and_next_tier_no_leak() {
+        // The keyhole mirror datum: a COUNT + the highest waiting tier, never a waiter's identity.
+        let mut q = WaitQueue::new();
+        assert_eq!(q.snapshot(), (0, None), "empty → no depth, no next-tier");
+        q.enqueue(Tier::BestEffort, 1, "a".into()).unwrap();
+        q.enqueue(Tier::Batch, 999, "b".into()).unwrap(); // higher tier ⇒ served next
+        assert_eq!(q.snapshot(), (2, Some(Tier::Batch)), "depth=2, next-tier=batch (highest)");
     }
 
     #[test]
