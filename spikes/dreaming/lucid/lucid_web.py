@@ -1195,7 +1195,9 @@ class Handler(BaseHTTPRequestHandler):
         if chain is None:
             return self._send(404, "no such dream", "text/plain")
         private = L.ST.is_private(sess) or bool(chain.get("private"))
-        paths = STCH.clip_spine(chain)
+        # EXPORT = every clip in the dream (all takes / branches, not just the root->tip spine), stitched
+        # into one MP4. clip_all walks the whole tree depth-first so each storyline stays contiguous.
+        paths = STCH.clip_all(chain)
         if not paths:
             return self._send(404, "nothing to download yet — this dream has no clips", "text/plain")
         if not STCH.have_ffmpeg():
@@ -1217,8 +1219,13 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self._send(500, "could not prepare the download (no scratch space)", "text/plain")
             out = os.path.join(workdir, "dream.mp4")
+            # Scale the encode budget to the clip count: exporting the WHOLE tree (all takes, not just the
+            # spine) can be several times more video than before, and a fixed 600s would kill a legitimately
+            # large export mid-encode. Generous per-clip slack, hard-capped at an hour so a runaway still
+            # fails closed (the finally below reaps the subprocess, sweeps the workdir, releases the permit).
+            stitch_timeout = min(3600, 300 + 20 * len(paths))
             try:
-                STCH.stitch(paths, out)
+                STCH.stitch(paths, out, timeout=stitch_timeout)
             except STCH.StitchError as e:
                 return self._send(500, f"could not stitch the dream: {e}", "text/plain")
             self._send_file(out, "video/mp4", _download_filename(chain, sess))

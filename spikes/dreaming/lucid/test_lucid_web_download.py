@@ -243,6 +243,27 @@ try:
     fn_trail = W._download_filename({"name": "a" * 59 + "----tail"}, "s")
     check("filename: 60-char cut never leaves a trailing separator before .mp4",
           not fn_trail[:-4].endswith(("-", "_", ".")))
+
+    # 14) a BRANCHED dream exports EVERY take, not just the played spine. Tree: 0(open) -> 1(ba,1s);
+    #     node 1 has two children — 2(bb,2s) continues one take, 3(bc,1s) branches another. The tip is
+    #     node 3, so the spine is 1->3 = ba+bc = ~2s. The EXPORT must include the abandoned take's bb too,
+    #     so the downloaded file is ~4s (ba+bb+bc). This is the "export all videos" guarantee.
+    bsess = "branchdream-b1r2a3"
+    ST.ensure_session(bsess, False)
+    ba = mkclip(os.path.join(_TMP, "ba.mp4"), 320, 240, 10, 1)   # 1s
+    bb = mkclip(os.path.join(_TMP, "bb.mp4"), 320, 240, 10, 2)   # 2s  (the take the spine DROPS)
+    bc = mkclip(os.path.join(_TMP, "bc.mp4"), 320, 240, 10, 1)   # 1s  (the branch -> tip)
+    ST.save_chain(bsess, False, {"session": bsess, "private": False, "name": "Branched",
+        "nodes": [{"id": 0, "parent": None, "clip": None, "out_frame": "bo.png"},
+                  {"id": 1, "parent": 0, "clip": ba, "out_frame": "bn1.png"},
+                  {"id": 2, "parent": 1, "clip": bb, "out_frame": "bn2.png"},
+                  {"id": 3, "parent": 1, "clip": bc, "out_frame": "bn3.png"}]})
+    # sanity: the spine really is the shorter 2-clip path, so a passing ~4s export can't be the spine.
+    check("sanity: spine is the 2-clip path (ba+bc)", STCH.clip_spine(ST.load_chain(bsess, False)) == [ba, bc])
+    st14, _, b14 = get(f"/api/download?session={bsess}")
+    outb = os.path.join(_TMP, "branch_dl.mp4"); open(outb, "wb").write(b14)
+    check("branched dream exports ALL takes (~4s = ba+bb+bc, not the ~2s spine)",
+          st14 == 200 and STCH._is_valid_mp4(outb) and abs(probe_dur(outb) - 4.0) < 0.6)
 finally:
     srv.shutdown()
 

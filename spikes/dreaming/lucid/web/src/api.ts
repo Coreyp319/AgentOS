@@ -84,9 +84,10 @@ export const previewUrl = (ref: string) => '/api/frame?preview=' + encodeURIComp
 // the trigger at all; the server independently refuses previews for a private dream and honours LUCID_PREVIEWS.
 export const previewsEnabled = () => { try { return localStorage.getItem('lucid.previews') === '1' } catch { return false } }
 export const setPreviewsEnabled = (on: boolean) => { try { localStorage.setItem('lucid.previews', on ? '1' : '0') } catch { /* private mode / disabled storage */ } }
-// Download the whole dream stitched into one MP4 (the backend concatenates the clips along the
-// story spine). A plain GET (attachment) — no CSRF (read-only, loopback). `session` selects a saved
-// dream; omit it for the current one. Fetched as a blob so the button can show a "Preparing…" state.
+// Download the whole dream stitched into one MP4 — EVERY clip, including alternate takes / branches
+// (the backend's clip_all, not just the played spine), so the export is the complete dream. A plain
+// GET (attachment) — no CSRF (read-only, loopback). `session` selects a saved dream; omit it for the
+// current one. Fetched as a blob so the button can show a "Preparing…" state.
 export const downloadUrl = (session?: string) =>
   '/api/download' + (session ? `?session=${encodeURIComponent(session)}` : '')
 

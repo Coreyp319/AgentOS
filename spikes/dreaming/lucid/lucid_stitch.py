@@ -57,6 +57,22 @@ def have_ffmpeg():
     return bool(which(FFMPEG) and which(FFPROBE))
 
 
+def _node_clip(n):
+    """The on-disk clip to play for one node, or None if it has no playable file.
+
+    ADR-0033: prefer the HERO re-render when a keeper was finalized; fall back to the draft clip if the
+    hero file was purged (the hero is the same shot at higher fidelity, so play order / continuity is
+    unchanged). Returns an absolute path, or None for the clip-less opening or a fully-purged beat.
+    Shared by clip_spine and clip_all so both pick a node's file identically.
+    """
+    hero, draft = n.get("hero_clip"), n.get("clip")
+    if hero and os.path.isfile(hero):
+        return os.path.abspath(hero)
+    if draft and os.path.isfile(draft):   # no hero, or hero file missing on disk -> draft still plays
+        return os.path.abspath(draft)
+    return None
+
+
 def clip_spine(chain):
     """The ordered clip paths along the story spine: root -> the newest beat.
 
@@ -66,6 +82,9 @@ def clip_spine(chain):
     BRANCHED dream yields the coherent path to its newest take rather than the interleaved
     all-takes order "Play all" would replay. The opening node is clip-less and drops out; a
     clip missing on disk (a partially-purged dream) is skipped so the rest still downloads.
+
+    This is the PLAY-ALL / lit-tree-path sequence — one storyline. For the EXPORT, which must
+    include every take (alternate branches too), see clip_all.
 
     Returns [abs_clip_path, ...] in play order (possibly empty).
     """
@@ -83,14 +102,71 @@ def clip_spine(chain):
     spine.reverse()   # root -> tip
     out = []
     for n in spine:
-        # ADR-0033: prefer the HERO re-render when a keeper was finalized; fall back to the draft clip
-        # (and skip if the preferred file was purged). The hero is the same shot at higher fidelity, so
-        # play order / continuity is unchanged.
-        c = n.get("hero_clip") or n.get("clip")
-        if c and os.path.isfile(c):
-            out.append(os.path.abspath(c))
-        elif n.get("hero_clip") and n.get("clip") and os.path.isfile(n["clip"]):
-            out.append(os.path.abspath(n["clip"]))   # hero file missing on disk -> draft still plays
+        c = _node_clip(n)
+        if c:
+            out.append(c)
+    return out
+
+
+def clip_all(chain):
+    """EVERY beat's clip in the dream tree — the full export, including alternate takes / abandoned
+    branches, not just the root->tip spine clip_spine returns.
+
+    Ordering is depth-first PRE-ORDER from each root, visiting a node's children in creation (chain
+    array) order. That keeps each storyline contiguous — a branch's clips play through together rather
+    than interleaving with a sibling take, which raw chronological order would do — so the export reads
+    as "watch the whole dream, every path I explored" rather than a jumble. Mirrors clip_spine's
+    hero/draft file preference (via _node_clip).
+
+    Robustness, in the spirit of "export ALL the videos":
+      * the clip-less opening drops out; a clip missing on disk is skipped (a partially-purged dream
+        still exports the rest).
+      * the same file referenced by two nodes is emitted ONCE — so an old collision-bug dream (every
+        node pointing at one clip) or a shared hero never repeats an identical segment.
+      * an island of nodes unreachable from any root (a fully cyclic chain) is still appended in array
+        order rather than silently dropped — "all" means all.
+
+    Returns [abs_clip_path, ...] in play order (possibly empty).
+    """
+    nodes = (chain or {}).get("nodes") or []
+    if not nodes:
+        return []
+    ids = {n.get("id") for n in nodes}
+    kids = {}
+    for n in nodes:
+        kids.setdefault(n.get("parent"), []).append(n)   # children keyed by parent id, array order
+    # roots = nodes with no real parent in the chain (parent is None / dangling / a self-cycle); keep
+    # their chain order so the dream's first beat leads.
+    roots = [n for n in nodes if n.get("parent") not in ids or n.get("parent") == n.get("id")]
+
+    out, emitted, visited = [], set(), set()
+
+    def _emit(n):
+        c = _node_clip(n)
+        if c and c not in emitted:   # one segment per distinct file (collision-bug / shared-hero guard)
+            emitted.add(c)
+            out.append(c)
+
+    # explicit-stack DFS (no recursion -> a pathologically deep chain can't blow the Python stack).
+    stack = list(reversed(roots))
+    while stack:
+        n = stack.pop()
+        nid = n.get("id")
+        if nid in visited:   # cycle / duplicate-id guard
+            continue
+        visited.add(nid)
+        _emit(n)
+        for ch in reversed(kids.get(nid, [])):   # reversed -> children pop in creation order (pre-order)
+            if ch.get("id") not in visited:
+                stack.append(ch)
+
+    # Floor: any node the DFS didn't reach is still its own video — a disconnected/cyclic island, OR (in
+    # a malformed / hand-edited / imported chain) a node sharing an `id` with one already visited, which
+    # the id-keyed DFS guard would otherwise skip even though its file is distinct. Sweep EVERY node in
+    # array order; _emit's path-dedup keeps this from repeating anything the DFS already produced. So
+    # "all" really means all — no distinct clip can fall through, whatever the ids look like.
+    for n in nodes:
+        _emit(n)
     return out
 
 
@@ -229,10 +305,13 @@ def stitch(clip_paths, out_path, timeout=600, prefer_copy=False):
         raise StitchError("ffmpeg/ffprobe not found")
     paths = [os.path.abspath(p) for p in clip_paths if p and os.path.isfile(p)]
     if len(paths) > MAX_CLIPS:
-        # A dream is naturally short; >MAX_CLIPS is a pathological/corrupt chain. Keep the NEWEST beats
-        # (the tip — what "download my dream" most likely wants), drop the oldest, and SAY SO rather than
-        # silently shipping a file that ends partway through the story (resource-safety + correctness).
-        print(f"lucid_stitch: dream has {len(paths)} clips; capping to the newest {MAX_CLIPS}",
+        # A dream is naturally short (a handful to a few dozen beats); >MAX_CLIPS is a pathological/corrupt
+        # chain. This is purely a resource guard — the re-encode builds one ffmpeg input + filter chain per
+        # clip, so an unbounded list is a memory hazard in ffmpeg itself. Keep the LAST MAX_CLIPS of the
+        # input list (its order is the caller's: the newest beats for a spine, DFS-tail for a whole-tree
+        # export) and SAY SO rather than silently shipping a truncated file. The cap, not which end it
+        # keeps, is the safety property; on a real dream it never triggers.
+        print(f"lucid_stitch: dream has {len(paths)} clips; capping to {MAX_CLIPS} (pathological-chain guard)",
               file=sys.stderr, flush=True)
         paths = paths[-MAX_CLIPS:]
     if not paths:

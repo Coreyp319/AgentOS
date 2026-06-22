@@ -86,6 +86,58 @@ check("spine: None chain -> []", STCH.clip_spine(None) == [])
 cyc = {"nodes": [node(0, 9, None), node(1, 0, c1)]}   # node 0's parent (9) doesn't exist
 check("spine: dangling parent terminates", STCH.clip_spine(cyc) == [c1])
 
+# ============================== clip_all (the EXPORT — every take, not just the spine) ==============================
+# linear dream: clip_all == clip_spine (no branches), opening dropped.
+check("all: linear yields all clips in order, opening dropped",
+      STCH.clip_all(linear) == [c1, c2, c3])
+
+# branched dream (same fixture as the spine test): spine is [c1, c3, c4] (the newest take), but the
+# EXPORT must include the abandoned take's c2 too -> ALL four clips. DFS pre-order from the root keeps
+# each storyline contiguous: root->1(c1), then take A 1->2(c2), then take B 1->3(c3)->4(c4).
+check("all: branched includes EVERY take (spine drops c2, export keeps it)",
+      STCH.clip_all(branched) == [c1, c2, c3, c4])
+check("all: branched is a strict superset of the spine",
+      set(STCH.clip_spine(branched)).issubset(set(STCH.clip_all(branched))) and
+      len(STCH.clip_all(branched)) > len(STCH.clip_spine(branched)))
+
+# DFS grouping ≠ raw chronological: 0 -> 1(c1); 1 has children 2(c2) and 3(c3); 2 has child 4(c4).
+# Pre-order walks node 2's WHOLE subtree (c2, c4) before sibling 3 (c3) -> [c1, c2, c4, c3], whereas
+# chronological/array order would be [c1, c2, c3, c4]. This proves each branch stays contiguous.
+interleaved = {"nodes": [node(0, None, None), node(1, 0, c1), node(2, 1, c2),
+                         node(3, 1, c3), node(4, 2, c4)]}
+check("all: DFS keeps a branch contiguous (subtree before sibling), not chronological",
+      STCH.clip_all(interleaved) == [c1, c2, c4, c3])
+
+# a clip missing on disk is skipped in the export too (the rest still exports).
+check("all: a missing-on-disk clip is skipped", STCH.clip_all(withgap) == [c1, c3])
+
+# the SAME file referenced by two nodes is emitted ONCE (old collision-bug dream / shared hero):
+# no repeated identical segment in the export.
+dupchain = {"nodes": [node(0, None, None), node(1, 0, c1), node(2, 1, c1), node(3, 2, c2)]}
+check("all: a file shared by two nodes is emitted once (no repeated segment)",
+      STCH.clip_all(dupchain) == [c1, c2])
+
+check("all: empty chain -> []", STCH.clip_all({"nodes": []}) == [])
+check("all: None chain -> []", STCH.clip_all(None) == [])
+
+# every node still gets exported even when none chain back to a clean root (a fully cyclic island):
+# 1<->2 point at each other, neither is a None-rooted node, but both clips must still appear.
+island = {"nodes": [{"id": 1, "parent": 2, "clip": c1, "out_frame": "i1.png"},
+                    {"id": 2, "parent": 1, "clip": c2, "out_frame": "i2.png"}]}
+check("all: a rootless cyclic island still exports every clip",
+      sorted(STCH.clip_all(island)) == sorted([c1, c2]))
+
+# multiple roots (two opening nodes / a re-imported dream): both subtrees export, roots in chain order.
+multiroot = {"nodes": [node(0, None, c1), node(1, None, c2), node(2, 0, c3)]}
+check("all: multiple roots both export, in chain order",
+      STCH.clip_all(multiroot) == [c1, c3, c2])
+
+# malformed/imported chain: two nodes share an id but carry DISTINCT files. The id-keyed DFS guard would
+# skip the second, but the floor sweeps every node by path so both distinct clips still export.
+dupid = {"nodes": [node(0, None, None), node(1, 0, c1), node(1, 0, c2)]}   # two id==1, different clips
+check("all: duplicate ids with distinct files still export both (floor sweep)",
+      sorted(STCH.clip_all(dupid)) == sorted([c1, c2]))
+
 # ============================== _uniform signature ==============================
 P = lambda c, w, h, pf, f: {"codec": c, "width": w, "height": h, "pix_fmt": pf, "fps": f}
 check("_uniform: identical sigs -> True",
@@ -188,6 +240,7 @@ for p in (hero, draft):
 hn = {"id": 1, "parent": 0, "clip": draft, "hero_clip": hero, "out_frame": "h.png"}
 hero_chain = {"nodes": [node(0, None, None), hn]}
 check("spine: hero_clip is preferred over the draft clip", STCH.clip_spine(hero_chain) == [hero])
+check("all: hero_clip preferred over the draft (same as spine)", STCH.clip_all(hero_chain) == [hero])
 
 # hero set but the hero FILE was purged -> fall back to the draft clip (still on disk) so the dream plays.
 hn_missing = {"id": 1, "parent": 0, "clip": draft, "hero_clip": os.path.join(_TMP, "no-hero.mp4")}

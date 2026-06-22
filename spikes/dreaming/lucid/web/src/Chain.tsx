@@ -118,11 +118,13 @@ export default function Chain({ state, revealing = false, onLatestReady }:
   const playable = nodes.filter((n) => n.clip)
   const latest = playable.length ? playable[playable.length - 1].id : nodes[nodes.length - 1].id
   const tipId = nodes[nodes.length - 1].id
-  // "Play all" plays THE DREAM — the lit story path root→tip (the same spine the tree lights and Download
-  // stitches), NOT nodes.filter(clip): that flat list is every clip ever made and, on a BRANCHED dream,
-  // interleaves abandoned alternate takes in id-order (so play-all would play a dead take out of sequence).
+  // "Play all" plays THE DREAM — the lit story path root→tip (the same spine the tree lights), NOT
+  // nodes.filter(clip): that flat list is every clip ever made and, on a BRANCHED dream, interleaves
+  // abandoned alternate takes in id-order (so play-all would play a dead take out of sequence).
   // Walk parent pointers from the tip back to the root, reverse, keep the ones with a clip — mirrors
-  // lucid_stitch.clip_spine + the tree's litSet, so Play-all, Download, and the lit path stay one sequence.
+  // lucid_stitch.clip_spine + the tree's litSet, so Play-all and the lit path stay one sequence.
+  // (Download/export is deliberately BROADER — lucid_stitch.clip_all stitches every take, not just
+  // this spine — so a "download my dream" gets the whole tree, branches included.)
   const playSpine = useMemo(() => {
     const byId = new Map(nodes.map((n) => [n.id, n]))
     const line: DreamNode[] = []
@@ -1004,6 +1006,14 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                 {sel.rating === 'mature' && <span className="tag tag-mature">mature</span>}
                 {isHero && <span className="tag tag-hd" title="This beat has been finalized in HD (the 20-step hero render)">HD</span>}
                 {sel.length ? <span style={{ opacity: 0.7 }}>· {fmtDur(sel.length / FPS)}</span> : null}
+              </div>
+              {/* the action buttons float in the player's bottom-right corner (just above the caption band) —
+                  right-aligned and wrapping, clear of the native video controls, the caption text, and the
+                  choices gutter, so Finalize / the tag buttons are always reachable and never overlaid.
+                  Hidden while a panel (note draft / edit) is open — the panel is the focus, and it lives in
+                  .cap, so leaving the corner actions up would float them high above the expanded band. */}
+              {!draftOpen && !editOpen && (
+              <div className="eyebrow-acts">
                 {canTag && !draftOpen && (
                   <button type="button" className="tag-btn" disabled={busy} onClick={openDraft}
                     aria-label="Leave a note on this moment to steer the next moment">
@@ -1036,6 +1046,7 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                   </button>
                 )}
               </div>
+              )}
               <p className="beat-q">{`“${sel.prompt || sel.caption}”`}</p>
               <span className="stage-ix beat-ix">{idx + 1} / {nodes.length}</span>
               {canTag && draftOpen && (
