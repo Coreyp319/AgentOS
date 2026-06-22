@@ -5,32 +5,33 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-HOST_SRC="$(cd "$HERE/host" && pwd)/agentos_create_video_host.py"
+HOST_REPO="$(cd "$HERE/host" && pwd)/agentos_create_video_host.py"
 # Resolve the launcher's absolute path from the repo layout (never hard-code /home/corey).
 LAUNCHER="$(cd "$HERE/../../spikes/dreaming/lucid" && pwd)/create_from_image.py"
+# The INSTALLED host lives in $HOME, never the repo — so installing never dirties the tracked
+# source (which keeps its @LAUNCHER@ placeholder). restore.sh just rm's this copy.
+HOST_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agentos"
+HOST_SRC="$HOST_DIR/agentos_create_video_host.py"
 
 command -v python3 >/dev/null || { echo "✗ python3 not found" >&2; exit 1; }
 [ -f "$LAUNCHER" ]  || { echo "✗ launcher missing: $LAUNCHER" >&2; exit 1; }
-[ -f "$HOST_SRC" ]  || { echo "✗ host script missing: $HOST_SRC" >&2; exit 1; }
+[ -f "$HOST_REPO" ] || { echo "✗ host script missing: $HOST_REPO" >&2; exit 1; }
 
-# Bake the launcher path into the host script so native messaging can exec it standalone.
-# Rewrite the WHOLE LAUNCHER = "…" line every run (matches @LAUNCHER@ or any previously-baked
-# path), so re-running, or a different checkout location, always lands the current path.
-# restore.sh resets it back to the @LAUNCHER@ placeholder to keep the repo clean.
-python3 - "$HOST_SRC" "$LAUNCHER" <<'PY'
-import re, sys
-host, launcher = sys.argv[1], sys.argv[2]
-src = open(host, encoding="utf-8").read()
-# Re-quote the path safely for a Python string literal (json.dumps gives a valid one).
-import json
-new = "LAUNCHER = " + json.dumps(launcher)
-src, n = re.subn(r'^LAUNCHER = ".*"$', new, src, count=1, flags=re.M)
+# Install the host into $HOME, substituting the launcher path into the COPY. The tracked source is
+# left untouched (machine-independent, clean working tree); the browsers' native-host manifests below
+# point at this $HOME copy.
+mkdir -p "$HOST_DIR"
+python3 - "$HOST_REPO" "$HOST_SRC" "$LAUNCHER" <<'PY'
+import json, re, sys
+repo, dest, launcher = sys.argv[1], sys.argv[2], sys.argv[3]
+src = open(repo, encoding="utf-8").read()
+src, n = re.subn(r'^LAUNCHER = ".*"$', "LAUNCHER = " + json.dumps(launcher), src, count=1, flags=re.M)
 if n != 1:
     sys.exit("could not find the LAUNCHER assignment line to template")
-open(host, "w", encoding="utf-8").write(src)
+open(dest, "w", encoding="utf-8").write(src)
 PY
 chmod +x "$HOST_SRC"
-echo "✓ host script wired → $HOST_SRC"
+echo "✓ host installed → $HOST_SRC  (tracked source untouched)"
 echo "  launcher: $LAUNCHER"
 
 FF_TPL="$HERE/host/org.agentos.create_video.firefox.json.in"

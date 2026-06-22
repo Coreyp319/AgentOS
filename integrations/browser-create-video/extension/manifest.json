@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AgentOS — Create Video from Image",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Right-click an image on a web page → create a local video from it through the governed AgentOS launcher (VRAM lease + B2 likeness consent gate). Off-box safety lives in the launcher, not here.",
   "permissions": ["contextMenus", "nativeMessaging", "notifications"],
   "background": {

@@ -28,9 +28,12 @@ import struct
 import subprocess
 import sys
 
-# Absolute path to the governed launcher, templated in by apply.sh. The literal default below
-# lets the script run uninstalled (self-test); apply.sh rewrites this line to the real path.
-LAUNCHER = "/home/corey/Documents/AgentOS/spikes/dreaming/lucid/create_from_image.py"
+# Absolute path to the governed launcher. This TRACKED source keeps the @LAUNCHER@ placeholder so
+# the repo stays clean and machine-independent; apply.sh COPIES this file into $HOME and substitutes
+# the real path in the copy (the browsers' native-host manifests point at that copy, never at the
+# repo). So the working tree is never dirtied by an install. The placeholder is intentionally not a
+# valid path — an uninstalled run fails the os.path.isfile check below with a clear error.
+LAUNCHER = "@LAUNCHER@"
 
 # The web-image schemes we forward. Mirror the launcher's _fetch_raw allowlist, MINUS file:// —
 # a web page must not reach local files through us (the Dolphin ServiceMenu owns local files, with
@@ -87,7 +90,10 @@ def spawn_launcher(url, private):
     argv = ["python3", LAUNCHER]
     if private:
         argv.append("--private")
-    argv.append(url)  # passed as a single argv element — no shell, no interpolation
+    # `--` terminates option parsing so a url can never be misread as a flag, even if ALLOWED_SCHEMES
+    # is ever broadened (mirrors the Dolphin .desktop's `-- %f`). The url is one argv element — no
+    # shell, no interpolation.
+    argv += ["--", url]
     subprocess.Popen(
         argv,
         start_new_session=True,                 # own session: survives the host exiting

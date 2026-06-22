@@ -81,8 +81,35 @@ unpacked**, copy the extension's **ID** from `chrome://extensions` and replace
 `./apply.sh` after pasting it into the template, or edit the installed file directly. **Firefox
 needs no such step** — it matches by the pinned `create-video@agentos` id.
 
+## Make it survive restarts (Firefox) — the permanent install
+Loading via `about:debugging` is a **temporary** add-on: **release Firefox wipes it on every
+restart**, and (unlike ESR/Developer/Nightly) it will not keep an *unsigned* add-on by any means —
+*all add-ons must be signed*. An enterprise policy does **not** waive that. So the durable install
+is **AMO-signed XPI → force-pinned via `/etc/firefox/policies`**, in two stages:
+
+**A. Sign — once, by a developer, only when the extension code changes:**
+```
+./sign.sh            # hidden-prompt for a free AMO API key; web-ext signs an unlisted xpi,
+                     # then promotes it to signed/create-video-agentos.xpi (commit that file)
+```
+The signed XPI is **not secret and is redistributable**, so it's committed at
+`signed/create-video-agentos.xpi` (stable name) — a rebuild needs **no AMO account**. Re-sign only
+on an extension change, and bump `version` in `extension/manifest.json` first (AMO rejects a
+re-upload of identical bytes with *"already submitted"*).
+
+**B. Pin — once per machine (the only root step):**
+```
+sudo ./policy/apply-policy.sh        # defaults to the committed signed/ xpi; guards it's signed
+sudo ./policy/restore-policy.sh      # reverse: drop the pin (restores any prior policy backup)
+```
+`apply-all.sh` runs stage-A's *result* for free (it's committed) and **prints** this one `sudo`
+line when the pin is missing — it never escalates privilege itself. After pinning, fully restart
+Firefox and verify at `about:policies` (shows `create-video@agentos`) and `about:addons`
+(installed by your organization, can't be removed → that's what survives restarts).
+
+> **Chromium/Chrome** has no equivalent committed path here — load the unpacked extension once and
+> do the extension-ID step above; a `.crx` + policy is the unbuilt equivalent.
+
 ## Still owed
-- A first-class install path (folder this kit into `integrations/apply-all.sh` once the extension
-  ships signed, not just unpacked/temporary).
-- A bundled icon set and a packaged `.xpi` / `.crx` so it survives a Firefox restart and a Chrome
-  re-launch without re-loading unpacked.
+- Chrome/Chromium permanent install (packaged `.crx` + `ExtensionSettings` policy) to match Firefox.
+- A bundled icon set.

@@ -1,0 +1,5 @@
+# Build output — signed/unsigned XPIs are produced by sign.sh / packaging, never committed.
+dist/
+
+# web-ext signing state: ties this source tree to its AMO upload (not secret, but local-only).
+extension/.amo-upload-uuid
