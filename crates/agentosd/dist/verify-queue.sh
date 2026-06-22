@@ -33,6 +33,17 @@ queue(){ busctl --user call "$QUEUE" "$QUEUE_PATH" "$QUEUE" "$@" 2>&1; }
 # busctl prints "<signature> <field1> <field2> …"; `field N` returns the Nth value after the signature.
 field(){ awk -v n="$(($1 + 1))" '{print $n}'; }
 
+# Wait (up to ~15s) for a well-known name to appear — a Type=simple daemon claims its bus name a moment
+# AFTER systemd calls it "active" (NVML init + zbus name acquisition), and a fresh apply.sh churns the
+# bus, so a single check right after deploy is racy. $1=bus name, $2=label.
+wait_for_bus(){
+  for _ in $(seq 1 30); do
+    busctl --user list 2>/dev/null | grep -q "$1" && { ok "$2"; return 0; }
+    sleep 0.5
+  done
+  bad "$2 (not on the bus after 15s)"; return 1
+}
+
 TEST_TOKEN=""
 WT_OUT=""
 cleanup(){
@@ -52,8 +63,8 @@ fi
 hdr "1. Services + bus names"
 systemctl --user is-active --quiet agentos-lease.service && ok "agentos-lease.service active" || bad "agentos-lease.service NOT active (try --deploy)"
 systemctl --user is-active --quiet agentos-queue.service && ok "agentos-queue.service active" || bad "agentos-queue.service NOT active (try --deploy)"
-busctl --user list 2>/dev/null | grep -q "$COORD" && ok "$COORD on the bus" || bad "$COORD not on the bus"
-busctl --user list 2>/dev/null | grep -q "$QUEUE" && ok "$QUEUE on the bus (the arbiter)" || bad "$QUEUE not on the bus"
+wait_for_bus "$COORD" "$COORD on the bus"
+wait_for_bus "$QUEUE" "$QUEUE on the bus (the arbiter)"
 
 if [[ $FAIL -gt 0 ]]; then
   hdr "RESULT"; echo "  services not ready — deploy first:  bash $(basename "$0") --deploy"; exit 1
