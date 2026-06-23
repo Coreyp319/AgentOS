@@ -113,6 +113,7 @@ _REDACTIONS = [
     (re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{6,}\b"), "[jwt]"),
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "[aws-key]"),
     (re.compile(r"\bsk-[A-Za-z0-9\-]{16,}\b"), "[key]"),
+    (re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"), "[hf-token]"),     # HuggingFace token (ADR-0044)
     (re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), "[email]"),
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[ip]"),
     (re.compile(r"/home/[^/\s:\"']+"), "~"),

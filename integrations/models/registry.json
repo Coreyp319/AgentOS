@@ -1,5 +1,5 @@
 {
-  "_comment": "AgentOS model registry — the single source of truth for which model does what. Code resolves its model from here (lucid_models.get(id)); the audit panel renders it. Edit here, not in code. All entries are LOCAL — nothing leaves this machine.",
+  "_comment": "AgentOS model registry — the single source of truth for which model does what. Code resolves its model from here (lucid_models.get(id)); the audit panel renders it. Edit here, not in code. All entries are LOCAL — nothing leaves this machine. | ADR-0044: each model carries `fetch` (ollama/hf/civitai artifacts) + modality/rating/tier; `bundles` are curated sets the onboarding fetches. Mature lane = explicit opt-in.",
   "version": 1,
   "models": [
     {
@@ -12,12 +12,24 @@
       "source": "ollama library: qwen2.5vl:3b (Qwen2.5-VL 3B vision)",
       "local": true,
       "safety_critical": true,
-      "used_by": ["Lucid B2", "right-click Create Video from Image"],
+      "used_by": [
+        "Lucid B2",
+        "right-click Create Video from Image"
+      ],
       "alternatives": [
         "moondream — 1.7GB, smaller, more age-conservative (more false minor-blocks)",
         "gemma4:latest — 9.6GB, most accurate but won't load when the GPU is busy"
       ],
-      "notes": "Sharper real-vs-drawn + age accuracy than moondream, still small enough to load when the GPU is busy. opencv Haar (CPU) is the deterministic primary; this is the second opinion."
+      "notes": "Sharper real-vs-drawn + age accuracy than moondream, still small enough to load when the GPU is busy. opencv Haar (CPU) is the deterministic primary; this is the second opinion.",
+      "modality": "safety",
+      "rating": "sfw",
+      "tier": "minimum",
+      "fetch": [
+        {
+          "via": "ollama",
+          "ref": "qwen2.5vl:3b"
+        }
+      ]
     },
     {
       "id": "narrator",
@@ -29,12 +41,23 @@
       "source": "ollama library: qwen2.5vl:3b (Qwen2.5-VL 3B vision)",
       "local": true,
       "safety_critical": false,
-      "used_by": ["Lucid beat-gen"],
+      "used_by": [
+        "Lucid beat-gen"
+      ],
       "alternatives": [
         "gemma4:latest — 9.6GB, richer suggestions but slow/wedge-prone to evict; it blocked the video step every turn (the bug fixed here)",
         "moondream — 1.7GB, smallest/fastest to evict but weaker structured-JSON beat-gen"
       ],
-      "notes": "Small on purpose: force_evict (ollama stop — the ADR-0018 lever) frees it in ~3s before the heavy i2v lease, and it can coexist with the lighter video models (no eviction needed). Shares qwen2.5vl:3b with B2. Since 2026-06-21 this role is the FRAME GROUNDER (caption+rating, needs vision) and the fallback beat writer; the beat WRITER itself is split out to 'narrator-beats' (a less-timid model). Was gemma4:latest (9.6GB), which evicted slowly and wedged — skipping the dream every turn (ADR-0015 §3)."
+      "notes": "Small on purpose: force_evict (ollama stop — the ADR-0018 lever) frees it in ~3s before the heavy i2v lease, and it can coexist with the lighter video models (no eviction needed). Shares qwen2.5vl:3b with B2. Since 2026-06-21 this role is the FRAME GROUNDER (caption+rating, needs vision) and the fallback beat writer; the beat WRITER itself is split out to 'narrator-beats' (a less-timid model). Was gemma4:latest (9.6GB), which evicted slowly and wedged — skipping the dream every turn (ADR-0015 §3).",
+      "modality": "text",
+      "rating": "sfw",
+      "tier": "minimum",
+      "fetch": [
+        {
+          "via": "ollama",
+          "ref": "qwen2.5vl:3b"
+        }
+      ]
     },
     {
       "id": "narrator-beats",
@@ -46,7 +69,9 @@
       "source": "huggingface: bartowski/MN-12B-Mag-Mell-R1-GGUF (Q5_K_M) — Mistral-Nemo 12B creative-writing merge, ChatML",
       "local": true,
       "safety_critical": false,
-      "used_by": ["Lucid beat-gen (propose)"],
+      "used_by": [
+        "Lucid beat-gen (propose)"
+      ],
       "alternatives": [
         "hermes3:3b — 2.0GB, fastest to evict and JSON-reliable, but TIMID in the mature lane (verified euphemistic: 'intimate area' / 'collarbone' / 'Unspoken Promise' even under the directive clause). The cheap-evict fallback; set this role to hermes3:3b on a constrained GPU.",
         "qwen2.5vl:3b — the vision grounder; SEES the frame but timid + thinner on dream-logic. Folds beat-gen back onto the single vision model.",
@@ -55,7 +80,16 @@
         "dolphin3.0-qwen2.5:3b — uncensored but BROKE the JSON beat contract (0 beats every call); rejected.",
         "huihui_ai/qwen2.5-abliterate:3b — JSON-reliable but creatively bland and not actually bolder; rejected (crude abliteration follows the two-dial law worse)."
       ],
-      "notes": "Mature-lane upgrade 2026-06-21 to fix 'the choices are much too conservative to be useful'. Root cause was the model, not the safety gate (lucid_safety only blocks minors/real-people/non-consent — never general adult). A/B'd vs hermes3:3b on the real path (spikes/dreaming/lucid/ab_mature_narrator.py, sensual-but-clothed mature scene): hermes3:3b stayed euphemistic ('hand moves closer to her intimate area', 'collarbone', 'Unspoken Promise') and was flaky on JSON; Mag-Mell-12B was explicit + concrete ('glistening sex', 'fully nude, stroking his erect cock', wax on a breast), kept 3-4/4 distinct beats per roll, honored the two-dial law (small motion / big different idea), and emitted valid JSON every trial. Best-in-class 12B for low-'slop' (non-euphemistic) creative prose + worldbuilding, so it serves the SFW lane too. ~8.7GB Q5_K_M evicts in a few seconds via force_evict (ollama stop) before the i2v lease — heavier than the old 2-3GB narrators but well within the ADR-0015 §3 budget on the 24GB card. TEXT-ONLY: it cannot see the frame, so beat-gen reads the caption the 'narrator' vision pass produced (lucid_engine.NARRATOR_MODEL != MODEL drops the image); the i2v step still continues from the frame pixels, so grounding fidelity is preserved. Revert/tune: set this role's model (hermes3:3b = cheap-evict, Rocinante = hotter), or override at runtime with LUCID_NARRATOR_MODEL. The mature heat itself is steered by _RATING_CLAUSE['mature'] in lucid_engine.py and stays rating-gated (sfw dreams are unaffected)."
+      "notes": "Mature-lane upgrade 2026-06-21 to fix 'the choices are much too conservative to be useful'. Root cause was the model, not the safety gate (lucid_safety only blocks minors/real-people/non-consent — never general adult). A/B'd vs hermes3:3b on the real path (spikes/dreaming/lucid/ab_mature_narrator.py, sensual-but-clothed mature scene): hermes3:3b stayed euphemistic ('hand moves closer to her intimate area', 'collarbone', 'Unspoken Promise') and was flaky on JSON; Mag-Mell-12B was explicit + concrete ('glistening sex', 'fully nude, stroking his erect cock', wax on a breast), kept 3-4/4 distinct beats per roll, honored the two-dial law (small motion / big different idea), and emitted valid JSON every trial. Best-in-class 12B for low-'slop' (non-euphemistic) creative prose + worldbuilding, so it serves the SFW lane too. ~8.7GB Q5_K_M evicts in a few seconds via force_evict (ollama stop) before the i2v lease — heavier than the old 2-3GB narrators but well within the ADR-0015 §3 budget on the 24GB card. TEXT-ONLY: it cannot see the frame, so beat-gen reads the caption the 'narrator' vision pass produced (lucid_engine.NARRATOR_MODEL != MODEL drops the image); the i2v step still continues from the frame pixels, so grounding fidelity is preserved. Revert/tune: set this role's model (hermes3:3b = cheap-evict, Rocinante = hotter), or override at runtime with LUCID_NARRATOR_MODEL. The mature heat itself is steered by _RATING_CLAUSE['mature'] in lucid_engine.py and stays rating-gated (sfw dreams are unaffected).",
+      "modality": "text",
+      "rating": "sfw",
+      "tier": "hero",
+      "fetch": [
+        {
+          "via": "ollama",
+          "ref": "hf.co/bartowski/MN-12B-Mag-Mell-R1-GGUF:Q5_K_M"
+        }
+      ]
     },
     {
       "id": "t2i-opening",
@@ -67,8 +101,22 @@
       "source": "huggingface: BusterBoo99xX/divingIllustriousReal_v40VAE (Illustrious/SDXL, mirror of the Civitai model)",
       "local": true,
       "safety_critical": false,
-      "used_by": ["Lucid text-to-opening"],
-      "notes": "Illustrious/SDXL (~28 steps, cfg ~5, 768x1344 = 9:16 to match the i2v frame). Replaced SD-Turbo, which was SFW-only and 512px so it could not seed a pose/anatomy-correct NSFW opening. The description still passes the red-line gate; B2 likeness-gates the rendered frame; predict-before-load refuses rather than OOMs."
+      "used_by": [
+        "Lucid text-to-opening"
+      ],
+      "notes": "Illustrious/SDXL (~28 steps, cfg ~5, 768x1344 = 9:16 to match the i2v frame). Replaced SD-Turbo, which was SFW-only and 512px so it could not seed a pose/anatomy-correct NSFW opening. The description still passes the red-line gate; B2 likeness-gates the rendered frame; predict-before-load refuses rather than OOMs.",
+      "modality": "image",
+      "rating": "sfw",
+      "tier": "minimum",
+      "fetch": [
+        {
+          "via": "hf",
+          "repo": "BusterBoo99xX/divingIllustriousReal_v40VAE",
+          "file": "divingIllustriousReal_v40VAE.safetensors",
+          "dest": "checkpoints/divingIllustriousReal_v40VAE.safetensors",
+          "auth": "none"
+        }
+      ]
     },
     {
       "id": "i2v-dream",
@@ -80,8 +128,72 @@
       "source": "local ComfyUI unet GGUF (wan22_enhNSFW_nolight_cf_Q6K_high/low) via workflows/enhNSFW-nolight-i2v.api.json",
       "local": true,
       "safety_critical": false,
-      "used_by": ["Lucid dream loop"],
-      "notes": "Non-distilled (real CFG ~3.5, 20 steps) — replaced the distilled Wan2.2-Remix i2v, whose lightning high-noise expert melted anatomy ('anatomy from within anatomy'). Costs ~4x the time per beat; that is the price of not melting. The heavy one: runs only through the VRAM coordinator lease (Spawn/confirm-evict/Release); live inference always outranks it. Revert via LUCID_WORKFLOW=<the Remix .json>."
+      "used_by": [
+        "Lucid dream loop"
+      ],
+      "notes": "Non-distilled (real CFG ~3.5, 20 steps) — replaced the distilled Wan2.2-Remix i2v, whose lightning high-noise expert melted anatomy ('anatomy from within anatomy'). Costs ~4x the time per beat; that is the price of not melting. The heavy one: runs only through the VRAM coordinator lease (Spawn/confirm-evict/Release); live inference always outranks it. Revert via LUCID_WORKFLOW=<the Remix .json>.",
+      "modality": "video",
+      "rating": "mature",
+      "tier": "hero",
+      "fetch": [
+        {
+          "via": "civitai",
+          "version_id": null,
+          "dest": "unet/wan22_enhNSFW_nolight_cf_Q6K_high.gguf",
+          "auth": "civitai",
+          "note": "Civitai: WAN 2.2 Enhanced NSFW (SVI) nolightning Q6K HIGH"
+        },
+        {
+          "via": "civitai",
+          "version_id": null,
+          "dest": "unet/wan22_enhNSFW_nolight_cf_Q6K_low.gguf",
+          "auth": "civitai",
+          "note": "Civitai: WAN 2.2 Enhanced NSFW (SVI) nolightning Q6K LOW"
+        },
+        {
+          "via": "manual",
+          "dest": "text_encoders/nsfw_wan_umt5-xxl_fp8_scaled.safetensors",
+          "note": "Wan umt5-xxl fp8 text encoder (Comfy-Org / Kijai mirror)"
+        },
+        {
+          "via": "manual",
+          "dest": "vae/wan_2.1_vae.safetensors",
+          "note": "Wan 2.1 VAE (Comfy-Org mirror)"
+        },
+        {
+          "via": "civitai",
+          "version_id": null,
+          "dest": "loras/NSFW-22-H-e8.safetensors",
+          "auth": "civitai",
+          "note": "Civitai: NSFW-22 anatomy LoRA (high)"
+        },
+        {
+          "via": "civitai",
+          "version_id": null,
+          "dest": "loras/NSFW-22-L-e8.safetensors",
+          "auth": "civitai",
+          "note": "Civitai: NSFW-22 anatomy LoRA (low)"
+        },
+        {
+          "via": "hf",
+          "repo": "Instara/instareal-wan-2.2",
+          "file": "Instareal_high.safetensors",
+          "dest": "loras/Instareal_high.safetensors",
+          "auth": "none"
+        },
+        {
+          "via": "hf",
+          "repo": "Instara/instareal-wan-2.2",
+          "file": "Instareal_low.safetensors",
+          "dest": "loras/Instareal_low.safetensors",
+          "auth": "none"
+        },
+        {
+          "via": "manual",
+          "dest": "loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors",
+          "note": "lightx2v 4-step distill LoRA (lightx2v/Wan2.2-Distill-Loras)"
+        }
+      ]
     },
     {
       "id": "i2v-engine",
@@ -91,8 +203,14 @@
       "runtime": "selector",
       "local": true,
       "safety_critical": false,
-      "used_by": ["Lucid run_beat"],
-      "notes": "A selector, not a model file. 'wan' -> i2v-dream (Wan 2.2 GGUF + NSFW-22 LoRA split); '10eros'/'ltx' -> build_10eros_i2v (LTX-2.3 GGUF). Default 'wan' preserves prior behavior; nothing changes until flipped."
+      "used_by": [
+        "Lucid run_beat"
+      ],
+      "notes": "A selector, not a model file. 'wan' -> i2v-dream (Wan 2.2 GGUF + NSFW-22 LoRA split); '10eros'/'ltx' -> build_10eros_i2v (LTX-2.3 GGUF). Default 'wan' preserves prior behavior; nothing changes until flipped.",
+      "modality": "selector",
+      "rating": "sfw",
+      "tier": "minimum",
+      "fetch": []
     },
     {
       "id": "i2v-dream-10eros",
@@ -104,8 +222,97 @@
       "source": "huggingface: vantagewithai/LTX2.3-10Eros-GGUF (Q6_K) + TenStrip/LTX2.3-10Eros (gemma TE) + Kijai/LTX2.3_comfy (video/audio VAE, text projection)",
       "local": true,
       "safety_critical": false,
-      "used_by": ["Lucid dream loop (when i2v-engine=10eros)"],
-      "notes": "Single merged checkpoint (no Wan high/low LoRA split); I2V-only, prompt-driven. 768px + 28 steps = verified hand/detail sweet spot; melting comes from small-subject/large-motion/over-length, not the model. fp8 all-in-one (34GB) doesn't fit 24GB — GGUF is the only clean path. Built by build_10eros_i2v.py; ui_workflow.py emits the canvas version. Same VRAM-coordinator lease as i2v-dream (the heavy one)."
+      "used_by": [
+        "Lucid dream loop (when i2v-engine=10eros)"
+      ],
+      "notes": "Single merged checkpoint (no Wan high/low LoRA split); I2V-only, prompt-driven. 768px + 28 steps = verified hand/detail sweet spot; melting comes from small-subject/large-motion/over-length, not the model. fp8 all-in-one (34GB) doesn't fit 24GB — GGUF is the only clean path. Built by build_10eros_i2v.py; ui_workflow.py emits the canvas version. Same VRAM-coordinator lease as i2v-dream (the heavy one).",
+      "modality": "video",
+      "rating": "mature",
+      "tier": "hero",
+      "fetch": [
+        {
+          "via": "hf",
+          "repo": "vantagewithai/LTX2.3-10Eros-GGUF",
+          "file": "10Eros_v1-Q6_K.gguf",
+          "dest": "unet/10Eros_v1-Q6_K.gguf",
+          "auth": "none"
+        },
+        {
+          "via": "manual",
+          "dest": "text_encoders/gemma-3-12b-it-ablit-norms-biproj-fp8mixed.safetensors",
+          "note": "LTX gemma-3-12B text encoder — TenStrip/LTX2.3-10Eros (verify exact HF path)"
+        },
+        {
+          "via": "manual",
+          "dest": "text_encoders/ltx-2.3_text_projection_bf16.safetensors",
+          "note": "LTX-2.3 text projection — Kijai/LTX2.3_comfy (verify exact HF path)"
+        },
+        {
+          "via": "manual",
+          "dest": "vae/LTX23_video_vae_bf16.safetensors",
+          "note": "LTX-2.3 video VAE — Kijai/LTX2.3_comfy (verify exact HF path)"
+        },
+        {
+          "via": "manual",
+          "dest": "vae/LTX23_audio_vae_bf16.safetensors",
+          "note": "LTX-2.3 audio VAE — Kijai/LTX2.3_comfy (verify exact HF path)"
+        }
+      ]
+    }
+  ],
+  "bundles": [
+    {
+      "id": "text",
+      "modality": "text",
+      "rating": "sfw",
+      "tier": "minimum",
+      "desc": "Chat / story text — narrator + beat-writer + the safety vision model. All Ollama, no account.",
+      "models": [
+        "narrator",
+        "narrator-beats",
+        "b2-vision"
+      ]
+    },
+    {
+      "id": "image",
+      "modality": "image",
+      "rating": "sfw",
+      "tier": "minimum",
+      "desc": "Text-to-opening image + the safety check. divingIllustrious from a free HF mirror, no account.",
+      "models": [
+        "t2i-opening",
+        "b2-vision",
+        "narrator",
+        "narrator-beats"
+      ]
+    },
+    {
+      "id": "video-10eros",
+      "modality": "video",
+      "rating": "mature",
+      "tier": "hero",
+      "desc": "The LTX-2.3 (10Eros) dream lane — every weight from a free HuggingFace mirror, no account.",
+      "models": [
+        "i2v-dream-10eros",
+        "t2i-opening",
+        "b2-vision",
+        "narrator",
+        "narrator-beats"
+      ]
+    },
+    {
+      "id": "video-wan",
+      "modality": "video",
+      "rating": "mature",
+      "tier": "hero",
+      "desc": "The Wan 2.2 Enhanced-NSFW dream lane (the shipped default). Needs a free Civitai token for the checkpoint + anatomy LoRAs.",
+      "models": [
+        "i2v-dream",
+        "t2i-opening",
+        "b2-vision",
+        "narrator",
+        "narrator-beats"
+      ]
     }
   ]
 }
