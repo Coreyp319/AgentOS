@@ -42,7 +42,8 @@ usage: ${0##*/} [--list] [--all] [--defaults] [--only a,b] [--without a,b] [--ye
   --yes,-y       non-interactive; with no selector, implies --defaults
   --preflight    check what the selected (or default) components ASSUME is on the box, then exit
   --onboard [..] guided model setup (ADR-0044): detect what's here, fetch only the gaps.
-                 e.g. --onboard detect | --onboard fetch image --yes | --onboard creds set civitai
+                 --onboard --web    → the browser wizard (localhost-only)
+                 --onboard detect | --onboard fetch image --yes | --onboard creds set civitai
   (no args on a terminal) → interactive checklist
 EOF
 }
@@ -195,7 +196,13 @@ SELECTOR="" ONLY="" WITHOUT="" YES=0 PREFLIGHT_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --list) list_table; exit 0 ;;
-    --onboard) shift; exec python3 "$HERE/setup/setup.py" "$@" ;;   # ADR-0044 model onboarding
+    --onboard)                                                      # ADR-0044 model onboarding
+      shift
+      if [ "${1:-}" = "--web" ]; then                               # the browser wizard (localhost-only)
+        ( sleep 1; command -v xdg-open >/dev/null 2>&1 && xdg-open "http://127.0.0.1:${AGENTOS_SETUP_PORT:-9125}" >/dev/null 2>&1 || true ) &
+        exec python3 "$HERE/setup/setup_web.py"
+      fi
+      exec python3 "$HERE/setup/setup.py" "$@" ;;                    # else the CLI
     --all) SELECTOR=all ;;
     --defaults) SELECTOR=defaults ;;
     --only) shift; ONLY="${1:-}"; SELECTOR=only ;;

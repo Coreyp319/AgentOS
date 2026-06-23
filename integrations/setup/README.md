@@ -1,52 +1,68 @@
-# integrations/setup/ — guided model onboarding (ADR-0044)
+# Set up your models (the onboarding)
 
-Get a box from "nothing installed" (or "Ollama + ComfyUI already here") to a **first reviewable
-result** by detecting what's present and **fetching only the gaps**. Brownfield-first: a box that
-already has Ollama models and a ComfyUI checkout with weights is the same flow — nothing is
-re-downloaded or clobbered.
+This gets your box from "nothing to generate with" to **making your first image, video, or
+chat** — by looking at what you already have and downloading only what's missing.
 
-It is a **detector + thin fetch orchestrator**, not a model manager (ADR-0001): it shells out to
-the tools that already do downloading well, and reads the same source of truth the rest of AgentOS
-uses — `integrations/models/registry.json` (extended with per-model `fetch` artifacts + `bundles`).
+Already have Ollama models or a ComfyUI folder full of weights? It finds them and **reuses
+them** — nothing is downloaded twice, nothing already there is touched.
 
-## Use
+## The easy way
 
-```
-./install.sh --onboard                      # guided: detect + bundles + how to fetch
-./install.sh --onboard detect               # brownfield report: have ✓ / partial / fetch ✗
-./install.sh --onboard bundles              # the curated sets
-./install.sh --onboard plan image           # exactly what 'image' would download
-./install.sh --onboard fetch image --yes    # fetch the gap (SFW, no account)
-./install.sh --onboard fetch video-wan --mature --yes   # the 18+ lane (needs a Civitai token)
-./install.sh --onboard creds set civitai    # store a free Civitai token in the OS keyring
+```bash
+cd integrations
+./install.sh --onboard --web
 ```
 
-(Equivalently: `python3 integrations/setup/setup.py <cmd>`.)
+A browser page opens. Pick what you want to make — **Text**, **Image**, or **Video** — and it
+downloads the models for that, showing progress. When a row says **✓ ready**, click **Make one**
+and it drops you into Lucid to create. That's it.
 
-## The three fetch lanes
+Prefer the terminal? `./install.sh --onboard` does the same thing without a browser.
 
-| Lane | Auth | How |
+## What you can make
+
+| Bundle | What it is | Account needed? |
 |---|---|---|
-| **Ollama** (text/vision) | none | `ollama pull <ref>` — native resume |
-| **HuggingFace** (weights) | none for open repos; a token for *gated* | `curl` on `…/resolve/main/…` → `.part` → atomic rename |
-| **Civitai** (mature image/video) | a free account + API key | `curl` on `/api/download/models/<versionId>` with a keyring token; serialized |
+| **text** | Chat + story writing (runs on Ollama) | No |
+| **image** | Make a picture from a description | No |
+| **video-10eros** | Image → short video (the LTX dream engine) | No |
+| **video-wan** | Image → short video (the Wan engine, the default) | A free Civitai token, for the 18+ models |
 
-A first result **never blocks on an account**: the `text` and `image` bundles are fully no-auth
-(Ollama + free HF mirrors). The mature video lanes need a Civitai token (`video-wan`) or have a few
-files marked `manual` until their exact source is pinned (`video-10eros`).
+**Text and image need no sign-up at all.** Only the mature (18+) video models live behind a
+free [Civitai](https://civitai.com) account — and that lane is always opt-in, never automatic.
 
-## Bundles
+## If a model needs an account
 
-`text` · `image` (SFW, no account) · `video-10eros` · `video-wan` (mature, opt-in). A bundle is just
-a query over the registry — add or edit one in `registry.json`, no code change.
+Some mature video models download from Civitai, which needs a free token:
 
-## Safety (inherits ADR-0008/0009)
+1. Make a free account at [civitai.com](https://civitai.com), turn on "show mature content" in
+   your settings, and copy an **API key** from *Account → API Keys*.
+2. In the wizard's **Accounts** box (or `./install.sh --onboard creds set civitai`), paste it.
 
-- **Mature (18+) is explicit opt-in** — `--mature --yes` affirms it; never a default, never auto-pulled.
-- **Credentials go to the OS keyring** (`secret-tool`/KWallet) via stdin — never a file, never argv,
-  never a log. `creds clear <svc>` removes them.
-- A **hard denylist** refuses CSAM / non-consensual real-likeness repos (the `deadman44/*` exclusion).
-- **Link-and-download, never bundle** — AgentOS fetches on your behalf with your credentials; it
-  re-hosts nothing. The weights land under your `~/ComfyUI` only.
+Your token is saved in your system keyring (KWallet) — never written to a file, never logged,
+never sent anywhere except the download itself. Remove it any time with
+`./install.sh --onboard creds clear civitai`.
 
+## Terminal commands
+
+```bash
+./install.sh --onboard detect          # what's already here vs. what's missing
+./install.sh --onboard bundles         # the sets you can install
+./install.sh --onboard plan image      # exactly what 'image' would download
+./install.sh --onboard fetch image     # download the gap (no account)
+./install.sh --onboard fetch video-wan --mature --yes   # the 18+ lane (after storing a token)
+```
+
+## Good to know
+
+- **It's safe to stop and re-run** — downloads resume, and anything already present is skipped.
+- **The 18+ lane is opt-in** and downloads under *your* account. AgentOS hosts nothing itself —
+  it fetches on your behalf to your machine. (No minors, no real-person likenesses — enforced.)
+- **Where things go:** models land under your ComfyUI folder (`~/ComfyUI/models`, or `$COMFY_ROOT`)
+  and your Ollama store. Edit which models a bundle uses in `../models/registry.json`.
+
+---
+
+*For maintainers:* the engine is `setup.py` (stdlib + `curl`/`ollama`/`secret-tool`; no `hf` CLI
+needed); the wizard is `setup_web.py` (localhost-only, never tailnet-served — see ADR-0044).
 Tests: `python3 -m unittest discover -s integrations/setup/tests`.

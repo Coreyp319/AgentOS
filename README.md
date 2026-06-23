@@ -19,6 +19,45 @@ One 24GB GPU runs an always-on ray-traced wallpaper (~3.5GB) **and** wants to se
 them. `agentosd` is that coordinator — plus the safety substrate generalized from the
 Nimbus `ui-audit` agent.
 
+## Get started
+
+> New here? This is the short path from a fresh checkout to making your first thing.
+
+**What you need:** a Linux box with a recent NVIDIA GPU and KDE Plasma 6. Already have
+[Ollama](https://ollama.com) or a [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
+install with models? Great — setup **detects and reuses them** (brownfield-first); it never
+re-downloads or clobbers what's already there.
+
+**1 — Install the desktop stack** — opt-in, reversible, user-scope:
+
+```bash
+cd integrations
+./install.sh              # interactive checklist (or --defaults for the standard set)
+./install.sh --list       # what each piece is and how it ties into AgentOS
+./install.sh --preflight  # check what's assumed present, before installing anything
+```
+
+Everything installs as `--user` services; any privileged step is *printed*, never auto-run.
+Undo any of it with `./uninstall.sh`.
+
+**2 — Set up the AI models** — detect what's already here, download only the gaps:
+
+```bash
+./install.sh --onboard --web   # a browser wizard: pick text / image / video, watch it download
+./install.sh --onboard         # or the same, in the terminal
+```
+
+Text and image need **no account**. The 18+ video lane is opt-in and uses a free
+[Civitai](https://civitai.com) token kept in your OS keyring. Details:
+[integrations/setup/README.md](integrations/setup/README.md).
+
+**3 — Make your first thing:**
+
+- **Dream** (turn an image into a branching video loop) — open **Lucid** at <http://127.0.0.1:8765>.
+- **See the whole system** at a glance — the **status panel** at <http://127.0.0.1:9123>.
+
+Everything runs locally; nothing you make or choose leaves the machine.
+
 ## Shape (see [docs/adr/](docs/adr/))
 
 **The core substrate** — the floor under everything:

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<title>AgentOS · Set up</title>
+<style>
+  :root{
+    --bg-0:#12141c; --bg-1:#161a28; --bg-2:#1a2238;
+    --text:#e6e9f0; --muted:#8a90a0; --faint:#878c9b; --blue:#9b82e0; --warm:#e0884f;
+    --glass:rgba(38,42,54,0.46); --line:rgba(255,255,255,0.08); --line-hi:rgba(255,255,255,0.14);
+    --up:#74d39a; --amber:#f2c879; --red:#ec7676;
+    --blue-line:color-mix(in srgb,var(--blue) 34%,transparent);
+    --blue-wash:color-mix(in srgb,var(--blue) 13%,transparent);
+    --radius:14px; --radius-sm:9px;
+  }
+  *{box-sizing:border-box} html,body{height:100%}
+  body{margin:0;font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);
+    background:radial-gradient(1100px 640px at 80% -10%,color-mix(in srgb,var(--blue) 11%,transparent),transparent 58%),
+      radial-gradient(900px 560px at 5% 110%,color-mix(in srgb,var(--warm) 8%,transparent),transparent 55%),
+      linear-gradient(162deg,var(--bg-0),var(--bg-1) 46%,var(--bg-2));background-attachment:fixed;line-height:1.5}
+  .wrap{max-width:760px;margin:0 auto;padding:48px 24px 72px}
+  .mark{width:34px;height:34px;border-radius:10px;background:linear-gradient(150deg,var(--blue),var(--warm));
+    box-shadow:0 0 0 1px rgba(255,255,255,.1) inset;display:inline-block;vertical-align:middle}
+  h1{font-size:1.7rem;font-weight:640;margin:14px 0 4px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:.95rem;margin-bottom:6px}
+  .trust{color:var(--faint);font-size:.8rem;margin-bottom:26px}
+  .trust b{color:var(--up);font-weight:600}
+  h2{font-size:.82rem;font-weight:640;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin:30px 0 12px}
+  .card{background:var(--glass);border:1px solid var(--line);border-radius:var(--radius);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);padding:2px 0;overflow:hidden}
+  .feat{display:flex;align-items:center;gap:14px;padding:15px 18px;border-top:1px solid var(--line)}
+  .feat:first-child{border-top:0}
+  .feat .ico{font-size:1.5rem;width:30px;text-align:center;flex:none}
+  .feat .meta{flex:1;min-width:0}
+  .feat .nm{font-size:.95rem;font-weight:560}
+  .feat .nm .tag{font-size:.6rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--warm);border:1px solid color-mix(in srgb,var(--warm) 40%,transparent);border-radius:999px;
+    padding:1px 7px;margin-left:8px;vertical-align:1px}
+  .feat .dsc{color:var(--muted);font-size:.8rem;margin-top:2px}
+  .feat .size{color:var(--faint);font-size:.74rem;margin-top:3px}
+  .state{font-size:.74rem;font-weight:640;white-space:nowrap;flex:none}
+  .state.ready{color:var(--up)} .state.gap{color:var(--blue)} .state.busy{color:var(--blue)}
+  .btn{font:inherit;font-size:.84rem;font-weight:560;cursor:pointer;flex:none;padding:7px 15px;border-radius:var(--radius-sm);
+    border:1px solid var(--blue-line);background:var(--blue-wash);color:var(--blue);white-space:nowrap}
+  .btn:hover{background:color-mix(in srgb,var(--blue) 20%,transparent)}
+  .btn.ghost{border-color:var(--line-hi);background:transparent;color:var(--muted)}
+  .btn.go{background:linear-gradient(150deg,var(--blue),var(--warm));color:#0e1018;border:0;font-weight:640}
+  .btn:disabled{opacity:.5;cursor:default}
+  .bar{height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:9px}
+  .bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--warm));transition:width .5s}
+  .tail{font-family:ui-monospace,monospace;font-size:.68rem;color:var(--faint);white-space:pre-wrap;
+    margin-top:8px;max-height:78px;overflow:auto;opacity:.85}
+  .rate{display:inline-flex;gap:6px;align-items:center;font-size:.8rem;color:var(--muted);margin:2px 0 4px}
+  .creds{padding:16px 18px}
+  .creds label{display:block;font-size:.8rem;color:var(--muted);margin:8px 0 4px}
+  .creds input{width:100%;font:inherit;font-size:.84rem;padding:8px 11px;border-radius:var(--radius-sm);
+    border:1px solid var(--line-hi);background:rgba(0,0,0,.25);color:var(--text)}
+  .creds .row{display:flex;gap:8px;align-items:flex-end}
+  .creds .row > div{flex:1}
+  .ok{color:var(--up)} .err{color:var(--red);font-size:.78rem;margin-top:6px}
+  a{color:var(--blue)} .foot{color:var(--faint);font-size:.74rem;margin-top:36px;line-height:1.8}
+  code{background:rgba(255,255,255,.06);padding:1px 6px;border-radius:5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="mark" aria-hidden="true"></div>
+  <h1>Set up AgentOS</h1>
+  <div class="sub">Pick what you want to make. We detect what's already here and download only what's missing.</div>
+  <div class="trust"><b>Everything runs on this machine.</b> Nothing about your choices or your creations leaves the box.</div>
+
+  <h2>What do you want to make?</h2>
+  <div id="bundles" class="card"><div class="feat"><div class="meta"><div class="dsc">checking what's installed…</div></div></div></div>
+
+  <div id="progress"></div>
+
+  <h2>Accounts <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--faint)">· only the Mature video lane needs one</span></h2>
+  <div class="card creds">
+    <div class="dsc" style="color:var(--muted);font-size:.82rem">A free <a href="https://civitai.com/user/account" target="_blank" rel="noopener">Civitai</a> token unlocks the Wan mature checkpoints. A <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">HuggingFace</a> token is only needed for gated models. Tokens are stored in your OS keyring — never a file, never sent anywhere but the download.</div>
+    <div class="row" style="margin-top:12px">
+      <div>
+        <label for="svc">Service</label>
+        <select id="svc" class="" style="width:100%;font:inherit;padding:8px;border-radius:9px;border:1px solid var(--line-hi);background:rgba(0,0,0,.25);color:var(--text)">
+          <option value="civitai">Civitai (mature video)</option>
+          <option value="huggingface">HuggingFace (gated models)</option>
+        </select>
+      </div>
+      <div><label for="tok">Token</label><input id="tok" type="password" placeholder="paste token, then Save" autocomplete="off" /></div>
+      <button class="btn" id="saveTok">Save</button>
+    </div>
+    <div id="credMsg"></div>
+  </div>
+
+  <div class="foot">
+    Prefer the terminal? <code>./install.sh --onboard</code> does the same.<br />
+    Mature (18+) models are opt-in and downloaded under your own account. No minors, no real-person likenesses (enforced).
+  </div>
+</div>
+
+<script>
+  const ESC={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
+  const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>ESC[c]);
+  const ICON={text:"✍",image:"🖼",video:"🎞"};
+  let TOKEN="", busy={};
+
+  async function tok(){ if(!TOKEN) TOKEN=(await (await fetch("/api/token")).json()).token; return TOKEN; }
+  async function post(path,body){
+    return (await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Setup-Token":await tok()},
+      body:JSON.stringify(body)})).json();
+  }
+
+  function bundleRow(b){
+    const ready=b.gap===0;
+    const mature=b.rating==="mature";
+    const ico=ICON[b.modality]||"•";
+    let right;
+    if(busy[b.id]) right=`<span class="state busy">setting up…</span>`;
+    else if(ready) right=`<a class="btn go" href="http://127.0.0.1:8765" target="_blank" rel="noopener">Make one ↗</a>`;
+    else {
+      const lab = b.needs_auth&&b.needs_auth.length ? "Fetch (needs token)" : "Set up";
+      right=`<button class="btn" data-fetch="${esc(b.id)}" data-mature="${mature?1:0}">${lab}</button>`;
+    }
+    const note = ready ? "ready — every model is here"
+      : `${b.present}/${b.total} present · ~${b.approx_gb} GB to download`
+        + (b.manual?` · ${b.manual} file(s) need a manual download`:"");
+    return `<div class="feat">
+      <div class="ico" aria-hidden="true">${ico}</div>
+      <div class="meta">
+        <div class="nm">${esc(b.id)}${mature?'<span class="tag">18+</span>':''}</div>
+        <div class="dsc">${esc(b.desc)}</div>
+        <div class="size">${esc(note)}</div>
+      </div>
+      <span class="state ${ready?'ready':'gap'}">${ready?'✓ ready':''}</span>
+      ${right}
+    </div>`;
+  }
+
+  async function refreshState(){
+    try{
+      const s=await (await fetch("/api/state",{cache:"no-store"})).json();
+      document.getElementById("bundles").innerHTML=(s.bundles||[]).map(bundleRow).join("")
+        || `<div class="feat"><div class="meta"><div class="dsc">no bundles in the registry.</div></div></div>`;
+    }catch(_){}
+  }
+
+  async function refreshJobs(){
+    try{
+      const d=await (await fetch("/api/jobs",{cache:"no-store"})).json();
+      const jobs=(d.jobs||[]).filter(j=>j.status==="running"||j.status==="failed"
+        || (Date.now()/1000 - 0) );  // keep recent
+      const el=document.getElementById("progress");
+      const active=(d.jobs||[]).filter(j=>j.status!=="done"||busy[j.bundle]);
+      if(!d.jobs||!d.jobs.length){el.innerHTML="";}
+      else{
+        el.innerHTML=`<h2>Downloading</h2><div class="card">`+d.jobs.map(j=>{
+          const pct=j.total?Math.round(100*j.present/j.total):0;
+          const st=j.status==="running"?`downloading… ${j.present}/${j.total} models`
+            :j.status==="done"?`✓ done — ${j.present}/${j.total} present`:`couldn't finish — see terminal`;
+          if(j.status!=="running") busy[j.bundle]=false;
+          return `<div class="feat" style="display:block">
+            <div style="display:flex;justify-content:space-between"><b style="font-size:.9rem">${esc(j.bundle)}</b>
+            <span class="state ${j.status==='done'?'ready':j.status==='failed'?'':'busy'}">${esc(st)}</span></div>
+            <div class="bar"><i style="width:${pct}%"></i></div>
+            ${j.tail?`<div class="tail">${esc(j.tail)}</div>`:""}</div>`;
+        }).join("")+`</div>`;
+      }
+      if(active.length) refreshState();   // models landing → re-render the bundle "ready" state
+    }catch(_){}
+  }
+
+  document.getElementById("bundles").addEventListener("click",async e=>{
+    const btn=e.target.closest("button[data-fetch]"); if(!btn) return;
+    const id=btn.dataset.fetch, mature=btn.dataset.mature==="1";
+    if(mature && !confirm("This downloads MATURE (18+) models under your own account. You affirm you're an adult. No minors / no real-person likenesses. Continue?")) return;
+    btn.disabled=true; busy[id]=true;
+    const r=await post("/api/fetch",{bundle:id,mature});
+    if(r.error){ alert(r.error); busy[id]=false; btn.disabled=false; }
+    refreshJobs();
+  });
+
+  document.getElementById("saveTok").addEventListener("click",async()=>{
+    const svc=document.getElementById("svc").value, t=document.getElementById("tok").value.trim();
+    const msg=document.getElementById("credMsg");
+    if(!t){ msg.innerHTML=`<div class="err">paste a token first</div>`; return; }
+    const r=await post("/api/creds",{svc,token:t});
+    msg.innerHTML=r.ok?`<div class="ok" style="font-size:.8rem;margin-top:6px">✓ saved to your keyring</div>`
+      :`<div class="err">couldn't save — is a keyring (KWallet) running?</div>`;
+    document.getElementById("tok").value=""; refreshState();
+  });
+
+  refreshState(); refreshJobs();
+  setInterval(refreshJobs,2500);
+  setInterval(refreshState,8000);
+</script>
+</body>
+</html>

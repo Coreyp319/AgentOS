@@ -138,27 +138,31 @@
       "fetch": [
         {
           "via": "civitai",
-          "version_id": null,
+          "version_id": "2647324",
           "dest": "unet/wan22_enhNSFW_nolight_cf_Q6K_high.gguf",
           "auth": "civitai",
-          "note": "Civitai: WAN 2.2 Enhanced NSFW (SVI) nolightning Q6K HIGH"
+          "note": "Civitai model 2053259 — WAN 2.2 Enhanced NSFW SVI nolightning Q6K HIGH"
         },
         {
           "via": "civitai",
-          "version_id": null,
+          "version_id": "2647328",
           "dest": "unet/wan22_enhNSFW_nolight_cf_Q6K_low.gguf",
           "auth": "civitai",
-          "note": "Civitai: WAN 2.2 Enhanced NSFW (SVI) nolightning Q6K LOW"
+          "note": "Civitai model 2053259 — WAN 2.2 Enhanced NSFW SVI nolightning Q6K LOW"
         },
         {
-          "via": "manual",
+          "via": "hf",
+          "repo": "NSFW-API/NSFW-Wan-UMT5-XXL",
+          "file": "nsfw_wan_umt5-xxl_fp8_scaled.safetensors",
           "dest": "text_encoders/nsfw_wan_umt5-xxl_fp8_scaled.safetensors",
-          "note": "Wan umt5-xxl fp8 text encoder (Comfy-Org / Kijai mirror)"
+          "auth": "none"
         },
         {
-          "via": "manual",
+          "via": "hf",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "file": "split_files/vae/wan_2.1_vae.safetensors",
           "dest": "vae/wan_2.1_vae.safetensors",
-          "note": "Wan 2.1 VAE (Comfy-Org mirror)"
+          "auth": "none"
         },
         {
           "via": "civitai",
@@ -189,9 +193,11 @@
           "auth": "none"
         },
         {
-          "via": "manual",
+          "via": "hf",
+          "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+          "file": "split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors",
           "dest": "loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors",
-          "note": "lightx2v 4-step distill LoRA (lightx2v/Wan2.2-Distill-Loras)"
+          "auth": "none"
         }
       ]
     },
@@ -238,24 +244,32 @@
           "auth": "none"
         },
         {
-          "via": "manual",
+          "via": "hf",
+          "repo": "TenStrip/LTX2.3-10Eros",
+          "file": "text_encoders/gemma-3-12b-it-ablit-norms-biproj-fp8mixed.safetensors",
           "dest": "text_encoders/gemma-3-12b-it-ablit-norms-biproj-fp8mixed.safetensors",
-          "note": "LTX gemma-3-12B text encoder — TenStrip/LTX2.3-10Eros (verify exact HF path)"
+          "auth": "none"
         },
         {
-          "via": "manual",
+          "via": "hf",
+          "repo": "Kijai/LTX2.3_comfy",
+          "file": "text_encoders/ltx-2.3_text_projection_bf16.safetensors",
           "dest": "text_encoders/ltx-2.3_text_projection_bf16.safetensors",
-          "note": "LTX-2.3 text projection — Kijai/LTX2.3_comfy (verify exact HF path)"
+          "auth": "none"
         },
         {
-          "via": "manual",
+          "via": "hf",
+          "repo": "Kijai/LTX2.3_comfy",
+          "file": "vae/LTX23_video_vae_bf16.safetensors",
           "dest": "vae/LTX23_video_vae_bf16.safetensors",
-          "note": "LTX-2.3 video VAE — Kijai/LTX2.3_comfy (verify exact HF path)"
+          "auth": "none"
         },
         {
-          "via": "manual",
+          "via": "hf",
+          "repo": "Kijai/LTX2.3_comfy",
+          "file": "vae/LTX23_audio_vae_bf16.safetensors",
           "dest": "vae/LTX23_audio_vae_bf16.safetensors",
-          "note": "LTX-2.3 audio VAE — Kijai/LTX2.3_comfy (verify exact HF path)"
+          "auth": "none"
         }
       ]
     }
