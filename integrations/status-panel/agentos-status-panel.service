@@ -29,11 +29,11 @@ KillMode=mixed
 TimeoutStopSec=10
 StandardOutput=journal
 StandardError=journal
-# The dispatch ledger (ADR-0039) lives here — RuntimeDirectory carves a writable dir under
-# $XDG_RUNTIME_DIR even though ProtectSystem=strict mounts the rest of the fs read-only. Preserve
-# it across a restart so an in-flight incident isn't lost. The durable per-incident transcript is
-# written by the (unsandboxed) systemd-run worker under ~/.local/state — never by this service.
-RuntimeDirectory=agentos-dispatch
+# The dispatch (ADR-0039) + adopt (ADR-0043) ledgers live here — RuntimeDirectory carves writable,
+# 0700 dirs under $XDG_RUNTIME_DIR even though ProtectSystem=strict mounts the rest of the fs
+# read-only. Preserve them across a restart so an in-flight incident/job isn't lost. The durable
+# transcripts are written by the (unsandboxed) systemd-run workers under ~/.local/state.
+RuntimeDirectory=agentos-dispatch agentos-adopt
 RuntimeDirectoryPreserve=yes
 # Hardening — it reads unit state + its own files, serves on loopback, and writes ONLY the runtime
 # ledger above; the heavy lifting runs in a separate, unsandboxed systemd-run worker. (Phase-1

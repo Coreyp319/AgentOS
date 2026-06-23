@@ -638,18 +638,47 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     body = "(log unavailable)"
                 self._send(200, body.encode(), "text/plain; charset=utf-8")
+        elif path == "/components.json":
+            # ADR-0043: the component registry as a progressive-adoption catalog. Read-only; the
+            # one-click `adoptable` flag + any printed sudo/manual command are folded in only for a
+            # provably-local origin (the phone sees adopted/available badges, never the adopt button).
+            import adopt as ad
+            origin = self._origin()
+            local = origin["can_copy_fix"]
+            payload = {"components": ad.list_components(local), "enabled": ad.adopt_enabled(),
+                       "origin": _public_origin(origin), "generated_at": time.time()}
+            self._send(200, json.dumps(payload).encode(), "application/json")
+        elif path == "/adopt/token":
+            # Same-origin-readable anti-CSRF token (ADR-0043, mirrors /dispatch/token).
+            import adopt as ad
+            self._send(200, json.dumps({"token": ad.TOKEN}).encode(), "application/json")
+        elif path == "/adopt.json":
+            # The live adopt ledger that drives the UI. The durable-log path is local-only.
+            import adopt as ad
+            local = self._origin()["can_copy_fix"]
+            led = ad.read_ledger()
+            jobs = [ad.public_job(e, local) for e in led.get("jobs", {}).values()]
+            jobs.sort(key=lambda e: e.get("updated", 0) or 0, reverse=True)
+            self._send(200, json.dumps({"jobs": jobs, "generated_at": time.time()}).encode(),
+                       "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self):
-        # The panel's ONLY write route (ADR-0039). It mutates no system state itself: it
-        # validates, records a ledger entry in the runtime dir, and launches an out-of-sandbox
-        # worker via systemd-run. The token is the CSRF guard (a cross-site page can POST but
-        # can't read the same-origin token); the action is also bounded server-side to a catalog
-        # service that is CURRENTLY in attention, rate-limited via the ledger.
-        if urlsplit(self.path).path != "/dispatch":
+        # The panel's write routes. Neither mutates system state itself: each validates, records a
+        # ledger entry in the runtime dir, and launches an out-of-sandbox worker via systemd-run.
+        post_path = urlsplit(self.path).path
+        if post_path == "/dispatch":
+            self._handle_dispatch()
+        elif post_path == "/adopt":
+            self._handle_adopt()
+        else:
             self._send(404, b"not found", "text/plain")
-            return
+
+    def _handle_dispatch(self):
+        # ADR-0039. The token is the CSRF guard (a cross-site page can POST but can't read the
+        # same-origin token); the action is also bounded server-side to a catalog service that is
+        # CURRENTLY in attention, rate-limited via the ledger.
         import dispatch as dsp
 
         def _err(code, msg):
@@ -696,6 +725,59 @@ class Handler(BaseHTTPRequestHandler):
         local = self._origin()["can_copy_fix"]
         self._send(202, json.dumps({"id": entry["id"], "status": "queued",
                                     "incident": dsp.public_incident({**entry, "status": "queued"}, local)}).encode(),
+                   "application/json")
+
+    def _handle_adopt(self):
+        # ADR-0043: registry adoption. Like /dispatch it mutates no system state itself — it
+        # validates against components.conf, records a ledger entry, and launches an out-of-sandbox
+        # install.sh/uninstall.sh worker. TWO gates stronger than dispatch: LOCAL-ORIGIN ONLY (the
+        # phone can't adopt) and root:no ONLY (sudo/manual stay copy-don't-execute, printed).
+        import adopt as ad
+
+        def _err(code, msg):
+            self._send(code, json.dumps({"error": msg}).encode(), "application/json")
+
+        tok = self.headers.get("X-Adopt-Token", "")
+        if not tok or not secrets.compare_digest(tok, ad.TOKEN):
+            _err(403, "bad or missing adopt token")
+            return
+        if self.headers.get("Sec-Fetch-Site", "") == "cross-site":
+            _err(403, "cross-site adopt refused")
+            return
+        # Adopting installs software ON THE BOX — desktop only. The phone sees the catalog read-only.
+        if not self._origin()["can_copy_fix"]:
+            _err(403, "adopting features is available on the desktop only")
+            return
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 4096:
+            _err(400, "missing or oversized request body")
+            return
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except Exception:
+            _err(400, "invalid json")
+            return
+        comp_id = str(body.get("id", ""))
+        action = str(body.get("action", "adopt"))
+        comp, reason = ad.validate(comp_id, action)
+        if not comp:
+            _err(409, reason)                  # 409: not malformed, just not allowed (sudo/manual/unknown)
+            return
+        entry, reason = ad.try_create_job(comp, action)    # atomic: dedupe + cap + cooldown + insert
+        if not entry:
+            _err(409, reason)
+            return
+        ok, err = ad.spawn_worker(entry["id"])
+        if not ok:                             # honest failure — never a silent no-op
+            ad.update_job(entry["id"], status="failed", outcome=err)
+            self._send(202, json.dumps({"id": entry["id"], "status": "failed", "error": err}).encode(),
+                       "application/json")
+            return
+        self._send(202, json.dumps({"id": entry["id"], "status": "queued",
+                                    "job": ad.public_job({**entry, "status": "queued"}, True)}).encode(),
                    "application/json")
 
 

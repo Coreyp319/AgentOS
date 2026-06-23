@@ -235,7 +235,10 @@ for i in $seq_order; do
     no)
       [ -n "$cmd" ] || { echo "! $id: empty $verb command in components.conf — skipping"; echo; continue; }
       echo "━━ $id ━━"
-      ( cd "$HERE" && eval "./$cmd" ) || echo "! $id $verb FAILED — continuing (re-run later; each component is independent)"
+      if ( cd "$HERE" && eval "./$cmd" ); then crc=0; else crc=1; echo "! $id $verb FAILED — continuing (re-run later; each component is independent)"; fi
+      # Structured per-component verdict for machine callers (the adopt worker, ADR-0043); opt-in so
+      # a human's terminal run isn't littered with it.
+      [ "${AGENTOS_DRIVER_RESULT:-0}" = 1 ] && echo "AGENTOS-RESULT $id $([ "$crc" -eq 0 ] && echo ok || echo fail)"
       echo ;;
     sudo)   PRINTS+=("sudo $HERE/$cmd   # $id ($verb, needs root)") ;;
     manual) PRINTS+=("$HERE/$cmd   # $id ($verb)") ;;

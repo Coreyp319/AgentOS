@@ -26,7 +26,9 @@ echo "building agentosd (release)…"
 ( cd "$REPO" && cargo build --release -p agentosd )
 
 mkdir -p "$(dirname "$BIN_DEST")"
-install -m755 "$REPO/target/release/agentosd" "$BIN_DEST"
+# Install via a temp + atomic rename: a SIGKILL (e.g. a one-click adopt hitting RuntimeMaxSec on a
+# cold build) can never leave a half-written agentosd that the units would then fail to ExecStart.
+install -m755 "$REPO/target/release/agentosd" "$BIN_DEST.new" && mv -f "$BIN_DEST.new" "$BIN_DEST"
 mkdir -p "$STATE"   # telemetry self-creates it, but the coexist-report timer's `>>` redirect needs it to exist
 
 mkdir -p "$UNIT_DIR"

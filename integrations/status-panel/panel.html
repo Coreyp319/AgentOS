@@ -307,6 +307,36 @@
     .state { min-width: 0; }
     .right { gap: var(--sp-2); }
   }
+
+  /* Features / progressive adoption (ADR-0043) — a calm browse surface below the boot stack. */
+  .features { margin-top: var(--sp-7); }
+  .features h2 { font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--muted);
+    letter-spacing: .2px; margin: 0 0 var(--sp-3); }
+  .features .hint { color: var(--faint); font-size: var(--fs-2xs); font-weight: var(--fw-regular); }
+  .feat { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4);
+    border-top: 1px solid var(--card-line); }
+  .feat:first-child { border-top: 0; }
+  .feat .fmeta { flex: 1; min-width: 0; }
+  .feat .fname { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text); }
+  .feat .ftier { font-size: var(--fs-3xs); color: var(--faint); text-transform: uppercase;
+    letter-spacing: .5px; margin-left: var(--sp-2); }
+  .feat .fdesc { font-size: var(--fs-xs); color: var(--muted); margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fstate { font-size: var(--fs-2xs); font-weight: var(--fw-semibold); padding: 2px 9px; flex: none;
+    border-radius: var(--radius-pill); border: 1px solid var(--card-line); white-space: nowrap;
+    display: inline-flex; align-items: center; gap: var(--sp-2); }
+  .fstate.adopted   { color: var(--st-up-fg);    border-color: var(--st-up-line); }
+  .fstate.available { color: var(--blue);        border-color: var(--blue-line); }
+  .fstate.needs-you { color: var(--st-amber-fg); border-color: var(--st-amber-line); }
+  .fstate.unknown   { color: var(--faint); }
+  .fstate.busy      { color: var(--blue);        border-color: var(--blue-line); }
+  .fstate.failed    { color: var(--st-red-fg);   border-color: var(--st-red-line); }
+  .fbtn { font: inherit; font-size: var(--fs-sm); cursor: pointer; flex: none;
+    padding: var(--sp-1) var(--sp-3); border-radius: var(--radius-sm);
+    border: 1px solid var(--blue-line); background: var(--blue-wash); color: var(--blue); white-space: nowrap; }
+  .fbtn:hover { background: color-mix(in srgb, var(--inst-blue) 18%, transparent); }
+  .fbtn.remove { border-color: var(--card-line-hi); background: transparent; color: var(--muted); }
+  .fbtn:disabled { opacity: .5; cursor: default; }
 </style>
 </head>
 <body>
@@ -335,6 +365,10 @@
          few seconds would be hostile to screen readers. The summary pill (aria-live) carries
          the at-a-glance state; per-row changes are visual. -->
     <main id="groups"></main>
+
+    <!-- Progressive feature adoption (ADR-0043). Populated by JS from /components.json; the
+         adopt/remove buttons appear on a local origin only (the phone sees read-only badges). -->
+    <section id="features" class="features" hidden aria-label="AgentOS features"></section>
 
     <footer>
       Live view of <code>systemctl</code> + port reachability · refreshes every few seconds<br />
@@ -413,6 +447,99 @@
       headers: { "Content-Type": "application/json", "X-Dispatch-Token": token },
       body: JSON.stringify({ id: svc, target }) })).json();
   }
+
+  // ── Features / progressive adoption (ADR-0043) ──────────────────────────────────────────────
+  let adoptByComp = {};          // comp id → its latest adopt job, refreshed each tick
+  let lastFeatSig = "";
+  const TIER_LABEL = { core: "substrate", service: "service", desktop: "desktop",
+                       hermes: "hermes", remote: "remote", privileged: "privileged" };
+  const STATE_LABEL = { adopted: "Adopted", available: "Available", "needs-you": "Needs you",
+                        unknown: "Unknown" };
+
+  function featRow(c) {
+    const job = adoptByComp[c.id];
+    const busy = job && (job.status === "queued" || job.status === "applying" || job.status === "unadopting");
+    const failed = job && job.status === "failed";
+    let stateHTML, action = "";
+    if (busy) {
+      const verb = job.status === "unadopting" ? "removing…" : "installing…";
+      stateHTML = `<span class="fstate busy"><span class="spin" aria-hidden="true"></span>${verb}</span>`;
+    } else if (failed) {
+      stateHTML = `<span class="fstate failed" title="${esc(job.outcome || "")}">didn't complete</span>`;
+    } else {
+      stateHTML = `<span class="fstate ${esc(c.state)}">${esc(STATE_LABEL[c.state] || c.state)}</span>`;
+      if (c.adoptable && c.state === "available")
+        action = `<button class="fbtn" data-adopt="${esc(c.id)}" data-action="adopt">Adopt</button>`;
+      else if (c.adoptable && c.state === "adopted" && c.removable !== false)
+        action = `<button class="fbtn remove" data-adopt="${esc(c.id)}" data-action="unadopt">Remove</button>`;
+      else if (c.manual_cmd && c.state === "needs-you")
+        action = `<button class="fbtn" data-copy="${esc(c.manual_cmd)}">Copy command</button>`;
+    }
+    return `<div class="feat"><div class="fmeta">` +
+      `<div class="fname">${esc(c.id)}<span class="ftier">${esc(TIER_LABEL[c.tier] || c.tier)}</span></div>` +
+      `<div class="fdesc">${esc(c.desc)}</div></div>${stateHTML}${action}</div>`;
+  }
+
+  function renderFeatures(data) {
+    const el = document.getElementById("features");
+    const comps = data.components || [];
+    if (!comps.length || data.enabled === false) { el.hidden = true; return; }
+    // Only re-render when the catalog or a job state actually changed — no flicker, no focus loss.
+    const sig = JSON.stringify(comps.map((c) => [c.id, c.state, c.adoptable])) + "|" +
+                JSON.stringify(Object.entries(adoptByComp).map(([k, v]) => [k, v.status]));
+    if (sig === lastFeatSig && !el.hidden) return;
+    lastFeatSig = sig;
+    el.hidden = false;
+    const note = origin.can_copy_fix
+      ? "adopt or remove components — reversible; every one has a restore"
+      : "read-only here · adopt features on the desktop";
+    el.innerHTML = `<h2>Features <span class="hint">· ${esc(note)}</span></h2>` +
+      `<div class="card">${comps.map(featRow).join("")}</div>`;
+  }
+
+  async function refreshComponents() {
+    try {
+      renderFeatures(await (await fetch("/components.json", { cache: "no-store" })).json());
+    } catch (_) { /* best-effort; the panel works without the features view */ }
+  }
+
+  async function refreshAdopt() {
+    try {
+      const d = await (await fetch("/adopt.json", { cache: "no-store" })).json();
+      const map = {};
+      for (const j of d.jobs || []) if (!map[j.comp]) map[j.comp] = j;   // jobs arrive newest-first
+      adoptByComp = map;
+    } catch (_) { /* best-effort */ }
+  }
+
+  async function postAdopt(comp, action) {
+    const { token } = await (await fetch("/adopt/token", { cache: "no-store" })).json();
+    return (await fetch("/adopt", { method: "POST", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Adopt-Token": token },
+      body: JSON.stringify({ id: comp, action }) })).json();
+  }
+
+  document.getElementById("features").addEventListener("click", async (e) => {
+    const copyBtn = e.target.closest("button[data-copy]");
+    if (copyBtn) {
+      try { await navigator.clipboard.writeText(copyBtn.dataset.copy); flash(copyBtn, "copied — run it"); }
+      catch { flash(copyBtn, "copy failed"); }
+      return;
+    }
+    const btn = e.target.closest("button[data-adopt]");
+    if (!btn) return;
+    const comp = btn.dataset.adopt, action = btn.dataset.action;
+    // Un-adopt removes an installed component; confirm once (it runs the registry restore — reversible).
+    if (action === "unadopt" &&
+        !confirm(`Remove "${comp}"? This runs its restore — you can adopt it again later.`)) return;
+    btn.disabled = true;
+    flash(btn, action === "unadopt" ? "removing…" : "adopting…");
+    try {
+      const r = await postAdopt(comp, action);
+      if (r.error) { flash(btn, String(r.error).slice(0, 44)); btn.disabled = false; }
+      else { adoptByComp[comp] = r.job || { comp, status: "queued" }; lastFeatSig = ""; await refreshComponents(); }
+    } catch (_) { flash(btn, "failed"); btn.disabled = false; }
+  });
 
   // Escape every value that reaches innerHTML — names/descs/states come from systemd + the
   // catalog and must not be able to inject markup into the login-time panel.
@@ -574,6 +701,7 @@
         ? `stale — last updated ${Math.round(age)}s ago`
         : "updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
       refreshDispatch();   // pick up live dispatch state (ADR-0039); best-effort, never blocks the panel
+      refreshAdopt().then(refreshComponents);   // feature catalog + live adopt state (ADR-0043); best-effort
     } catch (e) {
       // The status server itself is unreachable — never keep showing a calm green pill.
       pollDelay = Math.min(POLL_MAX, Math.round(pollDelay * 1.8));   // back off; don't hammer
