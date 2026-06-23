@@ -108,6 +108,15 @@ PREWARM = os.environ.get("LUCID_PREWARM", "1").lower() not in ("0", "false", "no
 # and OOM the 24 GB card if the B1 force-evict ever regressed. The generate path evicts both models first
 # (lucid_linear B1, ADR-0015 §3), so this is belt-and-suspenders, not the primary guard.
 PREWARM_KEEP_ALIVE = os.environ.get("LUCID_PREWARM_KEEP_ALIVE", "4m")
+# Context window for ALL Lucid Ollama calls (beat-gen + grounding) AND the pre-warm (ADR-0045). The
+# narrator advertises a 1M context, which Ollama otherwise loads at ~32K -> a ~5.6GB KV cache; AND with
+# NUM_PARALLEL=2 Ollama's conservative VRAM estimator then refuses to co-locate the VLM + narrator even
+# with free headroom. MEASURED on the 4090: at num_ctx 16K only ONE model stays resident; at 8K BOTH
+# co-reside (~9.9GB narrator + 3.2GB VLM = ~13GB) — so the pre-warm actually keeps them both hot. 8K is
+# the verified threshold and is ample for these short beat/grounding prompts. It MUST be identical on the
+# warm and the real call, or Ollama keys them as different instances and reloads (defeating the warm).
+# Bonus: a smaller context = faster prefill. Tunable via LUCID_NUM_CTX — but RAISING it costs co-residence.
+NUM_CTX = int(os.environ.get("LUCID_NUM_CTX", "8192"))
 
 DEFAULT_W, DEFAULT_H, DEFAULT_LEN = 720, 1280, 33  # ~2s portrait @16fps; matches the
 # workflow's baked WanImageToVideo length and stays under the VRAM-thrash line (ADR-0014 §6)
@@ -763,7 +772,8 @@ def _ollama_json(system, user, model=MODEL, images=None, temperature=0.6):
         "keep_alive": 0,            # evict right after -> frees VRAM for video
         # 0.6 is the fidelity lane (captioning/decompose); beat-gen overrides to BEAT_TEMP. The old fixed
         # 0.9 over-favored divergence and drifted off the grounded frame.
-        "options": {"temperature": temperature},
+        # num_ctx pinned (ADR-0045): MUST match the pre-warm's ctx so the warmed instance is reused, not reloaded.
+        "options": {"temperature": temperature, "num_ctx": NUM_CTX},
     }).encode()
     req = urllib.request.Request(OLLAMA + "/api/chat", data=body,
                                  headers={"Content-Type": "application/json"})
@@ -778,7 +788,11 @@ def _preload_one(model, keep_alive):
     a token (the documented preload pattern). `keep_alive` pins the weights for the dwell window. This
     warms WEIGHTS, not the prefill: the first real menu still computes its own prompt, but skips the
     big disk→VRAM load, which is the latency the user actually feels on a cold open."""
-    body = json.dumps({"model": model, "keep_alive": keep_alive}).encode()
+    # num_ctx MUST equal what _ollama_json sends (ADR-0045) — else Ollama keys this as a different model
+    # instance and the real beat call reloads instead of reusing this warm, and the two contexts also
+    # double the KV footprint (breaking co-residence).
+    body = json.dumps({"model": model, "keep_alive": keep_alive,
+                       "options": {"num_ctx": NUM_CTX}}).encode()
     req = urllib.request.Request(OLLAMA + "/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})
     urllib.request.urlopen(req, timeout=180).read()
@@ -793,7 +807,11 @@ def prewarm_models(models=None, keep_alive=None, _warm=None):
     if not PREWARM:
         return []
     keep = keep_alive if keep_alive is not None else PREWARM_KEEP_ALIVE
-    want = models if models is not None else [MODEL, NARRATOR_MODEL]
+    # Warm the BIG model (narrator) FIRST (ADR-0045): Ollama's estimator over-reserves during a load, so
+    # loading the ~10GB narrator while a VLM is already resident can evict it, whereas loading the small
+    # VLM into the space left beside the resident narrator fits cleanly (measured on the 4090). Big-first
+    # → both reliably co-reside.
+    want = models if models is not None else [NARRATOR_MODEL, MODEL]
     uniq = list(dict.fromkeys(m for m in want if m))   # de-dup, preserve order (narrator==VLM → one warm)
     warm = _warm or _preload_one
     for m in uniq:

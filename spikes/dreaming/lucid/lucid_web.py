@@ -427,7 +427,7 @@ def _prewarm_bg():
             if TURN["phase"] == "dreaming":
                 return                              # a beat is mid-generation → don't touch VRAM
         resident = S._resident_models(L.E.OLLAMA) or set()
-        want = [m for m in (L.E.MODEL, L.E.NARRATOR_MODEL) if m and m not in resident]
+        want = [m for m in (L.E.NARRATOR_MODEL, L.E.MODEL) if m and m not in resident]  # big-first (ADR-0045)
         if want:
             L.E.prewarm_models(models=want)
     except Exception:

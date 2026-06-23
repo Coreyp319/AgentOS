@@ -27,9 +27,9 @@ def check(name, cond):
 # --- prewarm_models: WHAT gets warmed --------------------------------------------------------------
 calls = []
 got = E.prewarm_models(_warm=lambda m, k: calls.append((m, k)))
-check("default warms the VLM then the narrator",
-      [m for m, _ in calls] == [E.MODEL, E.NARRATOR_MODEL])
-check("returns the list it warmed", got == [E.MODEL, E.NARRATOR_MODEL])
+check("default warms the narrator (big) FIRST, then the VLM (avoids load-time eviction)",
+      [m for m, _ in calls] == [E.NARRATOR_MODEL, E.MODEL])
+check("returns the list it warmed", got == [E.NARRATOR_MODEL, E.MODEL])
 check("uses the configured keep-alive (bounded, not -1)",
       all(k == E.PREWARM_KEEP_ALIVE for _, k in calls) and E.PREWARM_KEEP_ALIVE != -1)
 
@@ -99,6 +99,8 @@ check("preload sends NO prompt and NO messages (weights-only)",
       "prompt" not in captured.get("body", {}) and "messages" not in captured.get("body", {}))
 check("preload pins with the given keep_alive", captured.get("body", {}).get("keep_alive") == "4m")
 check("preload names the model", captured.get("body", {}).get("model") == "qwen2.5vl:3b")
+check("preload pins num_ctx == NUM_CTX (so the warm is reused, not reloaded by the real call)",
+      captured.get("body", {}).get("options", {}).get("num_ctx") == E.NUM_CTX)
 
 # --- B1 evict guard: BOTH the VLM and the narrator leave VRAM before the i2v lease ----------------
 _m, _n = E.MODEL, E.NARRATOR_MODEL
