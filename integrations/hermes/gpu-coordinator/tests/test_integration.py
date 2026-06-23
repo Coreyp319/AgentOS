@@ -11,15 +11,24 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from coordinator import LeaseCoordinator      # noqa: E402
-from lease_client import BusctlLeaseClient     # noqa: E402
+from coordinator import LeaseCoordinator              # noqa: E402
+from lease_client import BusctlLeaseClient, make_lease_client  # noqa: E402
 
 
 def _can_grant_fresh_interactive() -> bool:
     """Live test needs the daemon on the bus AND enough free VRAM for a fresh interactive
     grant to fit (est 256 + the daemon's 512 headroom floor). The GPU on this box is
-    contended by a cycling ComfyUI, so skip — rather than flap — under VRAM pressure."""
-    st = BusctlLeaseClient().status()
+    contended by a cycling ComfyUI, so skip — rather than flap — under VRAM pressure.
+
+    It ALSO needs the persistent jeepney transport: this test asserts the lease is freed
+    *synchronously* the moment `wrap` returns, but the busctl fallback can't do an explicit
+    release (each call is an ephemeral connection) — it relies on the daemon's async
+    peer-disconnect auto-release, which lands ~half a second later. Skip on the fallback
+    rather than fail; production installs jeepney (see make_lease_client / ADR-0013 B4)."""
+    client = make_lease_client()
+    if isinstance(client, BusctlLeaseClient):
+        return False
+    st = client.status()
     if st is None:
         return False
     _held, _tier, _token, free = st
@@ -27,10 +36,11 @@ def _can_grant_fresh_interactive() -> bool:
 
 
 @unittest.skipUnless(_can_grant_fresh_interactive(),
-                     "agentosd lease unreachable or GPU too full for a fresh grant")
+                     "agentosd lease unreachable, GPU too full, or busctl-only transport "
+                     "(no synchronous release — jeepney absent)")
 class TestLiveLease(unittest.TestCase):
     def test_lease_held_during_call_released_after(self):
-        client = BusctlLeaseClient()
+        client = make_lease_client()
         # small estimate so a fresh interactive grant fits whatever VRAM is free right now
         coord = LeaseCoordinator(client, tier="interactive", estimate_mib=256, renew_interval_s=3600)
 
