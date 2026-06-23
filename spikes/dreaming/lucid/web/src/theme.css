@@ -1205,3 +1205,15 @@ a{ color:var(--inst-blue) }
 .stash-gate .stash-intro{ margin-top:8px }
 .stash-gate .pp-form{ justify-content:center; max-width:520px; width:100% }
 @media (prefers-reduced-motion:reduce){ .stash-seal{ animation:none } }
+
+/* ---- Settings: honour the deliberate minimalism, give the two global controls intention ---- */
+.settings{ display:flex; flex-direction:column; gap:14px }
+.settings-intro{ margin:-4px 0 2px; max-width:56ch; font-size:var(--fs-sm); line-height:1.55; color:var(--inst-muted) }
+/* the disclosure cards gain a leading accent glyph + a card-level hover (was value-text only) + a staggered
+   reveal matching the entry/library. The glyph is decorative; the .disc-k label is the accessible name. */
+.settings .disc{ animation:gbloom .45s ease both; transition:border-color .2s ease }
+.settings .disc:nth-of-type(2){ animation-delay:.06s }
+.disc:hover{ border-color:color-mix(in srgb,var(--inst-blue) 38%,var(--hairline)) }
+.disc-ic{ flex:0 0 auto; display:grid; place-items:center; width:18px; height:18px;
+  color:var(--inst-blue); opacity:.9 }
+@media (prefers-reduced-motion:reduce){ .settings .disc{ animation:none } }

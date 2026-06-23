@@ -137,14 +137,14 @@ export default function App() {
           {active === 'stash' && <StashPanel stash={s.stash} onOpened={goDream} onNew={() => navigate('new')} />}
 
           {active === 'settings' && (
-            <>
+            <div className="settings">
               <h2 className="lib-head" data-view-heading tabIndex={-1}><span>Settings</span></h2>
+              {/* the light-settings philosophy, framed up front: most choices live with each dream */}
+              <p className="settings-intro">Lucid keeps settings light — saving, renaming, and deleting live with each
+                dream, where you make them. These two are the rare global choices.</p>
               <EngineToggle engine={s.engine} />
               <PreviewToggle />
-              <p className="lib-empty" style={{ marginTop: 12 }}>
-                Saving, renaming, and deleting live with each dream — open one to manage it.
-              </p>
-            </>
+            </div>
           )}
         </>
       )}

@@ -48,6 +48,9 @@ export function EngineToggle({ engine }: { engine?: Engine }) {
   return (
     <details className="card disc">
       <summary className="disc-sum">
+        <span className="disc-ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 2l1.7 6.1L20 10l-6.3 1.9L12 18l-1.7-6.1L4 10l6.3-1.9z" /></svg>
+        </span>
         <span className="disc-k">Dream engine</span>
         <span className="disc-v">{activeLabel}{activeGloss ? ` · ${activeGloss}` : ''}</span>
         <span className="disc-caret" aria-hidden="true">▾</span>
@@ -85,6 +88,9 @@ export function PreviewToggle() {
   return (
     <details className="card disc">
       <summary className="disc-sum">
+        <span className="disc-ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="16" height="16"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" /><circle cx="12" cy="12" r="3" /></svg>
+        </span>
         <span className="disc-k">Path previews</span>
         <span className="disc-v">{on ? 'On' : 'Off'}</span>
         <span className="disc-caret" aria-hidden="true">▾</span>
