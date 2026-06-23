@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")     # strip terminal control (ollama leaks cursor moves)
 
 HERE = Path(__file__).resolve().parent
 REGISTRY = HERE.parent / "models" / "registry.json"
@@ -45,6 +48,20 @@ DENYLIST = ("deadman44",)
 HF_RESOLVE = "https://huggingface.co/{repo}/resolve/main/{file}"
 CIVITAI_DL = "https://civitai.com/api/download/models/{version_id}"
 _OLLAMA_LIST_CACHE: list[str] | None = None
+
+# ComfyUI runtime bootstrap (image/video need it; text does not — that's why text goes first).
+COMFY_REPO = "https://github.com/comfyanonymous/ComfyUI"
+TORCH_INDEX = "https://download.pytorch.org/whl/cu124"
+# The core custom-node packs the shipped dream workflows need; the long tail is handled by
+# ComfyUI-Manager. Continue-on-failure — a missing pack degrades one workflow, not the install.
+NODE_PACKS = [
+    ("ComfyUI-Manager", "https://github.com/ltdrdata/ComfyUI-Manager"),
+    ("ComfyUI-GGUF", "https://github.com/city96/ComfyUI-GGUF"),
+    ("ComfyUI-KJNodes", "https://github.com/kijai/ComfyUI-KJNodes"),
+    ("ComfyUI-LTXVideo", "https://github.com/Lightricks/ComfyUI-LTXVideo"),
+]
+_DEFAULT_PROMPT = {"image": "a quiet harbor at dawn, soft mist on still water",
+                   "video": "a calm forest stream in morning light, gentle drifting motion"}
 
 
 # ── registry ────────────────────────────────────────────────────────────────────────────────
@@ -108,6 +125,149 @@ def _ollama_has(ref: str) -> bool:
 
 def _comfy_path(dest: str) -> Path:
     return comfy_root() / "models" / dest
+
+
+# ── ComfyUI runtime (image/video need it; clone + uv venv + torch + core node packs) ─────────
+def comfyui_present() -> bool:
+    return (comfy_root() / ".venv" / "bin" / "python").exists()
+
+
+def comfyui_setup(dry: bool = False, run=subprocess.run) -> dict:
+    """Bootstrap the ComfyUI runtime if absent: clone, make the uv venv, install torch (cu124) +
+    requirements, then the core node packs. Idempotent (skip-if-present); continue-on-failure for
+    node packs. Returns a result dict; `steps` when dry."""
+    root = comfy_root()
+    venv_py = root / ".venv" / "bin" / "python"
+    if venv_py.exists():
+        return {"ok": True, "skipped": "present", "root": str(root)}
+    uv = shutil.which("uv")
+    steps: list[list[str]] = []
+    if not (root / "main.py").exists():
+        steps.append(["git", "clone", "--depth", "1", COMFY_REPO, str(root)])
+    if uv:
+        steps.append([uv, "venv", str(root / ".venv"), "--python", "3.12"])
+        pip = [uv, "pip", "install", "--python", str(venv_py)]
+    else:
+        steps.append(["python3", "-m", "venv", str(root / ".venv")])
+        pip = [str(venv_py), "-m", "pip", "install"]
+    steps.append(pip + ["torch", "torchvision", "torchaudio", "--index-url", TORCH_INDEX])
+    steps.append(pip + ["-r", str(root / "requirements.txt")])
+    if dry:
+        return {"ok": True, "steps": steps, "node_packs": [u for _, u in NODE_PACKS]}
+    for cmd in steps:
+        r = run(cmd, check=False)
+        if getattr(r, "returncode", 1) != 0:
+            return {"ok": False, "failed": cmd, "root": str(root)}
+    cn = root / "custom_nodes"
+    cn.mkdir(parents=True, exist_ok=True)
+    for name, url in NODE_PACKS:                       # continue-on-failure — Manager covers the tail
+        d = cn / name
+        if not d.exists():
+            run(["git", "clone", "--depth", "1", url, str(d)], check=False)
+        reqs = d / "requirements.txt"
+        if reqs.exists():
+            run(pip + ["-r", str(reqs)], check=False)
+    return {"ok": True, "root": str(root)}
+
+
+# ── "text aids the rest": the local text model writes the first image/video prompt ───────────
+def _text_model_present() -> str | None:
+    reg = load_registry()
+    for m in models(reg):
+        if m.get("modality") == "text":
+            for a in artifacts(m):
+                if a.get("via") == "ollama" and _ollama_has(a.get("ref", "")):
+                    return a["ref"]
+    return None
+
+
+def suggest_opening_prompt(modality: str = "image", model: str | None = None, run=subprocess.run) -> str:
+    """Use the already-installed text model to write a vivid opening prompt for the first image/
+    video — the concrete payoff of doing text FIRST. Falls back to a calm default with no model."""
+    model = model or _text_model_present()
+    default = _DEFAULT_PROMPT.get("video" if modality == "video" else "image", _DEFAULT_PROMPT["image"])
+    if not model:
+        return default
+    meta = ("Write ONE short, vivid, SFW visual prompt (max 18 words) for a "
+            + ("short video scene" if modality == "video" else "single image")
+            + ". Reply with only the prompt — no preamble, no quotes.")
+    try:
+        r = run(["ollama", "run", model, meta], capture_output=True, text=True, timeout=60, check=False)
+        lines = [ln.strip().strip('"').strip() for ln in _ANSI.sub("", r.stdout or "").splitlines() if ln.strip()]
+        cand = (lines[0] if lines else "")[:200]
+        return cand or default
+    except Exception:
+        return default
+
+
+# ── hardware detection (so the wizard can say what fits your GPU) ─────────────────────────────
+def detect_hardware(run=subprocess.run) -> dict:
+    vram_total = vram_free = 0
+    if shutil.which("nvidia-smi"):
+        try:
+            r = run(["nvidia-smi", "--query-gpu=memory.total,memory.free",
+                     "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=8, check=False)
+            ln = (r.stdout or "").strip().splitlines()
+            if ln:
+                t, f = ln[0].split(",")
+                vram_total, vram_free = int(t.strip()), int(f.strip())   # MiB
+        except Exception:
+            pass
+    ram_gb = 0.0
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                ram_gb = int(line.split()[1]) / 1024 / 1024              # kB → GiB
+                break
+    except Exception:
+        pass
+    return {"vram_mib": vram_total, "vram_free_mib": vram_free,
+            "vram_gb": round(vram_total / 1024, 1), "ram_gb": round(ram_gb, 1)}
+
+
+def bundle_fit(reg: dict, bundle: dict, hw: dict) -> str:
+    """Does the bundle's heaviest model fit this GPU? 'fits' | 'tight' | 'too-big' | 'unknown'.
+    Heuristic: a model's loaded VRAM footprint ≈ its size_gb (GGUF/fp8 weights dominate)."""
+    vram = hw.get("vram_gb", 0)
+    if not vram:
+        return "unknown"
+    biggest = max((float(m.get("size_gb", 0) or 0)
+                   for mid in bundle.get("models", []) if (m := find_model(reg, mid))), default=0.0)
+    if biggest <= vram * 0.92:
+        return "fits"
+    if biggest <= vram:
+        return "tight"
+    return "too-big"
+
+
+# ── optional: a quick research agent suggests the latest models for this hardware ────────────
+# Model PROPOSES (web-search reasoning), human DISPOSES (we print suggestions; never auto-edit the
+# registry). Inherits the dispatch tool-discipline: run `claude` headless, allow only web tools.
+def research_models(modality: str = "video", hw: dict | None = None, run=subprocess.run,
+                    timeout: int = 200, claude: str | None = None) -> dict:
+    hw = hw or detect_hardware()
+    claude = claude or shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+    if not Path(claude).exists():
+        return {"ok": False, "error": "the `claude` CLI isn't installed — needed to research models"}
+    prompt = (
+        f"You are AgentOS's model-currency scout. Recommend the BEST current local, open-weights "
+        f"{modality}-generation model(s) for a single GPU with {hw.get('vram_gb')} GB VRAM and "
+        f"{hw.get('ram_gb')} GB system RAM, runnable locally via "
+        f"{'ComfyUI' if modality in ('image', 'video') else 'Ollama'} as of today. Give 2-3 concrete "
+        f"picks: name, HuggingFace repo (or Ollama ref), approx size/quant that fits this VRAM, and a "
+        f"one-line why. Prefer permissive licenses. Exclude any minor-targeted or non-consensual "
+        f"real-person-likeness model. Be concise — a short ranked list, no preamble."
+    )
+    cmd = [claude, "-p", prompt, "--model", os.environ.get("AGENTOS_RESEARCH_MODEL", "claude-sonnet-4-6"),
+           "--allowedTools", "WebSearch", "WebFetch", "--output-format", "text"]
+    try:
+        r = run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except Exception as e:
+        return {"ok": False, "error": f"research failed: {e}"}
+    out = (r.stdout or "").strip()
+    if not out:
+        return {"ok": False, "error": "no output — is `claude` authenticated?"}
+    return {"ok": True, "modality": modality, "hardware": hw, "suggestions": out}
 
 
 # ── artifact / model presence ────────────────────────────────────────────────────────────────
@@ -303,6 +463,13 @@ _GLYPH = {"have": "✓", "partial": "◐", "fetch": "↓", "unknown": "?", "skip
 
 def _cmd_detect(reg: dict) -> int:
     print("AgentOS model detection — brownfield report (nothing is changed)\n")
+    hw = detect_hardware()
+    print("RUNTIME")
+    print(f"  {'✓ installed' if comfyui_present() else '✗ missing  '} ComfyUI"
+          f"  ({comfy_root()}) — needed for image + video")
+    if hw["vram_gb"]:
+        print(f"  GPU: {hw['vram_gb']} GB VRAM · {hw['ram_gb']} GB system RAM")
+    print()
     by_mod: dict[str, list] = {}
     for m in models(reg):
         if m.get("modality") == "selector" or m.get("runtime") == "selector":
@@ -404,6 +571,59 @@ def _cmd_creds(svc: str, action: str) -> int:
     return 0 if ok else 1
 
 
+def _cmd_comfyui(yes: bool) -> int:
+    if comfyui_present():
+        print(f"✓ ComfyUI already installed at {comfy_root()} — nothing to do.")
+        return 0
+    print(f"ComfyUI isn't installed. This clones it to {comfy_root()}, builds a uv venv, and installs "
+          "PyTorch (cu124) + the core node packs — several GB, a few minutes.")
+    if not yes:
+        print("Re-run with --yes to install it.")
+        return 3
+    res = comfyui_setup()
+    if res.get("ok"):
+        print(f"✓ ComfyUI ready at {res.get('root')}")
+        return 0
+    print(f"! ComfyUI setup failed at: {' '.join(res.get('failed', []))}", file=sys.stderr)
+    return 1
+
+
+def _cmd_express(reg: dict, want_video: bool, mature: bool, yes: bool) -> int:
+    """Ordered for speed + leverage: TEXT first (fast, no account — then it writes your prompts),
+    then the ComfyUI runtime, then IMAGE, then VIDEO."""
+    print("Express setup — text first (it's quick, and the model then helps write your prompts).\n")
+    print("① text"); _cmd_fetch(reg, "text", False, True)
+    if not comfyui_present():
+        print("\n② ComfyUI runtime (needed for image + video)")
+        if yes:
+            _cmd_comfyui(True)
+        else:
+            print("  re-run `express --yes` to install ComfyUI (~GB); stopping after text for now.")
+            print(f"\n✦ Text is ready. Try it: ollama run {_text_model_present() or '<your model>'}")
+            return 0
+    if comfyui_present():
+        print("\n③ image"); _cmd_fetch(reg, "image", False, True)
+        if want_video:
+            vb = "video-wan" if mature else "video-10eros"
+            print(f"\n④ video ({vb})"); _cmd_fetch(reg, vb, mature, yes)
+    print(f"\n✦ Your first prompt (written by your text model): \"{suggest_opening_prompt('image')}\"")
+    print("  Open Lucid → http://127.0.0.1:8765 and make it.")
+    return 0
+
+
+def _cmd_research(modality: str) -> int:
+    hw = detect_hardware()
+    print(f"Researching the latest {modality} models for your {hw.get('vram_gb')} GB GPU "
+          f"(this asks an agent to search the web — a moment)…\n")
+    res = research_models(modality, hw)
+    if not res.get("ok"):
+        print(f"! {res.get('error')}", file=sys.stderr)
+        return 1
+    print(res["suggestions"])
+    print("\n(These are suggestions — review them, then edit ../models/registry.json to adopt any.)")
+    return 0
+
+
 def _cmd_onboard(reg: dict) -> int:
     """The guided entry: show what's here, what's available, and how to get to a first result.
     (The rich web wizard is ADR-0044's later surface; this is the honest CLI front door.)"""
@@ -411,12 +631,13 @@ def _cmd_onboard(reg: dict) -> int:
     print("─" * 64)
     print("Curated bundles you can set up (only the gaps download — nothing already here):\n")
     _cmd_bundles(reg)
-    print("\nNext:")
-    print("  setup.py plan <bundle>                 # see exactly what would download")
-    print("  setup.py fetch <bundle> [--yes]        # fetch the gap (SFW, no account)")
-    print("  setup.py fetch <bundle> --mature --yes # include the 18+ lane (needs a token)")
+    print("\nNext (recommended order — text first: it's quick and then writes your prompts):")
+    print("  setup.py express [video] [--mature] [--yes]  # text → ComfyUI → image → video, in order")
+    print("  setup.py comfyui --yes                 # install the ComfyUI runtime (image/video need it)")
+    print("  setup.py fetch <bundle> [--yes]        # one bundle's gap (--mature for the 18+ lane)")
     print("  setup.py creds set civitai             # store a free Civitai token (mature video)")
-    print("\nWhen a bundle is fully present, open Lucid (http://127.0.0.1:8765) and make one.")
+    print("  setup.py research [video]              # ask an agent for the latest models for your GPU")
+    print("\nOr skip all this and run the wizard:  ./install.sh --onboard --web")
     return 0
 
 
@@ -432,6 +653,12 @@ def main(argv: list[str]) -> int:
         return _cmd_onboard(reg)
     if cmd == "detect":
         return _cmd_detect(reg)
+    if cmd == "comfyui":
+        return _cmd_comfyui(yes)
+    if cmd == "express":
+        return _cmd_express(reg, want_video="video" in pos, mature=mature, yes=yes)
+    if cmd == "research":
+        return _cmd_research(pos[0] if pos else "video")
     if cmd == "bundles":
         return _cmd_bundles(reg)
     if cmd == "plan":

@@ -253,5 +253,70 @@ class Keyring(unittest.TestCase):
         self.assertIsNone(setup.keyring_get("civitai"))
 
 
+class Runtime(ComfyTmp):
+    def test_comfyui_present_false_then_true(self):
+        self.assertFalse(setup.comfyui_present())          # COMFY_ROOT is the tmp; no .venv
+        (Path(self.tmp) / ".venv" / "bin").mkdir(parents=True)
+        (Path(self.tmp) / ".venv" / "bin" / "python").write_text("")
+        self.assertTrue(setup.comfyui_present())
+
+    def test_comfyui_setup_skips_when_present(self):
+        (Path(self.tmp) / ".venv" / "bin").mkdir(parents=True)
+        (Path(self.tmp) / ".venv" / "bin" / "python").write_text("")
+        self.assertEqual(setup.comfyui_setup(dry=True)["skipped"], "present")
+
+    def test_comfyui_setup_dry_steps(self):
+        steps = " ".join(" ".join(s) for s in setup.comfyui_setup(dry=True)["steps"])
+        self.assertIn("git clone", steps)
+        self.assertIn("ComfyUI", steps)
+        self.assertIn("torch", steps)
+        self.assertIn(setup.TORCH_INDEX, steps)
+
+    def test_detect_hardware_parses_nvidia_smi(self):
+        ow = setup.shutil.which
+        setup.shutil.which = lambda x: "/usr/bin/nvidia-smi" if x == "nvidia-smi" else None
+        try:
+            hw = setup.detect_hardware(run=lambda *a, **k: type("R", (), {"stdout": "24564, 19000\n", "returncode": 0})())
+        finally:
+            setup.shutil.which = ow
+        self.assertEqual(hw["vram_mib"], 24564)
+        self.assertGreater(hw["vram_gb"], 23)
+
+    def test_bundle_fit(self):
+        reg = {"models": [{"id": "big", "size_gb": 24}, {"id": "small", "size_gb": 2}],
+               "bundles": [{"id": "b", "models": ["big", "small"]}]}
+        b = reg["bundles"][0]
+        self.assertEqual(setup.bundle_fit(reg, b, {"vram_gb": 48}), "fits")
+        self.assertEqual(setup.bundle_fit(reg, b, {"vram_gb": 24}), "tight")
+        self.assertEqual(setup.bundle_fit(reg, b, {"vram_gb": 12}), "too-big")
+        self.assertEqual(setup.bundle_fit(reg, b, {"vram_gb": 0}), "unknown")
+
+
+class TextAidsRest(ComfyTmp):
+    def test_suggest_prompt_strips_ansi_from_model(self):
+        out = "A serene beach at sunset\x1b[1D\x1b[K"
+        res = setup.suggest_opening_prompt("image", model="m:1",
+                                           run=lambda *a, **k: type("R", (), {"stdout": out, "returncode": 0})())
+        self.assertEqual(res, "A serene beach at sunset")
+
+    def test_suggest_prompt_default_without_model(self):
+        old = setup._text_model_present
+        setup._text_model_present = lambda: None
+        try:
+            self.assertIn("forest", setup.suggest_opening_prompt("video"))
+        finally:
+            setup._text_model_present = old
+
+    def test_research_happy_path(self):
+        f = tempfile.mkstemp(prefix="fakeclaude-")[1]
+        res = setup.research_models("video", hw={"vram_gb": 24, "ram_gb": 62}, claude=f,
+                                    run=lambda *a, **k: type("R", (), {"stdout": "1. Wan 2.2 14B fp8 ...\n", "returncode": 0})())
+        self.assertTrue(res["ok"])
+        self.assertIn("Wan", res["suggestions"])
+
+    def test_research_no_claude_is_honest(self):
+        self.assertFalse(setup.research_models("video", claude="/no/such/claude")["ok"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

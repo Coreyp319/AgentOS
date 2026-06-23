@@ -71,7 +71,10 @@
   <div class="sub">Pick what you want to make. We detect what's already here and download only what's missing.</div>
   <div class="trust"><b>Everything runs on this machine.</b> Nothing about your choices or your creations leaves the box.</div>
 
-  <h2>What do you want to make?</h2>
+  <h2>Your machine</h2>
+  <div id="runtime" class="card"><div class="feat"><div class="meta"><div class="dsc">checking your hardware…</div></div></div></div>
+
+  <h2>What do you want to make? <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--faint)">· start with text — it's quick and helps write your prompts</span></h2>
   <div id="bundles" class="card"><div class="feat"><div class="meta"><div class="dsc">checking what's installed…</div></div></div></div>
 
   <div id="progress"></div>
@@ -103,7 +106,7 @@
   const ESC={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
   const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>ESC[c]);
   const ICON={text:"✍",image:"🖼",video:"🎞"};
-  let TOKEN="", busy={};
+  let TOKEN="", busy={}, STATE={};
 
   async function tok(){ if(!TOKEN) TOKEN=(await (await fetch("/api/token")).json()).token; return TOKEN; }
   async function post(path,body){
@@ -115,21 +118,24 @@
     const ready=b.gap===0;
     const mature=b.rating==="mature";
     const ico=ICON[b.modality]||"•";
+    const blocked = b.needs_comfyui && !STATE.comfyui && !ready;   // image/video need the runtime first
     let right;
     if(busy[b.id]) right=`<span class="state busy">setting up…</span>`;
-    else if(ready) right=`<a class="btn go" href="http://127.0.0.1:8765" target="_blank" rel="noopener">Make one ↗</a>`;
+    else if(ready) right=`<a class="btn go" href="${STATE.lucid_url||'http://127.0.0.1:8765'}" target="_blank" rel="noopener">Make one ↗</a>`;
+    else if(blocked) right=`<span class="state" style="color:var(--faint)" title="Install ComfyUI above first">needs ComfyUI ↑</span>`;
     else {
-      const lab = b.needs_auth&&b.needs_auth.length ? "Fetch (needs token)" : "Set up";
+      const lab = b.needs_auth&&b.needs_auth.length ? "Set up (needs token)" : "Set up";
       right=`<button class="btn" data-fetch="${esc(b.id)}" data-mature="${mature?1:0}">${lab}</button>`;
     }
+    const fit = b.fit==="too-big" ? ` · ⚠ may not fit your GPU` : b.fit==="tight" ? ` · tight on your GPU` : "";
     const note = ready ? "ready — every model is here"
       : `${b.present}/${b.total} present · ~${b.approx_gb} GB to download`
-        + (b.manual?` · ${b.manual} file(s) need a manual download`:"");
+        + (b.manual?` · ${b.manual} manual file(s)`:"") + fit;
     return `<div class="feat">
       <div class="ico" aria-hidden="true">${ico}</div>
       <div class="meta">
         <div class="nm">${esc(b.id)}${mature?'<span class="tag">18+</span>':''}</div>
-        <div class="dsc">${esc(b.desc)}</div>
+        <div class="dsc">${esc(b.why||b.desc)}</div>
         <div class="size">${esc(note)}</div>
       </div>
       <span class="state ${ready?'ready':'gap'}">${ready?'✓ ready':''}</span>
@@ -137,9 +143,23 @@
     </div>`;
   }
 
+  function renderRuntime(s){
+    const hw=s.hardware||{};
+    const gpu = hw.vram_gb ? `${hw.vram_gb} GB GPU · ${hw.ram_gb} GB RAM` : "GPU not detected";
+    const comfy = s.comfyui
+      ? `<div class="feat"><div class="ico" aria-hidden="true">🧩</div><div class="meta"><div class="nm">ComfyUI runtime</div><div class="dsc">installed — image &amp; video can run</div></div><span class="state ready">✓ ready</span></div>`
+      : `<div class="feat"><div class="ico" aria-hidden="true">🧩</div><div class="meta"><div class="nm">ComfyUI runtime</div><div class="dsc">not installed — needed for image &amp; video (clones it + sets up, several GB)</div></div><button class="btn" id="installComfy">Install</button></div>`;
+    document.getElementById("runtime").innerHTML =
+      `<div class="feat"><div class="ico" aria-hidden="true">🖥️</div><div class="meta"><div class="nm">${esc(gpu)}</div>`
+      + `<div class="dsc">we only offer models that fit your GPU</div></div>`
+      + `<button class="btn ghost" id="research" title="Ask an agent to web-search the latest models for this GPU">Find latest ↗</button></div>`
+      + comfy;
+  }
+
   async function refreshState(){
     try{
       const s=await (await fetch("/api/state",{cache:"no-store"})).json();
+      STATE=s; renderRuntime(s);
       document.getElementById("bundles").innerHTML=(s.bundles||[]).map(bundleRow).join("")
         || `<div class="feat"><div class="meta"><div class="dsc">no bundles in the registry.</div></div></div>`;
     }catch(_){}
@@ -148,27 +168,35 @@
   async function refreshJobs(){
     try{
       const d=await (await fetch("/api/jobs",{cache:"no-store"})).json();
-      const jobs=(d.jobs||[]).filter(j=>j.status==="running"||j.status==="failed"
-        || (Date.now()/1000 - 0) );  // keep recent
       const el=document.getElementById("progress");
-      const active=(d.jobs||[]).filter(j=>j.status!=="done"||busy[j.bundle]);
-      if(!d.jobs||!d.jobs.length){el.innerHTML="";}
-      else{
-        el.innerHTML=`<h2>Downloading</h2><div class="card">`+d.jobs.map(j=>{
-          const pct=j.total?Math.round(100*j.present/j.total):0;
-          const st=j.status==="running"?`downloading… ${j.present}/${j.total} models`
-            :j.status==="done"?`✓ done — ${j.present}/${j.total} present`:`couldn't finish — see terminal`;
-          if(j.status!=="running") busy[j.bundle]=false;
-          return `<div class="feat" style="display:block">
-            <div style="display:flex;justify-content:space-between"><b style="font-size:.9rem">${esc(j.bundle)}</b>
-            <span class="state ${j.status==='done'?'ready':j.status==='failed'?'':'busy'}">${esc(st)}</span></div>
-            <div class="bar"><i style="width:${pct}%"></i></div>
-            ${j.tail?`<div class="tail">${esc(j.tail)}</div>`:""}</div>`;
-        }).join("")+`</div>`;
-      }
-      if(active.length) refreshState();   // models landing → re-render the bundle "ready" state
+      if(!d.jobs||!d.jobs.length){ el.innerHTML=""; return; }
+      el.innerHTML=`<h2>Activity</h2><div class="card">`+d.jobs.map(j=>{
+        const pct=j.total?Math.round(100*j.present/j.total):(j.status==="done"?100:0);
+        let st;
+        if(j.kind==="research") st = j.status==="running"?"searching the web…":j.status==="done"?"done":"couldn't finish";
+        else st = j.status==="running"?`working…${j.total?` ${j.present}/${j.total}`:""}`:j.status==="done"?"✓ done":"couldn't finish — see terminal";
+        if(j.status!=="running" && j.bundle) busy[j.bundle]=false;
+        const bar = j.kind==="research" ? "" : `<div class="bar"><i style="width:${pct}%"></i></div>`;
+        return `<div class="feat" style="display:block">
+          <div style="display:flex;justify-content:space-between"><b style="font-size:.9rem">${esc(j.label||j.bundle)}</b>
+          <span class="state ${j.status==='done'?'ready':j.status==='failed'?'':'busy'}">${esc(st)}</span></div>
+          ${bar}${j.tail?`<div class="tail">${esc(j.tail)}</div>`:""}</div>`;
+      }).join("")+`</div>`;
+      if(d.jobs.some(j=>j.status==="running"||j.status==="done")) refreshState();   // landing → re-render ready state
     }catch(_){}
   }
+
+  document.getElementById("runtime").addEventListener("click",async e=>{
+    if(e.target.id==="installComfy"){
+      if(!confirm("Install the ComfyUI runtime? This clones it and downloads PyTorch — several GB, a few minutes.")) return;
+      e.target.disabled=true; await post("/api/comfyui",{}); refreshJobs();
+    }
+    if(e.target.id==="research"){
+      const m=prompt("Find the latest models for which? (text, image, or video)","video");
+      if(!m) return;
+      await post("/api/research",{modality:m.trim().toLowerCase()}); refreshJobs();
+    }
+  });
 
   document.getElementById("bundles").addEventListener("click",async e=>{
     const btn=e.target.closest("button[data-fetch]"); if(!btn) return;

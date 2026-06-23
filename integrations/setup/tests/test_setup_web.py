@@ -88,6 +88,18 @@ class StartFetch(unittest.TestCase):
         job, err = sw.start_fetch(setup.load_registry(), "ghost", mature=False, spawn=lambda a, **k: _FakeProc())
         self.assertIsNone(job)
 
+    def test_start_comfyui_argv(self):
+        cap = {}
+        sw.start_comfyui(spawn=lambda a, **k: (cap.setdefault("a", a), _FakeProc())[1])
+        self.assertIn("comfyui", cap["a"])
+        self.assertIn("--yes", cap["a"])
+
+    def test_start_research_argv(self):
+        cap = {}
+        sw.start_research("video", spawn=lambda a, **k: (cap.setdefault("a", a), _FakeProc())[1])
+        self.assertIn("research", cap["a"])
+        self.assertIn("video", cap["a"])
+
 
 class Routes(unittest.TestCase):
     def setUp(self):
@@ -153,6 +165,23 @@ class Routes(unittest.TestCase):
         st, body = self._post("/api/fetch", {"bundle": "image"}, token=sw.TOKEN)
         self.assertEqual(st, 202)
         self.assertEqual(json.loads(body)["status"], "started")
+
+    def test_state_has_comfyui_and_hardware(self):
+        d = json.loads(self._req("GET", "/api/state")[1])
+        self.assertIn("comfyui", d)
+        self.assertIn("hardware", d)
+        for b in d["bundles"]:
+            self.assertIn("fit", b)
+            self.assertIn("order", b)
+
+    def test_comfyui_route_needs_token(self):
+        self.assertEqual(self._post("/api/comfyui", {})[0], 403)
+
+    def test_comfyui_route_starts_job(self):
+        self.assertEqual(self._post("/api/comfyui", {}, token=sw.TOKEN)[0], 202)
+
+    def test_research_route_starts_job(self):
+        self.assertEqual(self._post("/api/research", {"modality": "video"}, token=sw.TOKEN)[0], 202)
 
     def test_creds_stores_to_keyring_not_logged(self):
         captured = {}

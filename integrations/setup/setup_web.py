@@ -55,8 +55,9 @@ def _runtime_dir() -> Path:
 def build_state(reg: dict | None = None) -> dict:
     reg = reg or setup.load_registry()
     setup._invalidate_ollama_cache()            # always reflect a just-finished pull
+    hw = setup.detect_hardware()
     out_bundles = []
-    for b in setup.bundles(reg):
+    for b in setup.bundles(reg):                # registry is pre-sorted text → image → video
         is_mature = b.get("rating") == "mature"
         plan = setup.plan_bundle(reg, b, include_mature=is_mature)
         present = sum(1 for r in plan["rows"] if r["state"] == "have")
@@ -65,11 +66,12 @@ def build_state(reg: dict | None = None) -> dict:
             "desc": b.get("desc", ""), "present": present, "total": len(plan["rows"]),
             "gap": len(plan["gap"]), "approx_gb": plan["approx_gb"],
             "needs_auth": plan["needs_auth"], "manual": sum(1 for a in plan["gap"] if a.get("via") == "manual"),
-            "ready": plan["gap"] == 0 and not is_mature or (plan["gap"] == 0),
+            "order": b.get("order", 9), "needs_comfyui": b.get("needs_comfyui", False),
+            "why": b.get("why", ""), "fit": setup.bundle_fit(reg, b, hw),
         })
     creds = {svc: bool(setup.keyring_get(svc)) for svc in ("huggingface", "civitai")}
-    return {"bundles": out_bundles, "creds": creds, "lucid_url": "http://127.0.0.1:8765",
-            "generated_at": time.time()}
+    return {"bundles": out_bundles, "creds": creds, "comfyui": setup.comfyui_present(),
+            "hardware": hw, "lucid_url": "http://127.0.0.1:8765", "generated_at": time.time()}
 
 
 # ── fetch jobs (a plain subprocess of the engine; progress = models present / total) ──────────
@@ -91,30 +93,61 @@ def start_fetch(reg: dict, bundle_id: str, mature: bool, spawn=subprocess.Popen)
         argv += ["--yes"]
     fh = open(log, "w")
     proc = spawn(argv, stdout=fh, stderr=subprocess.STDOUT)
-    job = {"id": jid, "bundle": bundle_id, "mature": bool(mature), "proc": proc,
-           "log": str(log), "started": time.time()}
+    job = {"id": jid, "kind": "fetch", "label": bundle_id, "bundle": bundle_id,
+           "mature": bool(mature), "proc": proc, "log": str(log), "started": time.time()}
     with _jobs_lock:
         _jobs[jid] = job
     return job, ""
 
 
+def _spawn_simple(kind: str, argv: list[str], label: str, spawn=subprocess.Popen) -> dict:
+    """A one-shot job (ComfyUI install / research) — spawn setup.py, log to the runtime dir."""
+    with _jobs_lock:
+        if any(j["kind"] == kind and j["proc"] and j["proc"].poll() is None for j in _jobs.values()):
+            return None
+    jid = secrets.token_hex(8)
+    log = _runtime_dir() / f"{kind}-{jid}.log"
+    fh = open(log, "w")
+    proc = spawn(argv, stdout=fh, stderr=subprocess.STDOUT)
+    job = {"id": jid, "kind": kind, "label": label, "proc": proc, "log": str(log), "started": time.time()}
+    with _jobs_lock:
+        _jobs[jid] = job
+    return job
+
+
+def start_comfyui(spawn=subprocess.Popen) -> dict | None:
+    return _spawn_simple("comfyui", ["python3", str(HERE / "setup.py"), "comfyui", "--yes"],
+                         "ComfyUI runtime", spawn=spawn)
+
+
+def start_research(modality: str, spawn=subprocess.Popen) -> dict | None:
+    modality = modality if modality in ("text", "image", "video") else "video"
+    return _spawn_simple("research", ["python3", str(HERE / "setup.py"), "research", modality],
+                         f"latest {modality} models", spawn=spawn)
+
+
 def job_view(reg: dict, job: dict) -> dict:
     proc = job.get("proc")
     rc = proc.poll() if proc else None
-    b = setup.find_bundle(reg, job["bundle"])
+    kind = job.get("kind", "fetch")
     present = total = 0
-    if b:
-        plan = setup.plan_bundle(reg, b, include_mature=(b.get("rating") == "mature"))
-        present = sum(1 for r in plan["rows"] if r["state"] == "have")
-        total = len(plan["rows"])
+    if kind == "fetch":
+        b = setup.find_bundle(reg, job.get("bundle", ""))
+        if b:
+            plan = setup.plan_bundle(reg, b, include_mature=(b.get("rating") == "mature"))
+            present = sum(1 for r in plan["rows"] if r["state"] == "have")
+            total = len(plan["rows"])
+    elif kind == "comfyui":
+        present, total = (1, 1) if setup.comfyui_present() else (0, 1)
     status = "running" if rc is None else ("done" if rc == 0 else "failed")
+    n = 30 if kind == "research" else 6              # research's result IS its output — show more
     tail = ""
     try:
-        tail = "\n".join(Path(job["log"]).read_text(errors="replace").splitlines()[-6:])
+        tail = "\n".join(Path(job["log"]).read_text(errors="replace").splitlines()[-n:])
     except Exception:
         pass
-    return {"id": job["id"], "bundle": job["bundle"], "status": status,
-            "present": present, "total": total, "tail": tail}
+    return {"id": job["id"], "kind": kind, "label": job.get("label", job.get("bundle", "")),
+            "status": status, "present": present, "total": total, "tail": tail}
 
 
 def jobs_view(reg: dict) -> list[dict]:
@@ -212,6 +245,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ok = setup.keyring_set(svc, token)        # token to keyring via stdin; never logged
             self._json(200 if ok else 500, {"ok": ok, "svc": svc})
+        elif path == "/api/comfyui":
+            if not self._guard():
+                return
+            job = start_comfyui()
+            self._json(202 if job else 409,
+                       {"id": job["id"], "status": "started"} if job else {"error": "already installing"})
+        elif path == "/api/research":
+            if not self._guard():
+                return
+            job = start_research(str(self._body().get("modality", "video")))
+            self._json(202 if job else 409,
+                       {"id": job["id"], "status": "started"} if job else {"error": "already researching"})
         else:
             self._send(404, b"not found", "text/plain")
 

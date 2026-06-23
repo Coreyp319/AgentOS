@@ -166,17 +166,17 @@
         },
         {
           "via": "civitai",
-          "version_id": null,
+          "version_id": "2073605",
           "dest": "loras/NSFW-22-H-e8.safetensors",
           "auth": "civitai",
-          "note": "Civitai: NSFW-22 anatomy LoRA (high)"
+          "note": "Civitai model 1307155 (CubeyAI) — WAN General NSFW LoRA, 2.2 HIGH e8"
         },
         {
           "via": "civitai",
-          "version_id": null,
+          "version_id": "2083303",
           "dest": "loras/NSFW-22-L-e8.safetensors",
           "auth": "civitai",
-          "note": "Civitai: NSFW-22 anatomy LoRA (low)"
+          "note": "Civitai model 1307155 (CubeyAI) — WAN General NSFW LoRA, 2.2 LOW e8"
         },
         {
           "via": "hf",
@@ -285,7 +285,10 @@
         "narrator",
         "narrator-beats",
         "b2-vision"
-      ]
+      ],
+      "order": 1,
+      "needs_comfyui": false,
+      "why": "Start here — fast, no account, and the text model writes prompts for the rest."
     },
     {
       "id": "image",
@@ -298,7 +301,10 @@
         "b2-vision",
         "narrator",
         "narrator-beats"
-      ]
+      ],
+      "order": 2,
+      "needs_comfyui": true,
+      "why": "Needs the ComfyUI runtime."
     },
     {
       "id": "video-10eros",
@@ -312,7 +318,10 @@
         "b2-vision",
         "narrator",
         "narrator-beats"
-      ]
+      ],
+      "order": 3,
+      "needs_comfyui": true,
+      "why": "Needs the ComfyUI runtime."
     },
     {
       "id": "video-wan",
@@ -326,7 +335,10 @@
         "b2-vision",
         "narrator",
         "narrator-beats"
-      ]
+      ],
+      "order": 3,
+      "needs_comfyui": true,
+      "why": "Needs the ComfyUI runtime + a Civitai token for the 18+ models."
     }
   ]
 }
