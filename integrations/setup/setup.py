@@ -354,14 +354,15 @@ def keyring_clear(svc: str) -> bool:
 
 
 # ── fetch (the real download; idempotent skip-if-present) ────────────────────────────────────
-def _curl_cmd(url: str, dest: Path, token: str | None) -> list[str]:
-    """A resumable curl to a .part file (atomic rename on success happens in fetch_artifact).
-    The token is passed via a header arg here; callers that have a token use an env-indirection
-    form in fetch_artifact so it never lands in argv. This bare form is for the no-auth case."""
+def _curl_cmd(url: str, dest: Path, auth: bool) -> list[str]:
+    """A resumable curl to a .part file (atomic rename on success in fetch_artifact). When auth is
+    needed, `--config -` makes curl read the Authorization header from STDIN — so the token NEVER
+    lands in argv (it would otherwise be world-visible in /proc/<pid>/cmdline)."""
     cmd = ["curl", "-fL", "--retry", "3", "--retry-delay", "2", "-C", "-",
-           "-A", "agentos-setup", "-o", str(dest) + ".part", url]
-    if token:
-        cmd[1:1] = ["-H", f"Authorization: Bearer {token}"]
+           "-A", "agentos-setup", "-o", str(dest) + ".part"]
+    if auth:
+        cmd += ["--config", "-"]
+    cmd.append(url)
     return cmd
 
 
@@ -397,12 +398,14 @@ def fetch_artifact(art: dict, token: str | None = None, run=subprocess.run, dry:
         need_tok = artifact_auth(art) != "none"
         if need_tok and not token:
             return {"ok": False, "skipped": "needs-token", "reason": f"needs a {artifact_auth(art)} token"}
+        cmd = _curl_cmd(url, dest, auth=need_tok)
         if dry:
-            return {"ok": True, "cmd": _curl_cmd(url, dest, token if need_tok else None)}
+            return {"ok": True, "cmd": cmd, "stdin_auth": need_tok}
         dest.parent.mkdir(parents=True, exist_ok=True)
-        cmd = _curl_cmd(url, dest, token if need_tok else None)
-        r = run(cmd, check=False)
-        if getattr(r, "returncode", 1) == 0 and (Path(str(dest) + ".part")).exists():
+        # the token (if any) goes to curl on STDIN as a config directive — never argv (/proc leak)
+        stdin = f'header = "Authorization: Bearer {token}"\n' if need_tok else None
+        r = run(cmd, input=stdin, text=True, check=False) if stdin is not None else run(cmd, check=False)
+        if getattr(r, "returncode", 1) == 0 and Path(str(dest) + ".part").exists():
             os.replace(str(dest) + ".part", str(dest))            # atomic: only a complete file lands
             return {"ok": True, "dest": str(dest)}
         return {"ok": getattr(r, "returncode", 1) == 0, "dest": str(dest)}

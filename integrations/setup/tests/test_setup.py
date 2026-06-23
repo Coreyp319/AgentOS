@@ -174,13 +174,28 @@ class FetchCmd(ComfyTmp):
         self.assertEqual(url, "https://huggingface.co/a/b/resolve/main/f.safetensors")
         self.assertNotIn("Authorization: Bearer", " ".join(res["cmd"]))
 
-    def test_civitai_curl_versionid_with_token(self):
+    def test_civitai_token_not_in_argv_uses_stdin(self):
         res = setup.fetch_artifact(
             {"via": "civitai", "version_id": "42", "dest": "unet/u.gguf", "auth": "civitai"},
             token="secrettoken", dry=True)
         joined = " ".join(res["cmd"])
         self.assertIn("https://civitai.com/api/download/models/42", joined)
-        self.assertIn("Authorization: Bearer secrettoken", joined)
+        self.assertNotIn("secrettoken", joined)             # token must NOT be in argv (/proc leak)
+        self.assertIn("--config", res["cmd"])                # auth header comes from stdin instead
+        self.assertTrue(res.get("stdin_auth"))
+
+    def test_token_fed_to_curl_on_stdin(self):
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["input"] = kw.get("input")
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"x")    # "download" the .part
+            return _R(0)
+
+        setup.fetch_artifact({"via": "civitai", "version_id": "42", "dest": "unet/u.gguf", "auth": "civitai"},
+                             token="sekret", run=fake_run)
+        self.assertIn("sekret", captured["input"] or "")
+        self.assertIn("Authorization: Bearer", captured["input"] or "")
 
     def test_gated_without_token_is_skipped_not_failed(self):
         res = setup.fetch_artifact({"via": "civitai", "version_id": "42", "dest": "u.gguf", "auth": "civitai"})
