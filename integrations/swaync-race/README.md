@@ -11,41 +11,50 @@ name **before** plasmashell initialises its notification engine. swaync is alrea
 (`Type=dbus` + `BusName=org.freedesktop.Notifications`; plasmashell ordered `After=swaync`), but it
 kept losing the race.
 
-## Root cause (v2, from a live boot journal, 2026-06-22)
-swaync queries `org.freedesktop.portal.Settings` during init **before** acquiring the bus name. On
-a cold boot the xdg-desktop-portal frontend is D-Bus-activated and not yet warm, so swaync's call
-**blocks ~25s** on the portal timeout. With GTK init on top, the start blows past `TimeoutStartSec`
-and systemd **aborts** the start job. A *failed* start job still satisfies plasmashell's
-`After=swaync` ordering, so plasmashell starts and grabs the name; every swaync restart then finds
-it taken → start-limit-hit → bricked for the session (plasmashell keeps notifications — fail-open).
+## Root cause (v3, from a live boot journal + a busctl-monitor trace, 2026-06-23)
+swaync is a **GTK4 + libadwaita** app. During init, **before** it requests the bus name, libadwaita
+issues *synchronous* `org.freedesktop.portal.Settings` Read/ReadAll calls (color-scheme, accent-color).
+A monitor trace caught **three** such libadwaita reads ahead of `RequestName`. On a cold boot
+xdg-desktop-portal isn't up — on this box `xdg-desktop-portal.service` itself **fails its first start**
+(its backend isn't ready inside its 15s budget) and isn't back for **~3 minutes** — so each sync call
+blocks the full **~25s** D-Bus reply timeout: ~75s of stall (exactly why v1's 45s `TimeoutStartSec`
+"was necessary but not sufficient"). swaync never acquires the name in time, its start job fails, and a
+*failed* start job still satisfies plasmashell's `After=swaync` ordering → plasmashell grabs the name
+and keeps it (swaync requests it without replacement and can't reclaim it). Fail-open, but wrong owner.
 
-An earlier fix (`TimeoutStartSec=45` + a Wayland-socket wait) was necessary but **not sufficient**:
-the dominant stall is the portal, not the socket.
+**The v2 fix made it worse.** v2 added an `ExecStartPre` that *waited for the portal to answer* before
+starting swaync — i.e. it made swaync depend on the one service guaranteed dead at cold boot. Its
+busy-wait worst case (`60 × (2s + 0.5s) = 150s`) overran `TimeoutStartSec=90`, so start-pre was
+**killed** and swaync's daemon never even ran. It *guaranteed* the failure, every boot.
 
-## The fix
-In `swaync.service.d/nimbus-race.conf`, take the portal off swaync's critical path:
-1. `Wants=xdg-desktop-portal.service` — pull the portal into the transaction so it warms
-   alongside swaync. **Do NOT `After=xdg-desktop-portal.service`** (regressed 2026-06-22):
-   the portal is `After=graphical-session.target` and stock `plasma-core.target` is
-   `After=plasma-plasmashell.service`, so `plasmashell → After swaync → After portal → … →
-   plasmashell` forms an ordering **cycle**. systemd breaks a cycle by deleting a job — it
-   deleted plasmashell's start job, so the whole shell (panels + dock) never started at boot.
-   Step 2 sequences swaync after the portal *answers* at runtime, so the `After=` ordering is
-   redundant anyway; `Wants=` (no ordering edge) keeps the warm-up without the cycle.
-2. A bounded, fail-open `ExecStartPre` that waits until the portal **Settings interface answers**,
-   so swaync's own query returns instantly instead of timing out ~25s.
-3. `TimeoutStartSec=90` — margin for the one-time cold warmup + swaync's <2s warm acquire.
+## The fix (v3)
+In `swaync.service.d/nimbus-race.conf`, remove the portal from swaync's path instead of waiting on it:
+1. `Environment=ADW_DISABLE_PORTAL=1` — libadwaita stops querying the Settings portal. The blocking
+   color-scheme/accent reads disappear (trace: **10 portal calls → 1**, and the survivor is GTK4's own
+   *async* query, which does **not** gate name acquisition). swaync reaches `RequestName` in ~0.3s even
+   with a dead portal — so it wins the name **and** doesn't stall plasmashell (which waits behind it via
+   `After=swaync`). swaync's look comes from its own CSS (`/etc/xdg/swaync/style.css` +
+   `~/.config/swaync/style.css`), not the portal color-scheme, so nothing visible changes.
+2. The Wayland-socket `ExecStartPre` stays (swaync is a layer-shell client; don't launch before its
+   compositor socket exists). Bounded + fail-open.
+3. No `Wants=`/`After=` on `xdg-desktop-portal` — swaync no longer depends on it.
+4. `TimeoutStartSec=45` — generous margin for cold GTK init; far more than the <3s warm acquire now
+   that the portal stall is gone.
 
-swaync's first start now acquires the name in ~2s → `swaync.service` reaches `active` (= owns the
+swaync's first start now acquires the name promptly → `swaync.service` reaches `active` (= owns the
 name, via `Type=dbus`) → plasmashell (`After=swaync`) finds it taken and **defers**, deterministically.
+
+> **Separate disease:** `xdg-desktop-portal.service` failing its cold-boot start also breaks
+> plasmashell's own portal registration + screencast at boot. Removing this cascade should let it heal,
+> but the portal failure is worth its own follow-up.
 
 Files:
 - `swaync.service` — the `Type=dbus` unit override (installed only if absent).
 - `swaync.service.d/nimbus-race.conf` — the race fix (above).
 - `plasma-plasmashell.service.d/after-swaync.conf` — pulls swaync into plasmashell's transaction + orders it first.
 - `plasma-plasmashell.service.d/gate-on-swaync.conf.disabled` — **staged fallback** (deterministic
-  gate); enable only if swaync *still* loses after the portal fix. It complements, not replaces, the
-  portal fix (its 30s wait can't cover a 25s+ portal hang alone).
+  gate that holds plasmashell until swaync actually *owns* the name); enable only if swaync *still*
+  loses after the v3 fix.
 
 ## Install / remove
 ```

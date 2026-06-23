@@ -1134,3 +1134,74 @@ a{ color:var(--inst-blue) }
   .fork-amb .fork-aurora, .fork-grain{ display:none }
   .fork-center{ backdrop-filter:none; background:rgba(20,23,34,.96) }
 }
+
+/* ============================================================================================
+   Library + Stash refinement pass — bring "Your dreams" and the private stash up to the entry's
+   level within the instrument register: inviting first-run moments, a hover "enter" affordance,
+   and cool-gallery / warm-vault atmosphere. No new tokens; reuses the shipped grammar.
+   ============================================================================================ */
+
+/* the section headers settle in on load (matching the entry's orchestrated reveal). A full-card accent
+   wash was tried + dropped: it lightened the glass enough to drop the --inst-label eyebrow below AA
+   (4.6 -> 4.3). The sections get their cool/warm identity from the empty-state art + the tiles instead. */
+.lib-head, .stash-head{ animation:gbloom .45s ease both }
+@media (prefers-reduced-motion:reduce){ .lib-head, .stash-head{ animation:none } }
+
+/* the first-run / empty moment — an invitation, not a dead end. Faint ghost frames hint at the grid to
+   come (rhyming with the entry's glimpse placeholders), one evocative line in the Lucid serif voice, and
+   a way straight into a new dream. */
+.lib-blank{ display:flex; flex-direction:column; align-items:center; text-align:center; padding:30px 16px 22px;
+  animation:gbloom .5s ease both }
+.lib-blank-art{ position:relative; display:flex; justify-content:center; align-items:flex-end; gap:12px;
+  height:104px; margin-bottom:18px }
+.lib-blank-art .ghost{ width:56px; aspect-ratio:9/16; border-radius:9px; border:1px dashed var(--hairline);
+  background:radial-gradient(70% 55% at 50% 36%, color-mix(in srgb,var(--inst-blue) 16%,transparent), transparent), #0c1020;
+  display:grid; place-items:center }
+.lib-blank-art .ghost.g0{ transform:rotate(-7deg) translateY(7px) scale(.9); opacity:.5 }
+.lib-blank-art .ghost.g1{ transform:translateY(-4px); border-color:color-mix(in srgb,var(--inst-blue) 40%,transparent);
+  box-shadow:0 16px 36px -22px #000, 0 0 40px -16px color-mix(in srgb,var(--inst-blue) 50%,transparent) }
+.lib-blank-art .ghost.g2{ transform:rotate(7deg) translateY(7px) scale(.9); opacity:.5 }
+.lib-blank-art .ghost-spark{ font-size:18px; color:var(--inst-blue); opacity:.85; animation:formpulse 2.4s ease-in-out infinite }
+.lib-blank-head{ margin:0; font-family:var(--display); font-style:italic; font-weight:360; font-size:1.5rem;
+  letter-spacing:-.01em; color:var(--inst-text) }   /* the Lucid serif voice — one evocative line */
+.lib-blank-sub{ margin:9px auto 0; max-width:44ch; font-size:var(--fs-sm); line-height:1.55; color:var(--inst-muted) }
+/* filled primary (clones the entry's Begin grammar): dark ink on --inst-blue stays AA under EITHER accent
+   (periwinkle 7.8 / violet 6.1), where blue TEXT on a wash would fail under violet (3.96). */
+.lib-blank-cta{ margin-top:18px; display:inline-flex; align-items:center; gap:9px; min-height:44px; padding:12px 22px;
+  background:var(--inst-blue); border:none; color:#0b0e16; border-radius:999px; font:inherit; font-weight:700;
+  cursor:pointer; transition:background .2s }
+.lib-blank-cta:hover{ background:color-mix(in srgb,var(--inst-blue) 88%,#fff) }
+.lib-blank-cta .spark{ font-size:.9em }
+/* warm (stash) variant — the sealed sibling */
+.lib-blank.warm .ghost{ background:radial-gradient(70% 55% at 50% 36%, color-mix(in srgb,var(--brand-warm) 14%,transparent), transparent), #0b0c12 }
+.lib-blank.warm .ghost.g0{ font-size:15px; opacity:.6 }   /* the 🔒 stamp on the sealed ghost */
+.lib-blank.warm .ghost.g1{ border-color:color-mix(in srgb,var(--brand-warm) 42%,transparent);
+  box-shadow:0 16px 36px -22px #000, 0 0 40px -16px color-mix(in srgb,var(--brand-warm) 45%,transparent) }
+.lib-blank.warm .ghost-spark{ color:var(--brand-warm) }
+.lib-blank.warm .lib-blank-cta{ background:var(--brand-warm); border:none; color:#1a0f06 }   /* dark ink 7.0 AA */
+.lib-blank.warm .lib-blank-cta:hover{ background:color-mix(in srgb,var(--brand-warm) 88%,#fff) }
+@media (prefers-reduced-motion:reduce){ .lib-blank{ animation:none } .lib-blank-art .ghost-spark{ animation:none } }
+
+/* tile hover/focus "enter" cue — a soft disc blooms over the frame, clarifying the open action and adding
+   life. Rides the top interactive layer (.lib-open::after) so it sits above the thumb + caption scrim.
+   Cool play-mark for a saved dream; warm ✦ for a sealed one. Composited (opacity+transform only). */
+.lib-open::after{ content:'▸'; position:absolute; left:50%; top:46%; transform:translate(-50%,-50%) scale(.82);
+  width:38px; height:38px; display:grid; place-items:center; border-radius:50%; pointer-events:none;
+  background:rgba(7,8,14,.7); backdrop-filter:blur(5px); border:1px solid color-mix(in srgb,var(--inst-blue) 60%,transparent);
+  color:#f3f5fb; font-size:13px; padding-left:2px; opacity:0; transition:opacity .2s ease, transform .2s ease }
+.lib-tile:hover .lib-open::after, .lib-open:focus-visible::after{ opacity:1; transform:translate(-50%,-50%) scale(1) }
+.lib-tile.sealed .lib-open::after{ content:'✦'; padding-left:0; border-color:color-mix(in srgb,var(--brand-warm) 60%,transparent); color:var(--brand-warm) }
+/* reduced-motion: strip the scale TRANSFORM (the vestibular part), keep the opacity fade — cue is decorative */
+@media (prefers-reduced-motion:reduce){ .lib-open::after{ transition:opacity .2s ease } .lib-tile:hover .lib-open::after, .lib-open:focus-visible::after{ transform:translate(-50%,-50%) } }
+
+/* stash gate — entering the passphrase is crossing into a sealed space: a warm seal emblem crowns the
+   create / unlock states, the intro centres under it. (The crypto flow + form are unchanged.) */
+.stash-gate{ text-align:center; display:flex; flex-direction:column; align-items:center }
+.stash-seal{ width:64px; height:64px; margin:8px 0 2px; display:grid; place-items:center; border-radius:50%;
+  font-size:25px; color:var(--brand-warm); animation:gbloom .5s ease both;
+  background:radial-gradient(circle, color-mix(in srgb,var(--brand-warm) 16%,transparent), transparent 70%);
+  border:1px solid color-mix(in srgb,var(--brand-warm) 34%,transparent);
+  box-shadow:0 0 44px -12px color-mix(in srgb,var(--brand-warm) 50%,transparent), inset 0 0 22px -9px color-mix(in srgb,var(--brand-warm) 42%,transparent) }
+.stash-gate .stash-intro{ margin-top:8px }
+.stash-gate .pp-form{ justify-content:center; max-width:520px; width:100% }
+@media (prefers-reduced-motion:reduce){ .stash-seal{ animation:none } }

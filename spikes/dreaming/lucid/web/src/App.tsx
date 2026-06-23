@@ -132,9 +132,9 @@ export default function App() {
 
           {active === 'new' && <Start onStarted={goDream} />}
 
-          {active === 'library' && <DreamGallery onOpened={goDream} />}
+          {active === 'library' && <DreamGallery onOpened={goDream} onNew={() => navigate('new')} />}
 
-          {active === 'stash' && <StashPanel stash={s.stash} onOpened={goDream} />}
+          {active === 'stash' && <StashPanel stash={s.stash} onOpened={goDream} onNew={() => navigate('new')} />}
 
           {active === 'settings' && (
             <>

@@ -96,6 +96,33 @@ function Tile({ name, frames, when, thumb, sealed, i, busy, onOpen, onDelete, on
   )
 }
 
+// the first-run / empty moment — an invitation, not a dead end. Faint ghost frames hint at the grid to
+// come (rhyming with the entry's glimpse placeholders), one evocative line in the Lucid serif voice, and
+// a way straight into a new dream. Cool for the open gallery, warm for the sealed stash.
+function LibBlank({ kind, onNew }: { kind: 'gallery' | 'stash'; onNew?: () => void }) {
+  const warm = kind === 'stash'
+  return (
+    <div className={'lib-blank' + (warm ? ' warm' : '')}>
+      <div className="lib-blank-art" aria-hidden="true">
+        <span className="ghost g0">{warm ? '🔒' : ''}</span>
+        <span className="ghost g1"><span className="ghost-spark">✦</span></span>
+        <span className="ghost g2" />
+      </div>
+      <p className="lib-blank-head">{warm ? 'Your sealed dreams rest here.' : 'Your dreams gather here.'}</p>
+      <p className="lib-blank-sub">
+        {warm
+          ? <>Start a <span className="lock">🔒 private</span> dream, then “Save to private stash” — it’s sealed under your passphrase, opened only ever by you.</>
+          : <>Start one and it’s kept on this computer, ready to reopen — rename it any time from its card.</>}
+      </p>
+      {onNew && (
+        <button className="lib-blank-cta" onClick={onNew}>
+          <span className="spark" aria-hidden="true">✦</span> Start a dream
+        </button>
+      )}
+    </div>
+  )
+}
+
 // change the stash passphrase — a collapsed, expert action below the sealed grid (re-keys every sealed
 // dream; the backend is crash-atomic). Reuses the instrument input/button register; no new chrome.
 function ChangePassphrase() {
@@ -158,7 +185,7 @@ function ChangePassphrase() {
 }
 
 // the stash section: create / unlock / browse the encrypted private dreams
-export function StashPanel({ stash, onOpened }: { stash?: StashStatus; onOpened?: () => void }) {
+export function StashPanel({ stash, onOpened, onNew }: { stash?: StashStatus; onOpened?: () => void; onNew?: () => void }) {
   const q = useStash()
   const init = useStashInit()
   const unlock = useStashUnlock()
@@ -260,7 +287,8 @@ export function StashPanel({ stash, onOpened }: { stash?: StashStatus; onOpened?
       </div>
 
       {!exists && (
-        <form onSubmit={doInit}>
+        <form className="stash-gate" onSubmit={doInit}>
+          <span className="stash-seal" aria-hidden="true">🔒</span>
           <p className="stash-intro">
             Keep private dreams <b>encrypted</b> on this computer — sealed with a passphrase, never shown
             elsewhere, never set as wallpaper. Only you, with the passphrase, can reopen them.
@@ -282,7 +310,8 @@ export function StashPanel({ stash, onOpened }: { stash?: StashStatus; onOpened?
       )}
 
       {exists && !unlocked && (
-        <form onSubmit={doUnlock}>
+        <form className="stash-gate" onSubmit={doUnlock}>
+          <span className="stash-seal" aria-hidden="true">🔒</span>
           <p className="stash-intro">Locked. Enter your passphrase to reopen your private dreams.</p>
           <div className="pp-form">
             <input type="password" aria-label="Passphrase" placeholder="Passphrase"
@@ -298,7 +327,7 @@ export function StashPanel({ stash, onOpened }: { stash?: StashStatus; onOpened?
           {q.isLoading ? (
             <p className="stash-intro" aria-busy="true">Opening your private dreams…</p>
           ) : dreams.length === 0 ? (
-            <p className="stash-intro">Open and empty. Start a <span className="lock">🔒 private</span> dream, then “Save to private stash”.</p>
+            <LibBlank kind="stash" onNew={onNew} />
           ) : (
             <div className={'lib-grid' + (unsealing ? ' unsealing' : '')} style={{ marginTop: 14 }}>
               {dreams.map((d, i) => (
@@ -317,7 +346,7 @@ export function StashPanel({ stash, onOpened }: { stash?: StashStatus; onOpened?
 }
 
 // the saved (non-private) dream library
-export function DreamGallery({ onOpened }: { onOpened?: () => void }) {
+export function DreamGallery({ onOpened, onNew }: { onOpened?: () => void; onNew?: () => void }) {
   const q = useLibrary()
   const open = useOpenDream()
   const del = useDelete()
@@ -351,7 +380,7 @@ export function DreamGallery({ onOpened }: { onOpened?: () => void }) {
   }
 
   return (
-    <div className="card">
+    <div className="card lib-card">
       <h2 className="lib-head" data-view-heading tabIndex={-1}>
         <span>Your dreams</span>
         {dreams.length > 0 && <span className="count">{dreams.length} saved</span>}
@@ -359,7 +388,7 @@ export function DreamGallery({ onOpened }: { onOpened?: () => void }) {
       {q.isLoading ? (
         <p className="lib-empty" aria-busy="true">Loading your dreams…</p>
       ) : dreams.length === 0 ? (
-        <p className="lib-empty">No saved dreams yet — start one from <b>New dream</b> and it’s kept here automatically, ready to reopen. You can rename it any time from its card.</p>
+        <LibBlank kind="gallery" onNew={onNew} />
       ) : (
         <div className="lib-grid">
           {dreams.map((d, i) => (
