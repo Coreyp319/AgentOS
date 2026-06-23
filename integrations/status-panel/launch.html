@@ -218,6 +218,29 @@
 
   @media (prefers-reduced-motion: reduce) { *, body.reveal .in, body.reveal .rule { animation:none !important; transition:none !important; } }
   @media (max-width:560px){ h1 { font-size:2.1rem; } .nm { max-width:54%; } .readout { text-align:left; align-items:flex-start; } }
+
+  /* Features / progressive adoption (ADR-0043) — a quiet shelf below the index. Still-room: no spinner. */
+  .features { margin-top:40px; }
+  .features .flabel { display:flex; align-items:baseline; gap:12px; margin-bottom:8px;
+    font-family:var(--mono); font-size:.7rem; letter-spacing:.08em; text-transform:uppercase; color:var(--inst-label); }
+  .features .flabel .fhint { text-transform:none; letter-spacing:.02em; font-size:.66rem; opacity:.85; }
+  .feat { display:flex; align-items:center; gap:14px; padding:9px 0; border-top:1px solid var(--hairline); }
+  .feat:first-of-type { border-top:0; }
+  .feat .fmeta { flex:1; min-width:0; }
+  .feat .fname { font-family:var(--mono); font-size:.8rem; color:var(--inst-text); }
+  .feat .ftier { font-size:.58rem; letter-spacing:.08em; text-transform:uppercase; color:var(--inst-label); margin-left:8px; }
+  .feat .fdesc { font-family:var(--sans); font-size:.72rem; color:var(--inst-muted); margin-top:2px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fstate { font-family:var(--mono); font-size:.64rem; letter-spacing:.04em; color:var(--inst-muted); white-space:nowrap; flex:none; }
+  .fstate.adopted { color:var(--st-up-fg); } .fstate.available { color:var(--inst-blue); }
+  .fstate.needs-you { color:var(--st-amber-fg); } .fstate.failed { color:var(--st-red-fg); }
+  button.fbtn { font-family:var(--mono); font-size:.68rem; cursor:pointer; padding:5px 12px; border-radius:7px; flex:none;
+    color:var(--inst-blue); background:color-mix(in srgb,var(--inst-blue) 8%,transparent);
+    border:1px solid color-mix(in srgb,var(--inst-blue) 30%,transparent); transition:background .18s; white-space:nowrap; }
+  button.fbtn:hover { background:color-mix(in srgb,var(--inst-blue) 15%,transparent); }
+  button.fbtn:focus-visible { outline:2px solid var(--inst-blue); outline-offset:2px; }
+  button.fbtn.remove { color:var(--inst-muted); background:transparent; border-color:var(--hairline-hi); }
+  button.fbtn:disabled { opacity:.5; cursor:default; }
 </style>
 </head>
 <body>
@@ -238,6 +261,10 @@
     <div class="blindbar" id="blindbar" role="status"></div>
 
     <main id="index"></main>
+
+    <!-- Progressive feature adoption (ADR-0043). Populated from /components.json; the adopt/remove
+         buttons appear on a local origin only (the phone sees read-only adopted/available badges). -->
+    <section id="features" class="features" hidden aria-label="AgentOS features"></section>
 
     <footer>
       A read-only index · link-out only, mutates nothing
@@ -344,6 +371,86 @@
       headers:{ "Content-Type":"application/json", "X-Dispatch-Token":token },
       body:JSON.stringify({ id:svc, target }) })).json();
   }
+
+  // ── Features / progressive adoption (ADR-0043) — the still-room variant: quiet mono, no spinner ──
+  let adoptByComp = {};          // comp id → its latest adopt job, refreshed each tick
+  let lastFeatSig = "";
+  const TIER_LABEL = { core:"substrate", service:"service", desktop:"desktop", hermes:"hermes", remote:"remote", privileged:"privileged" };
+  const STATE_LABEL = { adopted:"adopted", available:"available", "needs-you":"needs you", unknown:"unknown" };
+
+  function featRow(c) {
+    const job = adoptByComp[c.id];
+    const busy = job && (job.status==="queued" || job.status==="applying" || job.status==="unadopting");
+    const failed = job && job.status==="failed";
+    let stateHTML, action = "";
+    if (busy) stateHTML = `<span class="fstate">${job.status==="unadopting" ? "removing…" : "installing…"}</span>`;
+    else if (failed) stateHTML = `<span class="fstate failed" title="${esc(job.outcome||"")}">didn't complete</span>`;
+    else {
+      stateHTML = `<span class="fstate ${esc(c.state)}">${esc(STATE_LABEL[c.state]||c.state)}</span>`;
+      if (c.adoptable && c.state==="available")
+        action = `<button class="fbtn" data-adopt="${esc(c.id)}" data-action="adopt">Adopt</button>`;
+      else if (c.adoptable && c.state==="adopted" && c.removable!==false)
+        action = `<button class="fbtn remove" data-adopt="${esc(c.id)}" data-action="unadopt">Remove</button>`;
+      else if (c.manual_cmd && c.state==="needs-you")
+        action = `<button class="fbtn" data-copy="${esc(c.manual_cmd)}">Copy command</button>`;
+    }
+    return `<div class="feat"><div class="fmeta">`
+      + `<div class="fname">${esc(c.id)}<span class="ftier">${esc(TIER_LABEL[c.tier]||c.tier)}</span></div>`
+      + `<div class="fdesc">${esc(c.desc)}</div></div>${stateHTML}${action}</div>`;
+  }
+
+  function renderFeatures(data) {
+    const el = document.getElementById("features");
+    const comps = data.components || [];
+    if (!comps.length || data.enabled === false) { el.hidden = true; return; }
+    const sig = JSON.stringify(comps.map((c)=>[c.id,c.state,c.adoptable])) + "|"
+              + JSON.stringify(Object.entries(adoptByComp).map(([k,v])=>[k,v.status]));
+    if (sig === lastFeatSig && !el.hidden) return;   // re-render only on a real change (no reflow under the user)
+    lastFeatSig = sig;
+    el.hidden = false;
+    const note = ORIGIN.can_copy_fix
+      ? "adopt or remove components — reversible; every one has a restore"
+      : "read-only here · adopt on the desktop";
+    el.innerHTML = `<div class="flabel"><span>Features</span><span class="fhint">${esc(note)}</span></div>`
+      + comps.map(featRow).join("");
+  }
+
+  async function refreshComponents() {
+    try { renderFeatures(await (await fetch("/components.json", { cache:"no-store" })).json()); } catch (_) {}
+  }
+  async function refreshAdopt() {
+    try {
+      const d = await (await fetch("/adopt.json", { cache:"no-store" })).json();
+      const m = {}; for (const j of d.jobs||[]) if (!m[j.comp]) m[j.comp] = j;   // jobs arrive newest-first
+      adoptByComp = m;
+    } catch (_) {}
+  }
+  async function postAdopt(comp, action) {
+    const { token } = await (await fetch("/adopt/token", { cache:"no-store" })).json();
+    return (await fetch("/adopt", { method:"POST", cache:"no-store",
+      headers:{ "Content-Type":"application/json", "X-Adopt-Token":token },
+      body:JSON.stringify({ id:comp, action }) })).json();
+  }
+
+  document.getElementById("features").addEventListener("click", async (e) => {
+    const copyBtn = e.target.closest("button[data-copy]");
+    if (copyBtn) {
+      try { await navigator.clipboard.writeText(copyBtn.dataset.copy); const o=copyBtn.textContent; copyBtn.textContent="copied — run it"; setTimeout(()=>copyBtn.textContent=o,1800); }
+      catch { const o=copyBtn.textContent; copyBtn.textContent="copy failed"; setTimeout(()=>copyBtn.textContent=o,1800); }
+      return;
+    }
+    const btn = e.target.closest("button[data-adopt]");
+    if (!btn) return;
+    const comp = btn.dataset.adopt, action = btn.dataset.action;
+    if (action==="unadopt" && !confirm(`Remove "${comp}"? This runs its restore — you can adopt it again later.`)) return;
+    btn.disabled = true;
+    const o = btn.textContent; btn.textContent = action==="unadopt" ? "removing…" : "adopting…";
+    try {
+      const r = await postAdopt(comp, action);
+      if (r.error) { btn.textContent = String(r.error).slice(0,40); setTimeout(()=>{ btn.textContent=o; btn.disabled=false; }, 2400); }
+      else { adoptByComp[comp] = r.job || { comp, status:"queued" }; lastFeatSig=""; await refreshComponents(); }
+    } catch (_) { btn.textContent="failed"; setTimeout(()=>{ btn.textContent=o; btn.disabled=false; }, 2400); }
+  });
 
   function actionLabel(s) {
     if (s.door.state === "open")
@@ -507,6 +614,7 @@
       if (data.origin) ORIGIN = data.origin;      // server-decided trust, before render (ADR-0039)
       applyData(data);
       refreshDispatch();
+      refreshAdopt().then(refreshComponents);     // feature catalog + live adopt state (ADR-0043)
       const age = data.generated_at ? Math.max(0, Date.now()/1000 - data.generated_at) : 0;
       const stale = age > 12;                       // STALE = reachable but old (≠ blind/offline)
       document.body.classList.toggle("stale", stale);
