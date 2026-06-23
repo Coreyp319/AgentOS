@@ -5,7 +5,7 @@
 :root{
   --inst-base:#12141c; --inst-deep:#161a28; --inst-horizon:#1a2238;
   --inst-text:#e6e9f0; --inst-muted:#8a90a0; --inst-label:#878c9b; /* G7/ADR-0019 F1b: #7a8090→#878c9b clears AA 4.53:1 on glass card */
-  --inst-blue:#7aa2ff; --inst-warm:#ff9957; --brand-warm:#e0884f;
+  --inst-blue:#9b82e0; --inst-warm:#ff9957; --brand-warm:#e0884f;
   --glass:rgba(38,42,54,.46); --hairline:rgba(255,255,255,.07);
   --st-up:#74d39a; --st-idle:#757c8e; --st-unknown:#6f7894; --st-red:#ec7676; --st-amber:#f2c879;
   --st-red-line:color-mix(in srgb,var(--st-red) 40%,transparent);
@@ -193,9 +193,22 @@ a{ color:var(--inst-blue) }
 .beat-ix{ display:inline-block; margin-top:9px }
 /* the stage's bottom caption reuses .cap/.beat-q (shared with the develop hero); .eyebrow is the quiet
    system-voice line above the serif caption — the beat index, length, and an honest mature tag. */
-.cap{ z-index:3 }
-.eyebrow{ display:flex; align-items:center; gap:8px; font-size:var(--fs-xs); text-transform:uppercase;
-  letter-spacing:.08em; color:rgba(230,233,240,.6); margin-bottom:6px }
+/* z-index:4 lifts the caption — and its action buttons — ABOVE the choices gutter (z-index:3), which hugs
+   the same right edge and reveals on hover; without this the gutter paints over Finalize/the tag buttons.
+   .cap is pointer-events:none except the buttons, so the gutter cards in the clear area stay clickable. */
+.cap{ z-index:4 }
+.eyebrow{ display:flex; align-items:center; flex-wrap:wrap; gap:8px; row-gap:6px; font-size:var(--fs-xs);
+  text-transform:uppercase; letter-spacing:.08em; color:rgba(230,233,240,.6); margin-bottom:6px }
+/* the action buttons sit in the STAGE's bottom-RIGHT corner. They're a direct child of .stage (NOT inside the
+   full-width .cap caption band), so right/bottom measure from the stage edges — dropping the row into the bottom
+   "foot" band that the right gutter reserves (--gutter-foot), BELOW the path-choice cards (so it never clips
+   them) and to the right of the left-aligned quote. Right-aligned + wrapping; with bottom pinned, wrapped rows
+   grow UP into the still-clear foot. z above .cap so the gradient doesn't dim them; .tag-btn re-enables
+   pointer-events (the container itself is click-through, so it never blocks the clip beneath). */
+.eyebrow-acts{ position:absolute; right:22px; bottom:22px; z-index:5;
+  display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:8px;
+  max-width:calc(100% - 44px); pointer-events:none }
+.eyebrow-acts .tag-btn{ pointer-events:auto }
 
 /* ---- the dream tree: the chain as a git-graph (lit path / dim alternate takes / glowing futures) ---- */
 .tree{ border:1px solid var(--hairline); border-top:none; border-radius:0 0 var(--radius-md) var(--radius-md);
@@ -315,11 +328,13 @@ a{ color:var(--inst-blue) }
 @keyframes drift1{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(12%,-8%) scale(1.12) } }
 @keyframes drift2{ 0%,100%{ transform:translate(0,0) scale(1.05) } 50%{ transform:translate(-10%,9%) scale(.92) } }
 @keyframes drift3{ 0%,100%{ transform:translate(0,0) scale(.95) } 50%{ transform:translate(8%,-12%) scale(1.1) } }
-@media (prefers-reduced-motion:reduce){ .aurora,.aurora i{ animation:none } .aurora{ opacity:.5 } }
+/* reduced-motion floor dropped .5 -> .44 (council §7): kept at/below the resting intent so a still
+   develop never reads brighter than the entryway's settled dawn ground. */
+@media (prefers-reduced-motion:reduce){ .aurora,.aurora i{ animation:none } .aurora{ opacity:.44 } }
 
 /* ---- moment tags (spatial feed-forward annotations) ---- */
-/* "Tag a moment" — a quiet blue affordance riding the player eyebrow; blue is the accent throughout. */
-.tag-btn{ display:inline-flex; align-items:center; gap:5px; margin-left:auto; min-height:24px;
+/* "Tag a moment" — a quiet blue affordance riding the player eyebrow; violet is the accent throughout. */
+.tag-btn{ display:inline-flex; align-items:center; gap:5px; min-height:24px;
   background:var(--blue-wash); border:1px solid color-mix(in srgb,var(--inst-blue) 40%,transparent);
   color:var(--inst-blue); border-radius:999px; padding:3px 11px; font:inherit; font-size:var(--fs-xs);
   text-transform:none; letter-spacing:0; cursor:pointer; transition:border-color .2s ease }
@@ -561,7 +576,7 @@ a{ color:var(--inst-blue) }
   background:rgba(9,11,17,.62); border:1px solid var(--hairline); color:var(--inst-text);
   font:inherit; font-size:var(--fs-sm); cursor:pointer; backdrop-filter:blur(8px);
   transition:border-color .18s ease, background .18s ease }
-.peek-watch:hover{ border-color:var(--inst-blue); background:rgba(122,162,255,.14) }
+.peek-watch:hover{ border-color:var(--inst-blue); background:rgba(155,130,224,.14) }
 .peek-watch:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:2px }
 .peek-back{ position:absolute; left:50%; top:12px; transform:translateX(-50%); z-index:6;
   display:inline-flex; align-items:center; gap:8px; padding:8px 16px; border-radius:999px; white-space:nowrap;
@@ -665,12 +680,12 @@ a{ color:var(--inst-blue) }
    twinkles on hover; while the model works a sliver of light SWEEPS across it — the "sharpening" made felt. */
 .gc-actions .future-refine{ flex:1 1 auto; width:auto; min-height:44px; display:inline-flex; align-items:center;
   justify-content:center; gap:7px; padding:0 13px; position:relative; overflow:hidden;
-  background:rgba(122,162,255,.08); color:var(--inst-text);
+  background:rgba(155,130,224,.08); color:var(--inst-text);
   border:1px solid color-mix(in srgb,var(--inst-blue) 30%,transparent); border-radius:var(--radius-sm);
   cursor:pointer; font-size:13.5px; font-weight:560; letter-spacing:.01em; line-height:1;
   transition:border-color .18s ease, background .18s ease, box-shadow .2s ease }
 .gc-actions .future-refine .fr-spark{ font-size:13px; color:var(--inst-blue); transition:transform .2s ease }
-.gc-actions .future-refine:hover:not(:disabled){ border-color:var(--inst-blue); background:rgba(122,162,255,.16);
+.gc-actions .future-refine:hover:not(:disabled){ border-color:var(--inst-blue); background:rgba(155,130,224,.16);
   box-shadow:0 0 0 1px color-mix(in srgb,var(--inst-blue) 22%,transparent), 0 6px 20px -12px color-mix(in srgb,var(--inst-blue) 70%,transparent) }
 .gc-actions .future-refine:hover:not(:disabled) .fr-spark{ animation:fr-twinkle 1.05s ease-in-out infinite }
 .gc-actions .future-refine:disabled{ opacity:.42; cursor:default }
@@ -714,7 +729,7 @@ a{ color:var(--inst-blue) }
   filter:drop-shadow(0 0 4px color-mix(in srgb,var(--inst-blue) 45%,transparent));
   transition:stroke-width .18s ease, stroke .18s ease, opacity .18s ease, filter .18s ease }   /* drawn by default (touch/coarse/reduced-motion get the static hairline); fine-pointer desktops undraw + draw-on-reveal below */
 /* per-card connector focus: the hovered card's path brightens + thickens toward the video centre; the rest recede */
-.gl-draw.hot{ stroke-width:2.4; stroke:#a9c4ff; filter:drop-shadow(0 0 6px color-mix(in srgb,var(--inst-blue) 75%,transparent)) }
+.gl-draw.hot{ stroke-width:2.4; stroke:#c4b4f0; filter:drop-shadow(0 0 6px color-mix(in srgb,var(--inst-blue) 75%,transparent)) }
 .gl-draw.dim{ opacity:.16 }
 @media (prefers-reduced-transparency:reduce){ .gl-draw{ filter:none } }   /* drop the glow with the other transparency effects */
 .gutter-loading{ position:absolute; left:50%; bottom:78px; transform:translateX(-50%); z-index:3;

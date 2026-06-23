@@ -1007,46 +1007,9 @@ export default function Chain({ state, revealing = false, onLatestReady }:
                 {isHero && <span className="tag tag-hd" title="This beat has been finalized in HD (the 20-step hero render)">HD</span>}
                 {sel.length ? <span style={{ opacity: 0.7 }}>· {fmtDur(sel.length / FPS)}</span> : null}
               </div>
-              {/* the action buttons float in the player's bottom-right corner (just above the caption band) —
-                  right-aligned and wrapping, clear of the native video controls, the caption text, and the
-                  choices gutter, so Finalize / the tag buttons are always reachable and never overlaid.
-                  Hidden while a panel (note draft / edit) is open — the panel is the focus, and it lives in
-                  .cap, so leaving the corner actions up would float them high above the expanded band. */}
-              {!draftOpen && !editOpen && (
-              <div className="eyebrow-acts">
-                {canTag && !draftOpen && (
-                  <button type="button" className="tag-btn" disabled={busy} onClick={openDraft}
-                    aria-label="Leave a note on this moment to steer the next moment">
-                    <span className="ic" aria-hidden="true">✦</span> Note this moment
-                  </button>
-                )}
-                {/* ADR-0040: prompt-guided keyframe edit — direct the action by editing this frame, then animate from it */}
-                {canTag && editEnabled && !draftOpen && !editOpen && (
-                  <button type="button" className="tag-btn" disabled={busy} onClick={() => setEditOpen(true)}
-                    aria-label="Edit this frame with a prompt to direct the action, then animate from it">
-                    <span className="ic" aria-hidden="true">✎</span> Edit the action
-                  </button>
-                )}
-                {sel.edited && !editOpen && (
-                  <button type="button" className="tag-btn" disabled={busy || dreaming || revert.isPending}
-                    onClick={() => revert.mutate({ node: sel.id }, {
-                      onSuccess: (r: { reverted?: boolean; reason?: string }) =>
-                        showFlash(r && r.reverted ? 'Edit reverted — original restored.' : (r && r.reason) || 'Nothing to revert.'),
-                      onError: () => showFlash('Couldn’t revert — try again.'),
-                    })}
-                    aria-label="Undo the edit to this shot — restore the original">
-                    <span className="ic" aria-hidden="true">↺</span> Revert edit
-                  </button>
-                )}
-                {/* ADR-0033: finalize THIS beat in HD — re-renders the same shot on the 20-step lane (minutes). */}
-                {canFinalize && (
-                  <button type="button" className="tag-btn" onClick={() => hero.mutate({ node: sel.id })}
-                    aria-label="Finalize this beat in HD — re-renders the same shot at higher quality (takes a few minutes)">
-                    <span className="ic" aria-hidden="true">✦</span> Finalize in HD
-                  </button>
-                )}
-              </div>
-              )}
+              {/* the action buttons (.eyebrow-acts) render as a direct child of .stage (just below this .cap
+                  block), NOT here — so they pin to the stage's bottom-right corner instead of being trapped in
+                  the full-width caption band. */}
               <p className="beat-q">{`“${sel.prompt || sel.caption}”`}</p>
               <span className="stage-ix beat-ix">{idx + 1} / {nodes.length}</span>
               {canTag && draftOpen && (
@@ -1086,6 +1049,44 @@ export default function Chain({ state, revealing = false, onLatestReady }:
               {canTag && editOpen && (
                 <EditPanel node={sel.id} canReplace={sel.id !== 0 && !!sel.clip} disabled={busy}
                   onClose={() => setEditOpen(false)} />
+              )}
+            </div>
+          )}
+          {/* ADR-0023/0033/0040 action buttons — a direct child of .stage, pinned to its bottom-right corner
+              (decoupled from the full-width .cap band), down in the gutter's reserved foot so they sit BELOW
+              the path-choice cards. Hidden while a note/edit panel is open (the panel, in .cap, is the focus). */}
+          {!draftOpen && !editOpen && (
+            <div className="eyebrow-acts">
+              {canTag && (
+                <button type="button" className="tag-btn" disabled={busy} onClick={openDraft}
+                  aria-label="Leave a note on this moment to steer the next moment">
+                  <span className="ic" aria-hidden="true">✦</span> Note this moment
+                </button>
+              )}
+              {/* ADR-0040: prompt-guided keyframe edit — direct the action by editing this frame, then animate from it */}
+              {canTag && editEnabled && (
+                <button type="button" className="tag-btn" disabled={busy} onClick={() => setEditOpen(true)}
+                  aria-label="Edit this frame with a prompt to direct the action, then animate from it">
+                  <span className="ic" aria-hidden="true">✎</span> Edit the action
+                </button>
+              )}
+              {sel.edited && (
+                <button type="button" className="tag-btn" disabled={busy || dreaming || revert.isPending}
+                  onClick={() => revert.mutate({ node: sel.id }, {
+                    onSuccess: (r: { reverted?: boolean; reason?: string }) =>
+                      showFlash(r && r.reverted ? 'Edit reverted — original restored.' : (r && r.reason) || 'Nothing to revert.'),
+                    onError: () => showFlash('Couldn’t revert — try again.'),
+                  })}
+                  aria-label="Undo the edit to this shot — restore the original">
+                  <span className="ic" aria-hidden="true">↺</span> Revert edit
+                </button>
+              )}
+              {/* ADR-0033: finalize THIS beat in HD — re-renders the same shot on the 20-step lane (minutes). */}
+              {canFinalize && (
+                <button type="button" className="tag-btn" onClick={() => hero.mutate({ node: sel.id })}
+                  aria-label="Finalize this beat in HD — re-renders the same shot at higher quality (takes a few minutes)">
+                  <span className="ic" aria-hidden="true">✦</span> Finalize in HD
+                </button>
               )}
             </div>
           )}
