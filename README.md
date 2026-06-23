@@ -28,7 +28,11 @@ Nimbus `ui-audit` agent.
 install with models? Great — setup **detects and reuses them** (brownfield-first); it never
 re-downloads or clobbers what's already there.
 
-**1 — Install the desktop stack** — opt-in, reversible, user-scope:
+There are two ways in: a **browser installer** (the friendly front door — step 2) and the
+**terminal driver** (step 1, same engine underneath). Most people want the browser.
+
+**1 — Bring up the core stack** — opt-in, reversible, user-scope. This installs `agentosd` and the
+local services (including the status panel the browser installer talks to):
 
 ```bash
 cd integrations
@@ -38,22 +42,24 @@ cd integrations
 ```
 
 Everything installs as `--user` services; any privileged step is *printed*, never auto-run.
-Undo any of it with `./uninstall.sh`.
+Undo any of it with `./uninstall.sh`. *(You can also adopt most of these from the browser installer
+below — it's the same reversible engine.)*
 
-**2 — Set up models *and your desktop*** — the browser wizard is the one first-run front door:
-detect what's already here, download only the gaps, then turn on the desktop you want.
+**2 — Open the browser installer** — the one first-run front door for **models *and* your desktop**.
+Start it, then open **<http://127.0.0.1:9125>** in your browser:
 
 ```bash
-./install.sh --onboard --web   # the wizard: models + desktop customizations + agents + remote access
-./install.sh --onboard         # or the model half in the terminal
+./install.sh --onboard --web   # starts the web installer at http://127.0.0.1:9125
+./install.sh --onboard         # prefer the terminal? same thing, the model half, no browser
 ```
 
-The wizard's **"Customize your desktop"** section turns on the AgentOS look (Aurora), the ambient
-instruments (the keyhole tray, the reactive shader wallpaper), and the agent wiring — each one-click
-and reversible, with a preview so you see what you're getting. It does this by **reusing the same
-adopt engine** as the status panel's Features page (ADR-0043), never a second installer. A bottom
-**Remote access** card walks you through exposing the UIs over Tailscale — with ample warnings, and
-copy-don't-execute (the wizard never runs it, and never puts itself on your tailnet).
+The page detects what you already have, downloads only the missing models, and its **"Customize your
+desktop"** section turns on the AgentOS look (Aurora), the ambient instruments (the keyhole tray, the
+reactive shader wallpaper), and the agent wiring — each one-click, reversible, and **previewed so you
+see what you're getting**. It reuses the same adopt engine as the status panel's Features page
+(ADR-0043), never a second installer. A bottom **Remote access** card walks you through exposing the
+UIs over Tailscale — ample warnings, copy-don't-execute (the installer runs nothing there, and is
+itself loopback-only — never put on your tailnet — because it holds your tokens).
 
 Text and image need **no account**. The 18+ video lane is opt-in and uses a free
 [Civitai](https://civitai.com) token kept in your OS keyring. Details:
