@@ -47,12 +47,17 @@ else
 fi
 
 systemctl --user daemon-reload
-if systemctl --user enable --now "$UNIT"; then
-  echo "✓ AgentOS status panel installed + started → http://127.0.0.1:${PORT}"
+# `enable` (idempotent symlink) then `restart` — NOT `enable --now`, which is a no-op on an
+# already-running service and so would NOT apply a unit-file change (e.g. a new RuntimeDirectory)
+# on re-apply. `restart` starts the service if stopped and restarts it if running, so a re-apply
+# always picks up unit edits. (This bit ADR-0043: RuntimeDirectory=agentos-adopt didn't take.)
+systemctl --user enable "$UNIT" >/dev/null 2>&1 || true
+if systemctl --user restart "$UNIT"; then
+  echo "✓ AgentOS status panel installed + (re)started → http://127.0.0.1:${PORT}"
   echo "  opens at next login only if something needs attention; else open it from the tray"
   echo "  phone: install the Atrium PWA at http://127.0.0.1:${PORT}/atrium (over your tailnet)"
   echo "  logs: journalctl --user -u $UNIT -f"
 else
-  echo "! could not enable the user service; start it by hand:" >&2
+  echo "! could not start the user service; start it by hand:" >&2
   echo "    systemctl --user enable --now $UNIT" >&2
 fi

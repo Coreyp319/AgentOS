@@ -17,7 +17,8 @@ mkdir -p "$UNIT_DIR"
 install -m644 "$HERE/$UNIT" "$UNIT_DIR/$UNIT"
 
 systemctl --user daemon-reload
-if systemctl --user enable --now "$UNIT"; then
+systemctl --user enable "$UNIT" >/dev/null 2>&1 || true   # restart (not enable --now) so a re-apply applies unit edits
+if systemctl --user restart "$UNIT"; then
   echo "✓ Hermes dashboard installed + started → http://127.0.0.1:9119"
   echo "  logs: journalctl --user -u $UNIT -f"
 else

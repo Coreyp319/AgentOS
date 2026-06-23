@@ -20,7 +20,8 @@ install -m644 "$SRC/lucid-drain.service" "$UNIT_DIR/lucid-drain.service"
 install -m644 "$SRC/lucid-drain.timer"   "$UNIT_DIR/lucid-drain.timer"
 
 systemctl --user daemon-reload
-if systemctl --user enable --now lucid-drain.timer; then
+systemctl --user enable lucid-drain.timer >/dev/null 2>&1 || true   # restart so a re-apply applies unit edits
+if systemctl --user restart lucid-drain.timer; then
   echo "✓ Lucid drain timer installed + armed (polls the durable request queue)"
   echo "  logs: journalctl --user -u lucid-drain.service -f"
 else
