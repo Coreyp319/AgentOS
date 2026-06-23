@@ -7,11 +7,12 @@ reachability check for the services that expose one. Per the surface-labor contr
 attention** — a clean boot stays quiet (the keyhole tray carries the calm). Open it from
 the tray, or `http://127.0.0.1:9123`, any time.
 
-On an attention row you can **"Why?"** (a read-only `journalctl` tail, inline — no terminal)
-and **"Copy fix"** (the exact `systemctl reset-failed && restart`); a header **"bring stack
-up"** copies `apply-all.sh`. A service that *falls over after boot* fires one calm swaync
-toast (disable with `AGENTOS_STATUS_NOTIFY=0`). When a service recovers, its row exhales
-green — delight made of true state. The server stays strictly read-only; the human disposes.
+On an attention row you can **"Why?"** (a read-only `journalctl` tail, inline — no terminal),
+**"Copy fix"** (the exact `systemctl reset-failed && restart`), or **dispatch an agent**
+(below); a header **"bring stack up"** copies `apply-all.sh`. A service that *falls over after
+boot* fires one calm swaync toast (disable with `AGENTOS_STATUS_NOTIFY=0`). When a service
+recovers, its row exhales green — delight made of true state. The panel never mutates system
+state itself; the human disposes (or a dispatched worker disposes deterministically — below).
 
 `http://127.0.0.1:9123`
 
@@ -51,6 +52,32 @@ Only genuinely-actionable states roll up into the header's **"N need attention"*
 (a split-brain). Those rows also get a coloured edge and a one-click **Copy fix** button
 that copies the exact `systemctl reset-failed … && restart …` (the server never mutates
 anything — you run the line).
+
+## Dispatch an agent to investigate (ADR-0039)
+On an attention row, **"investigate: Claude · Hermes"** sends an agent to diagnose, fix, and log
+— from the desktop *or* the phone/Atrium. The safety spine:
+
+- **Bounded auto-fix, code-disposed.** A dispatched worker first runs the *exact* recovery the
+  panel already trusts (`reset-failed && restart`) — but **only** for a user-scope unit that has
+  **opted in** with `"auto_recover": true` in `services.json` (so GPU/lease units like ComfyUI,
+  the wallpaper, and Lucid are never bounced; system-scope, the panel's own unit, and the lease
+  daemon always escalate). It re-checks the service is still down, won't re-arm a crashloop, and
+  restarts once. Recovered → done, logged, no model spent.
+- **Escalate → model proposes, code disposes.** If first-aid doesn't fix it, the chosen agent is
+  handed the redacted evidence as a **tool-free reasoner** (no filesystem, no MCP) and returns a
+  *proposed* fix + confidence. The worker never runs it — it lands as **"a fix is ready"** with a
+  local-only **copy fix** for you to review and run.
+- **Claude** = cloud (no GPU cost) — asks once per session before sending the (redacted) logs
+  off-box; **Hermes** = local, nothing leaves the box (needs the write-API enabled — Phase 2,
+  fails honestly until then). Disable with `AGENTOS_DISPATCH=0` (all) or `AGENTOS_DISPATCH_CLOUD=0`
+  (cloud only).
+- **Auth + trust.** `POST /dispatch` requires a per-process anti-CSRF token (`/dispatch/token`,
+  same-origin only) and rejects cross-site requests. The panel stays loopback-bound + hardened; it
+  writes only a ledger under the runtime dir and launches an out-of-sandbox `systemd-run --user`
+  worker. The proposed command and the durable, `0600`, TTL-pruned transcript (`GET /dispatch/log`)
+  are **local-only**; the phone sees a redacted summary. Live state streams back via `/dispatch.json`.
+
+After changing the service unit, re-run `./apply.sh` so the new `RuntimeDirectory=` takes effect.
 
 **Honest when blind:** the payload carries a server `generated_at`; if it goes stale, or the
 status server itself is unreachable, the pill drops to a grey "degraded" state and the list

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="dark" />
 <meta name="theme-color" content="#12141c" />
 <link rel="manifest" href="/manifest.webmanifest" />
-<link rel="apple-touch-icon" href="/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
 <title>The Atrium · AgentOS</title>
 <style>
   /* ════════════════════════════════════════════════════════════════════════════════════════
@@ -168,6 +168,37 @@
   button.fix:hover { background:color-mix(in srgb,var(--st-amber) 16%,transparent); }
   button.fix:focus-visible { outline:2px solid var(--inst-blue); outline-offset:2px; }
 
+  /* ── Dispatch (ADR-0039): send an agent to investigate + fix a down service, in the Atrium's
+     quiet mono idiom. A sibling row under the entry (like copy-fix). Chooser → live state. The
+     proposed command + the durable log are local-only (gated by the server's origin verdict). */
+  .row-disp { margin:6px 0 2px calc(var(--gutter)); display:flex; align-items:center; flex-wrap:wrap;
+    gap:8px; font-family:var(--mono); font-size:.7rem; }
+  .row-disp:empty { display:none; }
+  .row-disp .lbl { color:var(--inst-label); letter-spacing:.06em; }
+  button.disp { font-family:var(--mono); font-size:.7rem; letter-spacing:.02em; color:var(--inst-blue);
+    cursor:pointer; padding:5px 11px; min-height:24px; border-radius:7px;   /* WCAG 2.5.8 target floor */
+    background:color-mix(in srgb,var(--inst-blue) 8%,transparent);
+    border:1px solid color-mix(in srgb,var(--inst-blue) 30%,transparent); transition:background .18s; }
+  button.disp:hover { background:color-mix(in srgb,var(--inst-blue) 15%,transparent); }
+  button.disp:focus-visible { outline:2px solid var(--inst-blue); outline-offset:2px; }
+  button.disp small { color:var(--inst-label); margin-left:5px; }
+  button.disp.disp-copy { color:var(--st-amber-fg); background:color-mix(in srgb,var(--st-amber) 9%,transparent);
+    border-color:color-mix(in srgb,var(--st-amber) 34%,transparent); }
+  .disp-state { display:inline-flex; align-items:center; gap:7px; color:var(--inst-muted); }
+  .disp-state.good { color:var(--st-up-fg); } .disp-state.warn { color:var(--st-amber-fg); }
+  .disp-state.bad { color:var(--st-red-fg); }
+  .disp-diag { width:100%; color:var(--inst-muted); font-family:var(--sans); font-size:.74rem;
+    line-height:1.45; margin-top:2px; }
+  a.disp-log { color:var(--inst-blue); text-decoration:none; }
+  a.disp-log:hover { text-decoration:underline; }
+  /* The Atrium is a STILL ROOM — no infinite spinner here; busy states are quiet mono text. */
+  .disp-wait { color:var(--inst-muted); }
+  .disp-note { width:100%; color:var(--inst-label); font-family:var(--sans); font-size:.74rem; margin-top:2px; }
+  .disp-conf { font-family:var(--mono); font-size:.58rem; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+    padding:2px 7px; border-radius:999px; border:1px solid var(--hairline-hi); color:var(--inst-muted); }
+  .disp-conf.high { color:var(--st-up-fg); border-color:color-mix(in srgb,var(--st-up) 32%,transparent); }
+  .disp-conf.low { color:var(--st-amber-fg); border-color:color-mix(in srgb,var(--st-amber) 34%,transparent); }
+
   footer { margin-top:48px; padding-top:18px; border-top:1px solid var(--hairline);
     font-family:var(--mono); font-size:.66rem; letter-spacing:.04em; color:var(--inst-label);
     line-height:1.8; }
@@ -257,6 +288,63 @@
   const CALM = new Set(["up","ok","idle"]);   // a status that is NOT an attention cue
   const S1_NOTE = "Opening reads the GPU coordinator first — the cost lights up here once the lease daemon is installed.";
 
+  // ── Dispatch (ADR-0039) ────────────────────────────────────────────────────────────────
+  let ORIGIN = { remote:false, can_copy_fix:true, host:null };   // server's verdict, set each tick
+  let dispatchBySvc = {};                                         // svc id → latest dispatch incident
+  const isAttn = (s) => s.status==="failed"
+    || (s.status==="down" && (s.kind||"daemon")==="daemon")
+    || ((s.status==="up"||s.status==="starting") && s.reach==="unreachable");
+
+  function dispBarHTML(inc) {
+    if (!inc) return `<span class="lbl">investigate &amp; fix ▸</span>`
+      + `<button class="disp" data-target="claude" aria-label="Dispatch a Claude agent (cloud) to investigate and fix">Claude<small>cloud</small></button>`
+      + `<button class="disp" data-target="hermes" aria-label="Dispatch a Hermes agent (local) to investigate and fix">Hermes<small>local</small></button>`
+      + `<span class="disp-note">tries a safe restart first, then proposes a fix you approve</span>`;
+    const who = inc.target==="hermes" ? "Hermes" : "Claude";
+    const log = ORIGIN.can_copy_fix
+      ? ` <a class="disp-log" href="/dispatch/log?id=${esc(inc.id)}" target="_blank" rel="noopener">log ↗</a>` : "";
+    const conf = inc.confidence ? ` <span class="disp-conf ${esc(inc.confidence)}">${esc(inc.confidence)}</span>` : "";
+    const diag = inc.diagnosis ? `<span class="disp-diag">${esc(inc.diagnosis)}</span>` : "";
+    switch (inc.status) {
+      case "queued": return `<span class="disp-state disp-wait">queued…</span>`;
+      case "triaging": return `<span class="disp-state disp-wait">${inc.auto_eligible ? "trying recovery…" : "triaging…"}</span>`;
+      case "first-aid": return `<span class="disp-state disp-wait">trying recovery…</span>`;
+      case "investigating": return `<span class="disp-state disp-wait">${esc(who)} investigating… (up to ~3 min)</span>`;
+      case "recovered": return `<span class="disp-state good">✓ ${esc(inc.outcome || "recovered")}</span>`;
+      case "needs-approval": {
+        const fix = (ORIGIN.can_copy_fix && inc.proposal)
+          ? `<button class="disp disp-copy" data-cmd="${esc(inc.proposal)}">copy fix</button>`
+          : `<span class="statebadge">fix on desktop</span>`;
+        return `<span class="disp-state warn">a fix is ready — review &amp; run it</span> ${fix}${conf}${log}${diag}`;
+      }
+      case "diagnosed": return `<span class="disp-state">investigated — no safe auto-fix${conf}</span>${log}${diag}`;
+      case "handed-off": return `<span class="disp-state">handed to Hermes${conf}</span>${log}${diag}`;
+      case "blocked": return `<span class="disp-state warn">${esc(inc.outcome || "unavailable")}</span>${log}`;
+      default: return `<span class="disp-state bad">couldn't fix — ${esc(inc.outcome || "see log")}</span>${log}${diag}`;
+    }
+  }
+  function paintDispatches() {
+    for (const bar of document.querySelectorAll(".row-disp")) {
+      const html = dispBarHTML(dispatchBySvc[bar.dataset.svc]);
+      if (bar.dataset.h !== html) { bar.innerHTML = html; bar.dataset.h = html; }
+    }
+  }
+  async function refreshDispatch() {
+    if (DEMO) return;   // no server in demo; the choosers still render (inc undefined) for screenshots
+    try {
+      const d = await (await fetch("/dispatch.json", { cache:"no-store" })).json();
+      const map = {};
+      for (const i of d.incidents || []) if (!map[i.svc]) map[i.svc] = i;   // newest-first
+      dispatchBySvc = map; paintDispatches();
+    } catch (_) { /* best-effort; the index still works without it */ }
+  }
+  async function postDispatch(svc, target) {
+    const { token } = await (await fetch("/dispatch/token", { cache:"no-store" })).json();
+    return (await fetch("/dispatch", { method:"POST", cache:"no-store",
+      headers:{ "Content-Type":"application/json", "X-Dispatch-Token":token },
+      body:JSON.stringify({ id:svc, target }) })).json();
+  }
+
   function actionLabel(s) {
     if (s.door.state === "open")
       return s.kind === "on_demand" ? "ready when you are  ↗" : "open  ↗";
@@ -302,7 +390,9 @@
     // (split-brain "up but unreachable") doors too. Present only when the server allowed it.
     const fix = s.fix
       ? `<div class="row-fix in" ${style}><button class="fix" type="button" data-cmd="${esc(s.fix)}">copy fix</button></div>` : "";
-    return `<div class="cell" data-cell="${esc(s.id)}">${html}${fix}</div>`;
+    // Dispatch bar — only on an attention entry; filled by paintDispatches() from live state.
+    const disp = isAttn(s) ? `<div class="row-disp" ${style} data-svc="${esc(s.id)}" role="status" aria-live="polite" aria-atomic="true"></div>` : "";
+    return `<div class="cell" data-cell="${esc(s.id)}">${html}${fix}${disp}</div>`;
   }
 
   let revealed = false;
@@ -323,6 +413,7 @@
     }
     document.getElementById("index").innerHTML = html ||
       `<section class="section"><div class="entry"><span class="gut"></span><div class="ebody"><div class="desc">No services in the catalog.</div></div></div></section>`;
+    paintDispatches();   // fill the just-rendered attention entries' dispatch bars (ADR-0039)
   }
 
   // re-render only when the meaningful state changed, and restore focus to the same door id —
@@ -371,6 +462,33 @@
 
   // copy-fix is copy-don't-execute; the command only exists in the DOM when the server allowed it.
   document.getElementById("index").addEventListener("click", async (e) => {
+    // Dispatch (ADR-0039): the chooser POSTs; "copy fix" copies a model-proposed one-liner.
+    const dispBtn = e.target.closest("button.disp");
+    if (dispBtn) {
+      if (dispBtn.classList.contains("disp-copy")) {
+        try { await navigator.clipboard.writeText(dispBtn.dataset.cmd); const o=dispBtn.textContent; dispBtn.textContent="copied — run it"; setTimeout(()=>dispBtn.textContent=o,1800); }
+        catch { const o=dispBtn.textContent; dispBtn.textContent="copy failed"; setTimeout(()=>dispBtn.textContent=o,1800); }
+        return;
+      }
+      const bar = dispBtn.closest(".row-disp");
+      const target = dispBtn.dataset.target;
+      // Consent (privacy): the cloud (Claude) target sends this service's redacted logs off your
+      // device to Anthropic. Ask once per session; Hermes stays local.
+      if (target === "claude" && !sessionStorage.getItem("agentos-cloud-ok")) {
+        if (!confirm("Claude runs in Anthropic's cloud. This service's recent logs and details " +
+          "(secrets redacted) will be sent off your device to diagnose it. Hermes keeps everything " +
+          "local. Send to the cloud?")) return;
+        sessionStorage.setItem("agentos-cloud-ok", "1");
+      }
+      bar.innerHTML = `<span class="disp-state disp-wait" tabindex="-1">dispatching…</span>`;
+      bar.dataset.h = "";
+      bar.querySelector(".disp-state")?.focus();
+      let res = null;
+      try { res = await postDispatch(bar.dataset.svc, target); } catch (_) {}
+      if (res && res.error) { bar.innerHTML = `<span class="disp-state warn">${esc(res.error)}</span>`; bar.dataset.h = ""; }
+      else { refreshDispatch(); }
+      return;
+    }
     const b = e.target.closest("button.fix"); if (!b) return;
     try { await navigator.clipboard.writeText(b.dataset.cmd); const o=b.textContent; b.textContent="copied — run it"; setTimeout(()=>b.textContent=o,1800); }
     catch { const o=b.textContent; b.textContent="copy failed"; setTimeout(()=>b.textContent=o,1800); }
@@ -386,7 +504,9 @@
     try {
       const r = await fetch("/launch.json", { cache:"no-store" });
       const data = await r.json();
+      if (data.origin) ORIGIN = data.origin;      // server-decided trust, before render (ADR-0039)
       applyData(data);
+      refreshDispatch();
       const age = data.generated_at ? Math.max(0, Date.now()/1000 - data.generated_at) : 0;
       const stale = age > 12;                       // STALE = reachable but old (≠ blind/offline)
       document.body.classList.toggle("stale", stale);

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -250,6 +251,9 @@ def build_status(catalog=None, run=_run, reach=_reachable) -> dict:
                 "tailnet": svc.get("tailnet", True),
                 "scope": svc.get("scope", "user"),
                 "kind": svc.get("kind", "daemon"),
+                # whether this service opted in to deterministic auto-recovery (ADR-0039) — carried
+                # through so the dispatch path + UI label reflect the catalog, not a dropped field.
+                "auto_recover": svc.get("auto_recover", False),
                 "reach": reach_state,
                 **st,
             })
@@ -598,8 +602,101 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/why":
             sid = qs.get("id", [""])[0]
             self._send(200, json.dumps(why(sid)).encode(), "application/json")
+        elif path == "/dispatch/token":
+            # ADR-0039: the anti-CSRF token. Readable SAME-ORIGIN only (no CORS headers) — a
+            # cross-origin page can request it but cannot read the response, so it cannot forge a
+            # POST /dispatch. The frontend fetches it live right before dispatching (never stale
+            # across a panel restart, which rotates the token).
+            import dispatch as dsp
+            self._send(200, json.dumps({"token": dsp.TOKEN}).encode(), "application/json")
+        elif path == "/dispatch.json":
+            # The live dispatch ledger that drives the UI. The proposed shell one-liner is folded
+            # in only for a provably-local origin (same rule as copy-fix); the phone gets the
+            # human summary, never the raw command or the durable-log path.
+            import dispatch as dsp
+            local = self._origin()["can_copy_fix"]
+            led = dsp.read_ledger()
+            inc = [dsp.public_incident(e, local) for e in led.get("incidents", {}).values()]
+            inc.sort(key=lambda e: e.get("updated", 0) or 0, reverse=True)
+            self._send(200, json.dumps({"incidents": inc, "generated_at": time.time()}).encode(),
+                       "application/json")
+        elif path == "/dispatch/log":
+            # The durable transcript — LOCAL ONLY (it carries journal detail + paths). Path is
+            # validated to live under the dispatch log dir, so a tampered ledger entry can't turn
+            # this into an arbitrary-file read.
+            import dispatch as dsp
+            if not self._origin()["can_copy_fix"]:
+                self._send(403, b"the dispatch log is available on the desktop only", "text/plain")
+            else:
+                iid = qs.get("id", [""])[0]
+                e = dsp.read_ledger().get("incidents", {}).get(iid) if dsp.valid_incident_id(iid) else None
+                lp = (e or {}).get("log", "")
+                try:
+                    rp = Path(lp).resolve()
+                    ok = lp and rp.is_relative_to(dsp.log_dir().resolve()) and rp.is_file()
+                    body = rp.read_text(encoding="utf-8", errors="replace") if ok else "(no log for this incident)"
+                except Exception:
+                    body = "(log unavailable)"
+                self._send(200, body.encode(), "text/plain; charset=utf-8")
         else:
             self._send(404, b"not found", "text/plain")
+
+    def do_POST(self):
+        # The panel's ONLY write route (ADR-0039). It mutates no system state itself: it
+        # validates, records a ledger entry in the runtime dir, and launches an out-of-sandbox
+        # worker via systemd-run. The token is the CSRF guard (a cross-site page can POST but
+        # can't read the same-origin token); the action is also bounded server-side to a catalog
+        # service that is CURRENTLY in attention, rate-limited via the ledger.
+        if urlsplit(self.path).path != "/dispatch":
+            self._send(404, b"not found", "text/plain")
+            return
+        import dispatch as dsp
+
+        def _err(code, msg):
+            self._send(code, json.dumps({"error": msg}).encode(), "application/json")
+
+        tok = self.headers.get("X-Dispatch-Token", "")
+        if not tok or not secrets.compare_digest(tok, dsp.TOKEN):
+            _err(403, "bad or missing dispatch token")
+            return
+        # Defense-in-depth vs CSRF: browsers stamp Sec-Fetch-Site (not forgeable by page JS); reject
+        # a cross-site POST outright. Same-origin (desktop + the tailnet PWA hitting its own origin)
+        # and non-browser clients ("none"/absent) still pass — the token remains the primary guard.
+        if self.headers.get("Sec-Fetch-Site", "") == "cross-site":
+            _err(403, "cross-site dispatch refused")
+            return
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 4096:                 # bound the read; the body is two short strings
+            _err(400, "missing or oversized request body")
+            return
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except Exception:
+            _err(400, "invalid json")
+            return
+        svc_id = str(body.get("id", ""))
+        target = str(body.get("target", "claude"))
+        svc, reason = dsp.validate(svc_id, target, cached_status())
+        if not svc:
+            _err(409, reason)                  # 409: not a malformed request, just not allowed now
+            return
+        entry, reason = dsp.try_create_incident(svc, target)   # atomic: rate-limit + crashloop + insert
+        if not entry:
+            _err(409, reason)
+            return
+        ok, err = dsp.spawn_worker(entry["id"], target)
+        if not ok:                             # honest failure — never a silent no-op
+            dsp.update_incident(entry["id"], status="failed", outcome=err)
+            self._send(202, json.dumps({"id": entry["id"], "status": "failed", "error": err}).encode(),
+                       "application/json")
+            return
+        local = self._origin()["can_copy_fix"]
+        self._send(202, json.dumps({"id": entry["id"], "status": "queued",
+                                    "incident": dsp.public_incident({**entry, "status": "queued"}, local)}).encode(),
+                   "application/json")
 
 
 def main():

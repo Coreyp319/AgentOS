@@ -264,6 +264,40 @@
   }
   button.fix:hover { background: color-mix(in srgb, var(--st-amber) 16%, transparent); border-color: color-mix(in srgb, var(--st-amber) 55%, transparent); }
 
+  /* ── Dispatch (ADR-0039): on an attention row, send an agent to investigate + fix + log. Its
+     own line under the rowline (like "Why?"), so the row never crowds. Idle → a Claude/Hermes
+     chooser; once a worker runs → a live state. The proposed-fix command + the durable log are
+     local-only (the server already redacts them remotely; we also gate the affordance here). */
+  .dispatch-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2);
+    padding: 0 var(--sp-5) var(--sp-4) calc(var(--sp-5) + 25px); font-size: var(--fs-xs); }
+  .dispatch-bar:empty { display: none; }
+  .dispatch-bar .lbl { color: var(--faint); font-size: var(--fs-2xs); letter-spacing: .3px; }
+  button.disp { font: inherit; font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--blue);
+    cursor: pointer; padding: 4px var(--sp-3); min-height: 24px; display: inline-flex; align-items: center;
+    border-radius: var(--radius-sm); white-space: nowrap; background: var(--blue-wash);  /* idle fill ⇒ ≥3:1 boundary */
+    border: 1px solid var(--blue-line); transition: background .2s, border-color .2s; }
+  button.disp:hover { background: var(--blue-wash); }
+  button.disp:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  button.disp small { color: var(--faint); font-weight: var(--fw-regular); margin-left: 5px; font-size: .85em; }
+  button.disp.disp-copy { color: var(--st-amber-fg); border-color: var(--st-amber-line); background: var(--amber-wash); }
+  .disp-state { display: inline-flex; align-items: center; gap: var(--sp-2); color: var(--muted); }
+  .disp-state.busy, .disp-state.warn { color: var(--st-amber-fg); }
+  .disp-state.good { color: var(--st-up-fg); }
+  .disp-state.bad  { color: var(--st-red-fg); }
+  .spin { width: 11px; height: 11px; border-radius: 50%; flex: none;
+    border: 2px solid var(--st-amber-line); border-top-color: var(--st-amber);
+    display: inline-block; animation: spin .9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .disp-diag { color: var(--muted); font-size: var(--fs-2xs); width: 100%; margin-top: 2px; line-height: 1.5; }
+  a.disp-log { color: var(--blue); font-size: var(--fs-2xs); text-decoration: none; }
+  a.disp-log:hover { text-decoration: underline; }
+  .disp-note { width: 100%; color: var(--faint); font-size: var(--fs-2xs); margin-top: 1px; line-height: 1.4; }
+  .disp-conf { font-size: var(--fs-3xs); font-weight: var(--fw-semibold); padding: 2px var(--sp-2);
+    border-radius: var(--radius-pill); border: 1px solid var(--card-line-hi); color: var(--muted); white-space: nowrap; }
+  .disp-conf.high { color: var(--st-up-fg); border-color: var(--st-up-line); }
+  .disp-conf.low  { color: var(--st-amber-fg); border-color: var(--st-amber-line); }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
   footer { margin-top: var(--sp-7); text-align: center; color: var(--faint); font-size: var(--fs-2xs); line-height: 1.7; }
   footer code { color: var(--muted); background: rgba(255,255,255,0.05); padding: 1.5px 6px; border-radius: 5px; }
 
@@ -312,6 +346,73 @@
   const STATE_RANK = { failed: 0, starting: 1, stopping: 1, down: 2, unknown: 3, up: 4, idle: 5, ok: 5, absent: 6 };
   let lastSig = "";       // only re-render when the service set actually changes (avoids focus/aria churn)
   let prevAttn = new Set(); // ids that needed attention last tick — to detect the recovery moment
+  let dispatchBySvc = {};  // svc id → its latest dispatch incident (ADR-0039), refreshed each tick
+
+  // The dispatch bar under an attention row: a chooser when idle, a live state once a worker runs.
+  function dispBarHTML(inc) {
+    if (!inc)
+      return `<span class="lbl">investigate &amp; fix:</span>` +
+        `<button class="disp" data-target="claude" aria-label="Dispatch a Claude agent (cloud) to investigate and fix this service">Claude<small>cloud</small></button>` +
+        `<button class="disp" data-target="hermes" aria-label="Dispatch a Hermes agent (local) to investigate and fix this service">Hermes<small>local</small></button>` +
+        `<span class="disp-note">tries a safe restart first, then proposes a fix for you to approve</span>`;
+    const who = inc.target === "hermes" ? "Hermes" : "Claude";
+    const log = origin.can_copy_fix
+      ? ` <a class="disp-log" href="/dispatch/log?id=${esc(inc.id)}" target="_blank" rel="noopener">log ↗</a>` : "";
+    const conf = inc.confidence ? ` <span class="disp-conf ${esc(inc.confidence)}">${esc(inc.confidence)} confidence</span>` : "";
+    const diag = inc.diagnosis ? `<span class="disp-diag">${esc(inc.diagnosis)}</span>` : "";
+    switch (inc.status) {
+      case "queued":
+        return `<span class="disp-state busy"><span class="spin" aria-hidden="true"></span> queued…</span>`;
+      case "triaging":
+        return `<span class="disp-state busy"><span class="spin" aria-hidden="true"></span> ${inc.auto_eligible ? "trying recovery…" : "triaging…"}</span>`;
+      case "first-aid":
+        return `<span class="disp-state busy"><span class="spin" aria-hidden="true"></span> trying recovery…</span>`;
+      case "investigating":
+        return `<span class="disp-state busy"><span class="spin" aria-hidden="true"></span> ${esc(who)} investigating… <small>(up to ~3 min)</small></span>`;
+      case "recovered":
+        return `<span class="disp-state good">✓ ${esc(inc.outcome || "recovered")}</span>`;
+      case "needs-approval": {
+        const fix = (origin.can_copy_fix && inc.proposal)
+          ? `<button class="disp disp-copy" data-cmd="${esc(inc.proposal)}">copy fix</button>`
+          : `<span class="badge offsite" aria-label="The proposed fix is available on the desktop">fix on desktop</span>`;
+        return `<span class="disp-state warn">the agent proposed a fix — review &amp; run it yourself</span> ${fix}${conf}${log}${diag}`;
+      }
+      case "diagnosed":
+        return `<span class="disp-state">investigated — no safe auto-fix${conf}</span>${log}${diag}`;
+      case "handed-off":
+        return `<span class="disp-state">handed to Hermes${conf}</span>${log}${diag}`;
+      case "blocked":
+        return `<span class="disp-state warn">${esc(inc.outcome || "unavailable")}</span>${log}`;
+      default:  // failed
+        return `<span class="disp-state bad">couldn't fix — ${esc(inc.outcome || "see log")}</span>${log}${diag}`;
+    }
+  }
+
+  function paintDispatches() {
+    for (const bar of document.querySelectorAll(".dispatch-bar")) {
+      const html = dispBarHTML(dispatchBySvc[bar.dataset.svc]);
+      if (bar.dataset.h !== html) { bar.innerHTML = html; bar.dataset.h = html; }
+    }
+  }
+
+  async function refreshDispatch() {
+    try {
+      const d = await (await fetch("/dispatch.json", { cache: "no-store" })).json();
+      const map = {};
+      for (const i of d.incidents || []) if (!map[i.svc]) map[i.svc] = i;  // incidents arrive newest-first
+      dispatchBySvc = map;
+      paintDispatches();
+    } catch (_) { /* the dispatch view is best-effort; the status panel still works without it */ }
+  }
+
+  async function postDispatch(svc, target) {
+    // Fetch the anti-CSRF token live (never stale across a panel restart), then POST. A cross-origin
+    // page can't read the token, so it can't forge this. Server bounds it to an in-attention catalog svc.
+    const { token } = await (await fetch("/dispatch/token", { cache: "no-store" })).json();
+    return (await fetch("/dispatch", { method: "POST", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Dispatch-Token": token },
+      body: JSON.stringify({ id: svc, target }) })).json();
+  }
 
   // Escape every value that reaches innerHTML — names/descs/states come from systemd + the
   // catalog and must not be able to inject markup into the login-time panel.
@@ -400,6 +501,7 @@
         </div>
       </div>
       <pre class="why" hidden></pre>
+      ${attention ? `<div class="dispatch-bar" data-svc="${esc(s.id)}" role="status" aria-live="polite" aria-atomic="true"></div>` : ""}
     </div>`;
   }
 
@@ -422,6 +524,7 @@
               `<div class="card" role="list" aria-labelledby="g-${esc(g).replace(/\W+/g, "-")}">${list.map((s) => row(s, recovered)).join("")}</div></section>`;
     }
     groupsEl.innerHTML = html || `<section class="group"><div class="card"><div class="row"><div class="rowline"><div class="meta"><div class="desc">No services in the catalog.</div></div></div></div></div></section>`;
+    paintDispatches();   // fill the just-rendered attention rows' dispatch bars from current state
   }
 
   function paintHeader(data, stale) {
@@ -470,6 +573,7 @@
       document.getElementById("updated").textContent = stale
         ? `stale — last updated ${Math.round(age)}s ago`
         : "updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      refreshDispatch();   // pick up live dispatch state (ADR-0039); best-effort, never blocks the panel
     } catch (e) {
       // The status server itself is unreachable — never keep showing a calm green pill.
       pollDelay = Math.min(POLL_MAX, Math.round(pollDelay * 1.8));   // back off; don't hammer
@@ -490,6 +594,37 @@
   // Delegated row actions. All read-only: "Why?" tails the journal; "Copy fix" copies the
   // systemctl one-liner. The server never mutates state; the human runs what they choose.
   document.getElementById("groups").addEventListener("click", async (e) => {
+    // Dispatch (ADR-0039): the chooser POSTs; "copy fix" copies a model-proposed one-liner.
+    const dispBtn = e.target.closest("button.disp");
+    if (dispBtn) {
+      if (dispBtn.classList.contains("disp-copy")) {
+        try { await navigator.clipboard.writeText(dispBtn.dataset.cmd); flash(dispBtn, "copied — run it"); }
+        catch { flash(dispBtn, "copy failed"); }
+        return;
+      }
+      const bar = dispBtn.closest(".dispatch-bar");
+      const target = dispBtn.dataset.target;
+      // Consent (privacy): the cloud (Claude) target sends this service's redacted logs + details
+      // off your device to Anthropic. Ask once per session; Hermes stays local. Honest, not a nag.
+      if (target === "claude" && !sessionStorage.getItem("agentos-cloud-ok")) {
+        if (!confirm("Claude runs in Anthropic's cloud. This service's recent logs and details " +
+          "(secrets redacted) will be sent off your device to diagnose it. Hermes keeps everything " +
+          "local. Send to the cloud?")) return;
+        sessionStorage.setItem("agentos-cloud-ok", "1");
+      }
+      bar.innerHTML = `<span class="disp-state busy" tabindex="-1"><span class="spin" aria-hidden="true"></span> dispatching…</span>`;
+      bar.dataset.h = "";
+      bar.querySelector(".disp-state")?.focus();   // keep focus + the live region coherent after the swap
+      let res = null;
+      try { res = await postDispatch(bar.dataset.svc, target); } catch (_) {}
+      if (res && res.error) {                      // refused (429/409) or worker-launch failure — surface it
+        bar.innerHTML = `<span class="disp-state warn">${esc(res.error)}</span>`;
+        bar.dataset.h = "";                         // the next poll repaints to the chooser
+      } else {
+        refreshDispatch();                          // show the real (queued/recovering) state now
+      }
+      return;
+    }
     const fixBtn = e.target.closest("button.fix");
     if (fixBtn) {
       const unit = fixBtn.dataset.unit;

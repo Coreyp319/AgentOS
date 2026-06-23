@@ -5,14 +5,22 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-# Read-only: serves panel.html + a /status.json computed from `systemctl show` and short
-# port probes. Loopback-only, stdlib-only (no venv/deps). %h-relative so it's portable.
+# Mostly read-only: serves panel.html + a /status.json computed from `systemctl show` and short
+# port probes. Loopback-only, stdlib-only (no venv/deps). %h-relative so it's portable. The one
+# write path (POST /dispatch, ADR-0039) mutates NO system state itself — it records a ledger entry
+# under the runtime dir (RuntimeDirectory below) and launches an out-of-sandbox `systemd-run --user`
+# worker that does the first-aid / agent investigation.
 ExecStart=/usr/bin/python3 %h/Documents/AgentOS/integrations/status-panel/status_panel.py
 Environment="AGENTOS_STATUS_HOST=127.0.0.1"
 Environment="AGENTOS_STATUS_PORT=9123"
 # Route a single debounced swaync toast on a NEW post-boot service failure (surface-labor
 # contract: swaync owns the interrupt). Set to 0 to silence.
 Environment="AGENTOS_STATUS_NOTIFY=1"
+# Dispatch-an-agent (ADR-0039): AGENTOS_DISPATCH=0 hard-disables the whole feature;
+# AGENTOS_DISPATCH_CLOUD=0 keeps local (Hermes) dispatch but removes the cloud (Claude) target,
+# so no service logs ever leave the box.
+Environment="AGENTOS_DISPATCH=1"
+Environment="AGENTOS_DISPATCH_CLOUD=1"
 Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=120
@@ -21,7 +29,15 @@ KillMode=mixed
 TimeoutStopSec=10
 StandardOutput=journal
 StandardError=journal
-# Hardening — it only reads unit state + its own files and serves on loopback; it never writes.
+# The dispatch ledger (ADR-0039) lives here — RuntimeDirectory carves a writable dir under
+# $XDG_RUNTIME_DIR even though ProtectSystem=strict mounts the rest of the fs read-only. Preserve
+# it across a restart so an in-flight incident isn't lost. The durable per-incident transcript is
+# written by the (unsandboxed) systemd-run worker under ~/.local/state — never by this service.
+RuntimeDirectory=agentos-dispatch
+RuntimeDirectoryPreserve=yes
+# Hardening — it reads unit state + its own files, serves on loopback, and writes ONLY the runtime
+# ledger above; the heavy lifting runs in a separate, unsandboxed systemd-run worker. (Phase-1
+# on-box check: that `systemd-run --user` launches that worker from under NoNewPrivileges=true.)
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
