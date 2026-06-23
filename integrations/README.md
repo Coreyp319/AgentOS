@@ -32,7 +32,7 @@ Every capability is a row in **`components.conf`** (the single source of truth) 
 
 ```
 ./install.sh                 # interactive checklist (default-on preselected)
-./install.sh --list          # show the registry (id / tier / default / root / description)
+./install.sh --list          # explain the architecture + the registry grouped by how each part ties in
 ./install.sh --defaults      # the default local stack, non-interactive
 ./install.sh --only lucid,share-hub
 ./install.sh --without comfyui
