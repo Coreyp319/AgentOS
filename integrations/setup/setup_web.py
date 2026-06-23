@@ -137,10 +137,29 @@ def start_research(modality: str, spawn=subprocess.Popen) -> dict | None:
                          f"latest {modality} models", spawn=spawn)
 
 
+def _toast(title: str, body: str) -> None:
+    """One calm ambient ping when a long unattended job finishes (T5). Default-on, disable with
+    AGENTOS_SETUP_NOTIFY=0; no-ops without notify-send."""
+    import shutil as _sh
+    if os.environ.get("AGENTOS_SETUP_NOTIFY", "1") == "0" or not _sh.which("notify-send"):
+        return
+    try:
+        subprocess.run(["notify-send", "-a", "AgentOS setup", "-i", "dialog-information", title, body],
+                       timeout=5, check=False)
+    except Exception:
+        pass
+
+
 def job_view(reg: dict, job: dict) -> dict:
     proc = job.get("proc")
     rc = proc.poll() if proc else None
     kind = job.get("kind", "fetch")
+    if rc is not None and not job.get("notified"):       # fire once, on the terminal transition
+        job["notified"] = True
+        label = job.get("label", job.get("bundle", "setup"))
+        verb = "ready" if rc == 0 else "didn't finish"
+        _toast(f"{label} — {verb}",
+               "Open the setup page." if rc == 0 else "See the setup page for details.")
     present = total = 0
     if kind == "fetch":
         b = setup.find_bundle(reg, job.get("bundle", ""))

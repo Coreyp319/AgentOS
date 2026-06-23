@@ -88,6 +88,19 @@ class StartFetch(unittest.TestCase):
         job, err = sw.start_fetch(setup.load_registry(), "ghost", mature=False, spawn=lambda a, **k: _FakeProc())
         self.assertIsNone(job)
 
+    def test_completion_toast_fires_exactly_once(self):
+        fired = []
+        old = sw._toast
+        sw._toast = lambda t, b: fired.append(t)
+        try:
+            job = {"id": "x", "kind": "fetch", "label": "image", "proc": _FakeProc(rc=0)}
+            sw.job_view(setup.load_registry(), job)
+            sw.job_view(setup.load_registry(), job)        # second poll — must not re-fire
+        finally:
+            sw._toast = old
+        self.assertEqual(len(fired), 1)
+        self.assertTrue(job["notified"])
+
     def test_start_comfyui_argv(self):
         cap = {}
         sw.start_comfyui(spawn=lambda a, **k: (cap.setdefault("a", a), _FakeProc())[1])
