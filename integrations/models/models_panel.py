@@ -58,7 +58,7 @@ PAGE = """<!DOCTYPE html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><meta name=color-scheme content=dark>
 <title>Models · AgentOS</title><style>
 :root{--inst-base:#12141c;--inst-deep:#161a28;--inst-horizon:#1a2238;--inst-text:#e6e9f0;
---inst-muted:#8a90a0;--inst-label:#878c9b;--inst-blue:#7aa2ff;--inst-warm:#ff9957;--brand-warm:#e0884f;
+--inst-muted:#8a90a0;--inst-label:#878c9b;--inst-blue:#9b82e0;--inst-warm:#ff9957;--brand-warm:#e0884f;
 --glass:rgba(38,42,54,.46);--hairline:rgba(255,255,255,.07);--up:#74d39a;--idle:#757c8e;
 --radius:16px;--blur:14px}
 @media (prefers-reduced-transparency:reduce){:root{--glass:rgba(24,28,40,.94)}.card{backdrop-filter:none}}

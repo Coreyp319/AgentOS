@@ -324,7 +324,7 @@ PAGE = r"""<!doctype html><html lang=en><head>
  --night:#06070d;
  --panel:rgba(255,255,255,.035);--panel2:rgba(255,255,255,.065);
  --line:rgba(255,255,255,.09);--line2:rgba(255,255,255,.16);
- --cool:#8aa9ff;--cool-d:#5d7ae6;
+ --cool:#9b82e0;--cool-d:#6e57c0;
  --warm:#ffb07a;
  --serif:'Fraunces',ui-serif,Georgia,serif;
  --mono:'Spline Sans Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -538,7 +538,7 @@ RECEIPT_PAGE = r"""<!doctype html><html lang=en><head>
 <meta name=lucid-port content="__LUCIDPORT__">
 <title>AgentOS Share — receipt</title>
 <style>
-:root{--ink:#eef1fb;--dim:#9aa1c4;--faint:#646a92;--night:#06070d;--cool:#8aa9ff;
+:root{--ink:#eef1fb;--dim:#9aa1c4;--faint:#646a92;--night:#06070d;--cool:#9b82e0;
  --serif:'Fraunces',ui-serif,Georgia,serif;--mono:'Spline Sans Mono',ui-monospace,Menlo,monospace}
 *{box-sizing:border-box}
 body{margin:0;min-height:100dvh;color:var(--ink);font:15px var(--serif);text-align:center;
@@ -597,7 +597,7 @@ NOTFOUND_PAGE = r"""<!doctype html><html lang=en><head>
 <meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <meta name=color-scheme content=dark><meta name=theme-color content="#06070d">
 <title>AgentOS Share — receipt</title>
-<style>:root{--ink:#eef1fb;--faint:#646a92;--night:#06070d;--cool:#8aa9ff;
+<style>:root{--ink:#eef1fb;--faint:#646a92;--night:#06070d;--cool:#9b82e0;
  --serif:'Fraunces',ui-serif,Georgia,serif;--mono:'Spline Sans Mono',ui-monospace,Menlo,monospace}
 *{box-sizing:border-box}
 body{margin:0;min-height:100dvh;color:var(--ink);font:15px var(--serif);text-align:center;

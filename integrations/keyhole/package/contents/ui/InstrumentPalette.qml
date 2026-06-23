@@ -30,7 +30,7 @@ QtObject {
     readonly property color tintHover: dark ? "#1C2230" : "#DDE2EE"   // row hover
 
     // --- accents --------------------------------------------------------------
-    readonly property color blue:      dark ? "#7AA2FF" : "#2C57C9"   // link / acting (contrast-tuned)
+    readonly property color blue:      dark ? "#9B82E0" : "#5A45A6"   // link / acting (contrast-tuned)
     readonly property color warm:      "#FF9957"                       // RESERVED needs-you GLOW/halo hue (both registers)
     // needs-you FOREGROUND (glyph + label text). G7/ADR-0019 F2a: the bright glow hue #FF9957
     // fails AA on the warm-bloomed wallpaper (dark register: 3.07–3.94:1 < 4.5:1) AND on the

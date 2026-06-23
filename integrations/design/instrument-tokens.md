@@ -2,7 +2,11 @@
 
 AgentOS's *instrument* surfaces (the things the substrate uses to **show you the truth** —
 the keyhole tray, the status panel, future resource/lease readouts) wear one coherent
-deep-navy glass skin, deliberately distinct from the light WhiteSur app chrome. Because
+deep-navy glass skin — their own "cockpit" base register. The deep-navy *base* stays
+distinct from the window chrome, but the **accent is the desktop's ONE violet** (unified
+from periwinkle-blue `#7aa2ff` → violet `#9b82e0` in the 2026-06-23 OS-cohesion pass, so a
+tray signal reads as the same identity as the wallpaper-derived chrome; ADR-0042). Only the
+*accent* is shared; the navy base is the instrument's own. Because
 those surfaces are built in different technologies (QML plasmoid vs. an HTML page) they
 can't share a runtime token file — so this doc is the **canonical source of truth**. When
 you re-theme the instrument register, change the values here and mirror them into each
@@ -24,7 +28,7 @@ Consumers:
 | `--inst-text` | `#e6e9f0` | primary text |
 | `--inst-muted` | `#8a90a0` | secondary text |
 | `--inst-label` | `#878c9b` | quiet labels / captions (measured 4.5:1 on the glass — was `#7a8090`/3.86:1, lifted per ADR-0019 G7 + ADR-0031) |
-| `--inst-blue` | `#7aa2ff` | cool accent, links, "acting" |
+| `--inst-blue` | `#9b82e0` | accent — **violet**, unified with the desktop chrome; links, "acting" (*token name kept for back-compat; value is violet since 2026-06-23*) |
 | `--inst-warm` | `#ff9957` | **RESERVED** — the "needs you" dawn-glow cue. Do not spend on decoration. |
 | `--brand-warm` | `#e0884f` | lower-saturation copper for brand decoration, so the reserved hue stays exclusive |
 | `--glass` | `rgba(38,42,54,0.46)` | frosted card fill (solid `rgba(24,28,40,0.94)` when transparency is reduced) |
@@ -87,7 +91,7 @@ that would lose contrast on a light surface are darkened (a same-family copper f
 | `dim` | `#8a90a0` | `#5a6173` | unknown / snag / idle (light nudged to ≥4.5:1) |
 | `hairline` | `#262a36` | `#cfd5e2` | 1px separators |
 | `tintHover` | `#1c2230` | `#dde2ee` | row hover |
-| `blue` | `#7aa2ff` | `#2c57c9` | link / acting |
+| `blue` | `#9b82e0` | `#5a45a6` | link / acting |
 | `warm` | `#ff9957` | `#ff9957` | **RESERVED** needs-you GLOW/halo FILL (identical across registers) |
 | `warmText` | `#ff9957` | `#a8480f` | **RESERVED** needs-you FOREGROUND (glyph + label) — light darkened to a copper of the SAME warm family because `#ff9957` on `#f1f3f8` is only 1.90:1; `#a8480f` clears AA (~5:1). The bright `warm` stays the glow/halo fill only |
 | `stUp` | `#86b89a` | `#2c7a50` | healthy |

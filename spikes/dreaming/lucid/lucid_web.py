@@ -737,7 +737,7 @@ PAGE = """<!DOCTYPE html><html lang=en><head><meta charset=utf-8>
 :root{
  --inst-base:#12141c;--inst-deep:#161a28;--inst-horizon:#1a2238;
  --inst-text:#e6e9f0;--inst-muted:#8a90a0;--inst-label:#7a8090;
- --inst-blue:#7aa2ff;--inst-warm:#ff9957;--brand-warm:#e0884f;
+ --inst-blue:#9b82e0;--inst-warm:#ff9957;--brand-warm:#e0884f;
  --glass:rgba(38,42,54,.46);--hairline:rgba(255,255,255,.07);
  --st-up:#74d39a;--st-idle:#757c8e;--st-unknown:#6f7894;--st-red:#ec7676;--st-amber:#f2c879;
  --st-red-line:color-mix(in srgb,var(--st-red) 40%,transparent);

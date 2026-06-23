@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate the Atrium PWA icons from the instrument 'mark' (the status panel's brand square):
-a rounded square with a blue→copper diagonal gradient and a darker inset square — no new art,
+a rounded square with a violet→copper diagonal gradient and a darker inset square — no new art,
 just the existing mark rendered to PNG. Run once:  python3 make_icons.py
 """
 from pathlib import Path
@@ -12,7 +12,7 @@ ICONS = HERE / "icons"
 ICONS.mkdir(exist_ok=True)
 
 BG = (18, 20, 28)          # --inst-base #12141c
-BLUE = (122, 162, 255)     # --inst-blue #7aa2ff
+BLUE = (155, 130, 224)     # --inst-blue #9b82e0 (violet, unified 2026-06-23 — name kept for compat)
 COPPER = (224, 136, 79)    # --brand-warm #e0884f
 
 
@@ -54,6 +54,7 @@ def main():
     make(192).save(ICONS / "icon-192.png")
     make(512).save(ICONS / "icon-512.png")
     make(512, maskable=True).save(ICONS / "icon-512-maskable.png")
+    make(180).save(ICONS / "apple-touch-icon.png")   # iOS home-screen (non-maskable)
     print("wrote:", *(p.name for p in sorted(ICONS.glob("*.png"))))
 
 
