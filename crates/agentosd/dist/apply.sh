@@ -21,11 +21,13 @@ UNIT_DIR="$HOME/.config/systemd/user"
 RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentosd"
 
+command -v cargo >/dev/null 2>&1 || { echo "✗ cargo not found — install the Rust toolchain (https://rustup.rs) and re-run" >&2; exit 1; }
 echo "building agentosd (release)…"
 ( cd "$REPO" && cargo build --release -p agentosd )
 
 mkdir -p "$(dirname "$BIN_DEST")"
 install -m755 "$REPO/target/release/agentosd" "$BIN_DEST"
+mkdir -p "$STATE"   # telemetry self-creates it, but the coexist-report timer's `>>` redirect needs it to exist
 
 mkdir -p "$UNIT_DIR"
 for UNIT in "${UNITS[@]}" "${REPORT_UNITS[@]}" "${INSTALL_ONLY[@]}"; do
