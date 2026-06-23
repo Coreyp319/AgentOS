@@ -108,11 +108,23 @@
   .tcard > summary{cursor:pointer;list-style:none;color:var(--text);font-weight:560;font-size:.95rem;display:flex;justify-content:space-between;align-items:center}
   .tcard > summary::-webkit-details-marker{display:none}
   .tcard > summary .chev{color:var(--muted);font-size:.78rem;font-weight:400}
-  .twarn{margin-top:12px;padding:13px 15px;border-radius:var(--radius-sm);border:1px solid color-mix(in srgb,var(--red) 38%,transparent);background:color-mix(in srgb,var(--red) 7%,transparent)}
-  .twarn p{font-size:.82rem;margin:0 0 9px;line-height:1.5}
-  .twarn .th{color:var(--amber)}
-  .twarn ul{margin:0 0 9px;padding-left:18px;font-size:.82rem;line-height:1.6}
-  .twarn .tbottom{color:var(--amber);margin-bottom:0}
+  .twarn{margin-top:12px;border-radius:var(--radius-sm);border:1px solid color-mix(in srgb,var(--red) 32%,transparent);background:color-mix(in srgb,var(--red) 6%,transparent);overflow:hidden}
+  .twarn .th{display:flex;gap:9px;align-items:flex-start;padding:11px 15px;background:color-mix(in srgb,var(--red) 13%,transparent);font-size:.83rem;font-weight:640;color:var(--amber);line-height:1.45}
+  .twarn .th .ic{flex:none;font-size:1rem;line-height:1.2}
+  .twarn .body{padding:13px 15px 4px}
+  .twarn .lede2{font-size:.81rem;color:var(--text);margin:0 0 11px;line-height:1.5}
+  /* exposed surfaces — a port chip + what it can do, scannable rows */
+  .expo{list-style:none;margin:0;padding:0;display:grid;gap:7px}
+  .expo li{display:flex;gap:10px;align-items:baseline;font-size:.8rem;line-height:1.4}
+  .expo .port{flex:none;min-width:80px;text-align:center;font-family:ui-monospace,monospace;font-size:.69rem;color:var(--red);background:color-mix(in srgb,var(--red) 12%,transparent);border:1px solid color-mix(in srgb,var(--red) 26%,transparent);border-radius:6px;padding:2px 6px}
+  .expo .what{color:var(--muted)}
+  .expo .what b{color:var(--text);font-weight:560}
+  /* labelled rule blocks — the eyebrow carries the structure so bold can stay rare */
+  .trule{margin-top:12px}
+  .trule .lbl{display:block;font-size:.67rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--amber);margin-bottom:3px}
+  .trule p{font-size:.8rem;color:var(--muted);margin:0;line-height:1.5}
+  .trule p b{color:var(--text);font-weight:560}
+  .twarn .tbottom{margin:13px 15px;padding:10px 13px;border-radius:var(--radius-sm);border:1px solid color-mix(in srgb,var(--amber) 38%,transparent);background:color-mix(in srgb,var(--amber) 9%,transparent);font-size:.81rem;color:var(--amber);font-weight:600;line-height:1.45}
   .tconsent{display:flex;gap:9px;align-items:flex-start;font-size:.82rem;margin:13px 0 0;cursor:pointer;line-height:1.5}
   .tconsent input{margin-top:3px;flex:none}
   .tcmd{font-family:ui-monospace,monospace;font-size:.72rem;color:var(--text);background:rgba(0,0,0,.3);border:1px solid var(--line-hi);border-radius:var(--radius-sm);padding:11px 13px;overflow:auto;white-space:pre;line-height:1.6;margin:8px 0}
@@ -168,19 +180,25 @@
   <details class="card tcard">
     <summary>Expose the AgentOS UIs to your tailnet <span class="chev" id="tchev">show ▾</span></summary>
     <div class="twarn">
-      <p class="th"><b>⚠ Remote access exposes unauthenticated desktop UIs to your whole tailnet. Read this before you copy anything.</b></p>
-      <p><b>These UIs have NO per-request authentication. Tailnet membership is the entire authorization boundary.</b> Anyone on your Tailscale account — every device you've added <b>or shared</b>, and your account itself if it is compromised — can reach, with no password:</p>
-      <ul>
-        <li><b>Lucid (<code>:8765</code>)</b> — can generate <b>explicit (18+) content</b> and <b>drive the GPU / VRAM lease</b>.</li>
-        <li><b>Status panel (<code>:9123</code>)</b> and <b>Models panel (<code>:9124</code>)</b> — your system state and model library.</li>
-        <li><b>Hermes board (<code>:9119</code>)</b> — <b>can drive the agent.</b></li>
-        <li><b>Share hub (<code>:8770</code>)</b> — push photos straight into your box.</li>
-      </ul>
-      <p><b>Your credentials are never exposed.</b> This setup page (<b>port <code>9125</code></b>) is <b>on-box only and is never put on the tailnet</b> — it holds your Hugging&nbsp;Face / Civitai token entry. Those tokens live in your OS keyring (or, only if no keyring is reachable, a disclosed <code>0600</code> file) and <b>never leave this machine.</b> The Hermes REST control API (<code>:8642</code>) and ComfyUI (<code>:8188</code>, heavy + unauthenticated) are <b>deliberately NOT exposed</b> — keep them that way.</p>
-      <p><b><code>serve</code>, never <code>funnel</code>.</b> <code>tailscale serve</code> = tailnet-only. <code>tailscale funnel</code> = <b>the public internet</b> — never run it. After enabling, verify every line of <code>tailscale serve status</code> reads <b>“tailnet only.”</b> Never router-port-forward, never bind <code>0.0.0.0</code>, never use <code>funnel</code>/<code>ngrok</code>.</p>
-      <p><b>Reboot gap — eyes open.</b> Leaving <code>tailscaled</code> <b>enabled</b> is what keeps these unauthenticated UIs reachable across <b>every reboot</b>. Only do this if you have <b>2FA + a <code>tag:agentos</code> ACL</b> in place. If <code>tailscaled</code> is disabled, your box drops off the tailnet after a reboot and these UIs vanish until you re-run <code>sudo systemctl enable --now tailscaled</code>.</p>
-      <p><b>Lower the blast radius.</b> Turn on Tailscale <b>2FA</b> (highest leverage), apply a <code>tag:agentos</code> ACL so only <i>your</i> devices reach these ports, and never set <code>GATEWAY_ALLOW_ALL_USERS=true</code>.</p>
-      <p class="tbottom"><b>Bottom line: use <code>serve</code>, never <code>funnel</code>. Keep 2FA on. Restrict to your own devices with a <code>tag:agentos</code> ACL.</b></p>
+      <div class="th"><span class="ic" aria-hidden="true">⚠</span><span>Remote access exposes <u>unauthenticated</u> desktop UIs to your whole tailnet. Read this before you copy anything.</span></div>
+      <div class="body">
+        <p class="lede2">These UIs have <b>no per-request login</b> — tailnet membership is the entire authorization boundary. Anyone on your Tailscale account (every device you've added <b>or shared</b>, and your account if it's compromised) can reach, with no password:</p>
+        <ul class="expo">
+          <li><span class="port">:8765</span><span class="what"><b>Lucid</b> — generate <b>explicit (18+) content</b> and drive the GPU / VRAM lease</span></li>
+          <li><span class="port">:9123 / :9124</span><span class="what"><b>Status &amp; Models panels</b> — your system state and model library</span></li>
+          <li><span class="port">:9119</span><span class="what"><b>Hermes board</b> — can drive the agent</span></li>
+          <li><span class="port">:8770</span><span class="what"><b>Share hub</b> — push photos straight into your box</span></li>
+        </ul>
+        <div class="trule"><span class="lbl">Your credentials stay on-box</span>
+          <p>This installer (<code>:9125</code>) is never put on the tailnet — your Hugging&nbsp;Face / Civitai tokens live in your OS keyring (or a disclosed <code>0600</code> file) and never leave this machine. The Hermes control API (<code>:8642</code>) and ComfyUI (<code>:8188</code>) are deliberately <b>not</b> exposed — keep them that way.</p></div>
+        <div class="trule"><span class="lbl">serve, never funnel</span>
+          <p><code>tailscale serve</code> = tailnet-only. <code>tailscale funnel</code> = <b>the public internet</b> — never run it. Verify every line of <code>tailscale serve status</code> reads “tailnet only.” Never port-forward, bind <code>0.0.0.0</code>, or use <code>funnel</code>/<code>ngrok</code>.</p></div>
+        <div class="trule"><span class="lbl">Reboot gap — eyes open</span>
+          <p>Leaving <code>tailscaled</code> <b>enabled</b> keeps these unauthenticated UIs reachable across <b>every reboot</b> — only do that with 2FA + a <code>tag:agentos</code> ACL in place. Disabled, your box drops off the tailnet after a reboot until you re-run <code>sudo systemctl enable --now tailscaled</code>.</p></div>
+        <div class="trule"><span class="lbl">Lower the blast radius</span>
+          <p>Turn on Tailscale <b>2FA</b> (highest leverage), apply a <code>tag:agentos</code> ACL so only <i>your</i> devices reach these ports, and never set <code>GATEWAY_ALLOW_ALL_USERS=true</code>.</p></div>
+      </div>
+      <p class="tbottom">Bottom line — use <code>serve</code> (never <code>funnel</code>), keep 2FA on, and restrict to your own devices with a <code>tag:agentos</code> ACL.</p>
     </div>
     <label class="tconsent"><input type="checkbox" id="tsok">
       <span>I understand these UIs have no login; that anyone on my tailnet — every device I've added <b>or shared</b>, and my account if it is compromised — can reach Lucid (explicit content + GPU) and the agent board with no password; and that I will use <code>serve</code> (never <code>funnel</code>) and keep Tailscale 2FA on.</span></label>
