@@ -1,0 +1,304 @@
+/* =========================================================================
+   AgentOS — Aurora swaync style ("instrument glass")
+   SwayNotificationCenter / GTK4 CSS.
+
+   Replaces the shipped macOS-mimic default (Apple blue #0a84ff, Apple green
+   #34c759, SF Pro). This is the AgentOS *instrument register*: deep-navy
+   frosted glass, ONE violet accent, calm and low-chroma — the notification
+   "nervous system" wearing the same skin as the keyhole tray + status panel.
+
+   Canonical tokens: integrations/design/instrument-tokens.md.
+   Frost note: KWin does not blur layer-shell surfaces, so "glass" here is a
+   soft translucent navy card + one drop shadow (no backdrop-filter — GTK4
+   doesn't support it). Keep to GTK4 props: background, border, border-radius,
+   box-shadow, color, padding, margin, transition, font-*.
+
+   ---- TOKEN MAP (instrument-tokens.md → this sheet) ------------------------
+     base       #12141c   panel base / control-center deepest bg
+     deep       #161a28   mid background (cards, history rows)
+     horizon    #1a2238   top-of-gradient horizon (control-center top wash)
+     text       #e6e9f0   primary text (summary)
+     muted      #8a90a0   secondary text (body)
+     label      #878c9b   quiet captions (time, placeholders)
+     hairline   rgba(255,255,255,0.07)  1px separators / card borders
+     ACCENT     #9b82e0   VIOLET — links, action buttons, focus, active, DND-on
+                          (just unified from periwinkle/blue → violet)
+     up/ok      #74d39a   (not used decoratively here; reserved for status)
+     warn/amber #f2c879   (reserved; not spent on chrome)
+     critical   #ec7676   RED — critical/urgent notifications ONLY
+     warm       #ff9957   RESERVED "needs you" — NEVER used in this sheet
+     radius     ~12px floating cards / 16px control-center (Aurora two-radius)
+   ========================================================================= */
+
+/* ---- reset; instrument font is Inter (NOT SF Pro) ----------------------- */
+* {
+  all: unset;
+  font-family: "Inter", "Noto Sans", "Cantarell", sans-serif;
+}
+
+/* =========================================================================
+   FLOATING TOASTS — kill the default opaque window, keep our card only
+   ========================================================================= */
+.floating-notifications.background,
+.floating-notifications.background .notification-background {
+  background: transparent;
+}
+
+.notification-row { outline: none; }
+.notification-row:focus,
+.notification-row:hover { background: transparent; }
+
+/* The frosted instrument card (toast + control-center share this) */
+.notification-background .notification,
+.control-center .notification-background .notification {
+  border-radius: 12px;                       /* Aurora floating-card radius */
+  margin: 7px 12px;
+  background: rgba(22, 26, 40, 0.92);        /* deep #161a28 @ ~0.92 glass */
+  border: 1px solid rgba(255, 255, 255, 0.07);   /* hairline */
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.50);   /* one soft drop shadow */
+  padding: 4px;
+}
+
+/* hover: a barely-there lift, NOT a colour pop (calm by default) */
+.notification-background .notification:hover,
+.notification-default-action:hover {
+  background: rgba(26, 34, 56, 0.94);        /* toward horizon #1a2238 */
+}
+
+/* CRITICAL / URGENT — the ONLY place red (#ec7676) is spent */
+.notification-background .notification.critical {
+  border: 1px solid rgba(236, 118, 118, 0.55);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.50),
+              0 0 0 1px rgba(236, 118, 118, 0.25);
+}
+
+/* =========================================================================
+   NOTIFICATION CONTENT
+   ========================================================================= */
+.notification-content {
+  padding: 13px 15px;
+  margin: 0;
+}
+
+.summary {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e6e9f0;                            /* text */
+}
+
+.time {
+  font-size: 12px;
+  color: #878c9b;                            /* label */
+}
+
+.body {
+  font-size: 13px;
+  font-weight: 400;
+  color: #8a90a0;                            /* muted */
+  margin-top: 4px;
+}
+
+/* app icon / image — rounded, gap before the text */
+.notification-content .image    { border-radius: 10px; margin-right: 15px; }
+.notification-content .app-icon { border-radius: 8px;  margin-right: 15px; }
+
+/* =========================================================================
+   ACTION BUTTONS — violet-tinted glass; the accent lives here
+   ========================================================================= */
+.notification-action,
+.notification-default-action {
+  color: #e6e9f0;
+}
+
+.notification-action {
+  border-radius: 9px;
+  padding: 8px 15px;
+  margin: 9px 6px 4px 6px;
+  background: rgba(155, 130, 224, 0.14);     /* violet @ low alpha */
+  border: 1px solid rgba(155, 130, 224, 0.22);
+  color: #cdc3f1;                            /* violet-tinted text on glass */
+  font-weight: 500;
+}
+.notification-action:hover {
+  background: rgba(155, 130, 224, 0.24);
+  border-color: rgba(155, 130, 224, 0.40);
+  color: #e9e3fb;
+}
+.notification-action:active {
+  background: rgba(155, 130, 224, 0.34);
+}
+
+/* keyboard focus — solid violet ring (accessible, not the translucent fill) */
+.notification-action:focus,
+.notification-default-action:focus {
+  outline: 2px solid #9b82e0;
+  outline-offset: -1px;
+}
+
+/* =========================================================================
+   INLINE REPLY (apps that advertise it)
+   ========================================================================= */
+.inline-reply { margin-top: 10px; }
+.inline-reply-entry {
+  border-radius: 9px;
+  padding: 8px 12px;
+  background: rgba(18, 20, 28, 0.85);        /* base #12141c */
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  color: #e6e9f0;
+}
+.inline-reply-entry:focus {
+  border-color: rgba(155, 130, 224, 0.55);   /* violet focus */
+}
+.inline-reply-button {
+  border-radius: 9px;
+  padding: 8px 14px;
+  margin-left: 8px;
+  background: rgba(155, 130, 224, 0.18);
+  border: 1px solid rgba(155, 130, 224, 0.30);
+  color: #cdc3f1;
+}
+.inline-reply-button:hover { background: rgba(155, 130, 224, 0.30); }
+
+/* =========================================================================
+   CLOSE BUTTON — circular; hover goes to critical-red (the universal "remove")
+   ========================================================================= */
+.close-button {
+  border-radius: 999px;
+  min-width: 22px;
+  min-height: 22px;
+  margin: 8px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.07);     /* hairline fill */
+  color: #8a90a0;                            /* muted glyph */
+}
+.close-button:hover {
+  background: rgba(236, 118, 118, 0.85);     /* critical red */
+  color: #12141c;
+}
+
+/* =========================================================================
+   CONTROL CENTER — the notification-history panel
+   ========================================================================= */
+.control-center {
+  border-radius: 16px;                       /* Aurora panel radius */
+  /* deep-navy vertical glass: horizon at top → base at bottom */
+  background: linear-gradient(180deg,
+              rgba(26, 34, 56, 0.96) 0%,     /* horizon #1a2238 */
+              rgba(18, 20, 28, 0.96) 100%);  /* base    #12141c */
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  padding: 12px;
+}
+.control-center-list { background: transparent; padding: 4px; }
+.control-center-list-placeholder { color: #878c9b; }   /* label */
+
+/* the control-center's own cards: slightly flatter than floating toasts */
+.control-center .notification-background .notification {
+  background: rgba(22, 26, 40, 0.80);
+  box-shadow: none;                          /* shadow belongs to the panel */
+}
+.control-center .notification-background .notification:hover {
+  background: rgba(26, 34, 56, 0.92);
+}
+
+/* =========================================================================
+   WIDGETS — title row (Notifications + Clear-all), DND, MPRIS
+   ========================================================================= */
+.widget-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: #e6e9f0;
+  margin: 6px 8px 12px 8px;
+}
+/* "Clear all" lives in .widget-title > button AND .control-center-clear-all */
+.widget-title > button,
+.control-center-clear-all {
+  border-radius: 9px;
+  padding: 6px 12px;
+  background: rgba(155, 130, 224, 0.12);     /* violet glass */
+  border: 1px solid rgba(155, 130, 224, 0.20);
+  color: #cdc3f1;
+  font-weight: 500;
+}
+.widget-title > button:hover,
+.control-center-clear-all:hover {
+  background: rgba(155, 130, 224, 0.22);
+  color: #e9e3fb;
+}
+.widget-title > button:focus,
+.control-center-clear-all:focus {
+  outline: 2px solid #9b82e0;
+  outline-offset: -1px;
+}
+
+/* ---- Do Not Disturb -----------------------------------------------------
+   The .control-center-dnd toggle and the .widget-dnd row. DND "on" wears the
+   violet accent (active state = accent), never Apple green. ----------------*/
+.widget-dnd {
+  margin: 6px 8px;
+  font-size: 14px;
+  color: #e6e9f0;
+}
+.widget-dnd > switch,
+.control-center-dnd {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+.widget-dnd > switch:checked,
+.control-center-dnd:checked {
+  background: #9b82e0;                        /* violet accent = active */
+  border-color: #9b82e0;
+}
+.widget-dnd > switch slider,
+.control-center-dnd slider {
+  border-radius: 999px;
+  background: #e6e9f0;                        /* text-light knob */
+}
+
+/* ---- now-playing (mpris) widget ----------------------------------------- */
+.widget-mpris {
+  border-radius: 12px;
+  background: rgba(22, 26, 40, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 8px;
+  margin: 6px 8px;
+}
+.widget-mpris-player {
+  padding: 6px;
+}
+.widget-mpris-title    { font-weight: 600; color: #e6e9f0; }
+.widget-mpris-subtitle { color: #8a90a0; }   /* muted */
+.widget-mpris button {
+  border-radius: 999px;
+  background: rgba(155, 130, 224, 0.12);
+  color: #cdc3f1;
+  padding: 4px;
+}
+.widget-mpris button:hover { background: rgba(155, 130, 224, 0.22); }
+
+/* ---- generic widget labels / menubar (volume, brightness, buttons, etc.) - */
+.widget-label > label { color: #e6e9f0; }
+.widget-buttons-grid > flowbox > flowboxchild > button {
+  border-radius: 9px;
+  background: rgba(155, 130, 224, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  color: #cdc3f1;
+  padding: 8px;
+  margin: 3px;
+}
+.widget-buttons-grid > flowbox > flowboxchild > button:hover {
+  background: rgba(155, 130, 224, 0.20);
+}
+
+/* progress bars (e.g. download notifications) wear the violet accent */
+progressbar, progressbar progress {
+  border-radius: 999px;
+}
+progressbar progress {
+  background: #9b82e0;                        /* violet */
+}
+progressbar trough {
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+}

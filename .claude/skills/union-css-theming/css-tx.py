@@ -16,7 +16,7 @@ a *validated* state, and revert always lands on one.
     css-tx.py revert [--to RUN]    # restore working tree from the latest (or named) checkpoint
     css-tx.py history              # list checkpoints (run id, time, note, files changed)
 
-Style defaults to $UNION_STYLE_NAME or 'agentos'. Pure stdlib. Checkpoints + the
+Style defaults to $UNION_STYLE_NAME or 'aurora'. Pure stdlib. Checkpoints + the
 append-only ledger live in `<data-root>/css/.tx/`. A checkpoint snapshots BOTH the style
 dir and the shared `defaults/` (Union resolves defaults/ relative to the user data root,
 and a missing defaults/ makes Union throw — so it is part of the restorable unit).
@@ -268,8 +268,8 @@ def cmd_history(style: str, as_json: bool):
 
 def main():
     ap = argparse.ArgumentParser(description="Reversible apply/checkpoint/revert tx for a Union CSS style")
-    ap.add_argument("--style", default=os.environ.get("UNION_STYLE_NAME") or "agentos",
-                    help="Union style name (default: $UNION_STYLE_NAME or agentos)")
+    ap.add_argument("--style", default=os.environ.get("UNION_STYLE_NAME") or "aurora",
+                    help="Union style name (default: $UNION_STYLE_NAME or aurora)")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status"); sub.add_parser("diff"); sub.add_parser("verify"); sub.add_parser("history")

@@ -1,0 +1,106 @@
+/*
+ * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-FileCopyrightText: 2025 Arjen Hiemstra <ahiemstra@heimr.nl>
+ */
+
+/*
+ * View delegates
+ */
+
+itemdelegate,
+checkdelegate,
+radiodelegate,
+switchdelegate,
+swipedelegate
+{
+    padding: var(--large-spacing);
+    inset: var(--small-spacing);
+    spacing: var(--small-spacing);
+    width: var(--icon-size-small);
+    height: var(--icon-size-small);
+
+    border-radius: var(--corner-radius);
+
+    icon-size: var(--icon-size-smallmedium);
+
+    layout-alignment: content fill center 0;
+    icon-alignment: content start center 0;
+    text-alignment: content fill center 0;
+    text-wrap-mode: wrap;
+
+    color: var(--window-text-color);
+
+    & > * {
+        layout-alignment: content fill fill 0;
+    }
+
+    &.alternating-colors
+    {
+        background-color: var(--view-background-alternate-color);
+    }
+
+    &.inside-table,
+    &.inside-list
+    {
+        inset: 0px;
+        border-radius: 0px;
+        &.hover-enabled {
+            inset: var(--small-spacing);
+            border-radius: var(--corner-radius);
+        }
+    }
+
+    &:hovered
+    {
+        border: 1px solid var(--highlight-color);
+        background-color: var(--highlight-hover-color);
+    }
+
+    &:pressed,
+    &:highlighted
+    {
+        border: 1px solid var(--highlight-color);
+        background-color: var(--highlight-color);
+        color: var(--highlight-text-color);
+    }
+
+    &:disabled {
+        color: var(--window-disabled-text-color);
+        background-color: transparent;
+        border: none;
+    }
+
+    &[display="text-under-icon"]
+    {
+        icon-alignment: content center stack-center 0;
+        text-alignment: content center stack-center 1;
+
+        icon-size: var(--icon-size-medium);
+        width: var(--icon-size-large);
+        height: var(--icon-size-large);
+    }
+
+    & > indicator
+    {
+        layout-alignment: content start center -1;
+    }
+}
+
+/* For delegates with known indicators, place the indicator at the top left and
+ * reduce the effective indicator size to 0. This ensures the indicator will be
+ * placed inside the content item. */
+checkdelegate,
+radiodelegate
+{
+    &[display="text-under-icon"] > indicator {
+        layout-alignment: content start start -1;
+        /* -(var(--icon-size-small)) */
+        margin-right: -16px;
+    }
+}
+
+switchdelegate[display="text-under-icon"] > indicator {
+    layout-alignment: content start start -1;
+    margin-right: -36px;
+    margin-top: var(--small-spacing);
+}

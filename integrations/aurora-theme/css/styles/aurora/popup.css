@@ -1,0 +1,181 @@
+/*
+ * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-FileCopyrightText: 2025 Arjen Hiemstra <ahiemstra@heimr.nl>
+ * SPDX-FileCopyrightText: 2025 Niccolò Venerandi <niccolo@venerandi.com>
+ * SPDX-FileCopyrightText: 2025 Akseli Lahtinen <akselmo@akselmo.dev>
+ */
+
+/*
+ * All forms of popups: Menus, Dialogs, plain Popup
+ */
+
+:root
+{
+    --tooltip-text-color: custom-color("kcolorscheme", "active", "tooltip", "foreground", "text");
+    --tooltip-background-color: custom-color("kcolorscheme", "active", "tooltip", "background", "normal");
+    --tooltip-border-color: custom-color("kcolorscheme", "active", "tooltip", "decoration", "frame");
+
+    --popup-shadow-size: 20px;
+}
+
+menu, popup
+{
+    border-radius: var(--popup-corner-radius);
+
+    background-color: var(--window-background-color);
+    border: 1px solid var(--window-border-color);
+    color: var(--window-text-color);
+    box-shadow: var(--elevation-2);
+
+    &:disabled {
+        color: var(--window-disabled-text-color);
+        background-color: var(--window-disabled-background-color);
+        border: 1px solid var(--window-disabled-border-color);
+    }
+}
+
+menu
+{
+    padding: var(--medium-spacing);
+    margin: var(--popup-shadow-size);
+}
+
+menuitem
+{
+    width: var(--menu-item-width);
+    padding: var(--medium-spacing);
+    spacing: var(--small-spacing);
+
+    border-radius: var(--corner-radius);
+
+    color: var(--window-text-color);
+
+    /*
+    highlight is "sticky", that is, when hovering outside of the menu or
+    over a disabled item, the last hovered item will be considered highlighted.
+    We generally only want to show hover, *except* when a menu item shows a
+    submenu, as we want to keep highlighting the menu item the submenu comes
+    from.
+    */
+    &:hovered,
+    &.with-submenu:highlighted
+    {
+        background-color: var(--focus-color);
+        border: 1px solid var(--highlight-color);
+    }
+
+    &:pressed
+    {
+        border: 1px solid var(--highlight-color);
+        background-color: var(--highlight-color);
+        color: var(--highlight-text-color);
+    }
+
+    &:disabled {
+        border: none;
+        background: none;
+        color: var(--window-disabled-text-color);
+    }
+
+    & > indicator
+    {
+        width: var(--icon-size-small);
+        height: var(--icon-size-small);
+
+        layout-alignment: content start center -1;
+    }
+
+    & > arrow
+    {
+        width: var(--icon-size-small);
+        height: var(--icon-size-small);
+
+        icon-name: "arrow-right-symbolic";
+
+        layout-alignment: content end center 0;
+    }
+
+    & > shortcuttext {
+        spacing: 40px;
+        color: mix(var(--window-background-color), var(--window-text-color), 0.5);
+        &:disabled {
+            color: mix(var(--window-background-color), var(--window-disabled-text-color), 0.5);
+        }
+    }
+}
+
+/* Menuitems are sometimes used in comboboxes instead of itemdelegates, adjust their padding to
+ * same as itemdelegate in those cases */
+popup.combobox menuitem {
+    padding: var(--large-spacing);
+    inset: var(--small-spacing);
+}
+
+menuseparator {
+    inset: 0px var(--small-spacing);
+    width: var(--large-element-size);
+    height: 1px;
+    background-color: var(--window-border-color);
+}
+
+menubar, menubaritem
+{
+    width: var(--medium-element-size);
+    height: var(--medium-element-size);
+    padding: var(--small-spacing);
+    spacing: var(--small-spacing);
+
+    border-radius: var(--corner-radius);
+
+    color: var(--window-text-color);
+}
+
+menubaritem {
+    &:hovered,
+    &:pressed,
+    &:highlighted {
+        background-color: var(--focus-color);
+        border: 1px solid var(--highlight-color);
+    }
+    text-alignment-horizontal: center;
+    text-alignment-vertical: center;
+
+}
+
+dialog
+{
+    spacing: var(--small-spacing);
+    padding: var(--large-spacing);
+    border-radius: var(--popup-corner-radius);
+
+    text-alignment-horizontal: center;
+    icon-alignment-horizontal: center;
+
+    color: var(--view-text-color);
+    border: 1px solid var(--view-border-color);
+    background-color: var(--view-background-color);
+    box-shadow: var(--dialog-shadow);
+
+    .header {
+        font-size: 20px;
+        padding: var(--large-spacing);
+    }
+}
+
+dialogbuttonbox
+{
+    spacing: var(--medium-spacing);
+    padding: var(--large-spacing);
+}
+
+tooltip
+{
+    width: var(--medium-element-size);
+    height: var(--medium-element-size);
+    padding: var(--large-spacing);
+    color: var(--tooltip-text-color);
+    background-color: var(--tooltip-background-color);
+    border-radius: var(--popup-corner-radius);
+    border: 1px solid var(--tooltip-border-color);
+    box-shadow: var(--elevation-1);
+}
