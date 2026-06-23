@@ -96,6 +96,19 @@ BEAT_TEMP = float(os.environ.get("LUCID_BEAT_TEMP", "0.78"))
 # single vision model. See [[lucid-beatgen-prompt-redesign]] + the registry narrator-beats notes.
 NARRATOR_MODEL = os.environ.get("LUCID_NARRATOR_MODEL") or lucid_models.get("narrator-beats", MODEL)
 
+# ── ANTICIPATORY RESIDENCY (ADR-0045): pre-warm the narrator + VLM when the app is opened so the first
+# menu doesn't pay cold weight-load latency (~12 GB off disk on a fresh open: qwen2.5vl:3b ~3.2 GB for
+# /api/openings & grounding, MN-12B ~8.7 GB for the beat menu). This is a WEIGHTS-ONLY preload (an Ollama
+# request with NO prompt → it loads the weights without generating a single token). Because it produces
+# no content and leaves no residue, it needs none of the privacy gating the speculative GLIMPSE renderer
+# does (ADR-0023 §9) — so it is default-ON. Kill-switch: LUCID_PREWARM=0.
+PREWARM = os.environ.get("LUCID_PREWARM", "1").lower() not in ("0", "false", "no", "off")
+# Keep-alive on a pre-warmed model: SHORT on purpose (survives the read-the-opening-menu dwell, then frees
+# the VRAM if the open is abandoned). NEVER -1 — an infinite pin would sit on top of the ~17 GB i2v lease
+# and OOM the 24 GB card if the B1 force-evict ever regressed. The generate path evicts both models first
+# (lucid_linear B1, ADR-0015 §3), so this is belt-and-suspenders, not the primary guard.
+PREWARM_KEEP_ALIVE = os.environ.get("LUCID_PREWARM_KEEP_ALIVE", "4m")
+
 DEFAULT_W, DEFAULT_H, DEFAULT_LEN = 720, 1280, 33  # ~2s portrait @16fps; matches the
 # workflow's baked WanImageToVideo length and stays under the VRAM-thrash line (ADR-0014 §6)
 # A user-chosen "next segment length" is bounded HERE (code disposes): at 720x1280 on the non-distilled
@@ -757,6 +770,38 @@ def _ollama_json(system, user, model=MODEL, images=None, temperature=0.6):
     # first call pays model-load latency (cold weights + possible VRAM evict)
     with urllib.request.urlopen(req, timeout=300) as r:
         return json.load(r)["message"]["content"]
+
+
+# ---------------- anticipatory residency (ADR-0045) ----------------
+def _preload_one(model, keep_alive):
+    """POST /api/generate with NO prompt → Ollama loads the model's weights into VRAM without generating
+    a token (the documented preload pattern). `keep_alive` pins the weights for the dwell window. This
+    warms WEIGHTS, not the prefill: the first real menu still computes its own prompt, but skips the
+    big disk→VRAM load, which is the latency the user actually feels on a cold open."""
+    body = json.dumps({"model": model, "keep_alive": keep_alive}).encode()
+    req = urllib.request.Request(OLLAMA + "/api/generate", data=body,
+                                 headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(req, timeout=180).read()
+
+
+def prewarm_models(models=None, keep_alive=None, _warm=None):
+    """Warm the beat models into VRAM ahead of need (default: the VLM + the narrator). FAIL-OPEN and
+    best-effort — every error is swallowed (a warm that doesn't happen just means the first menu pays the
+    cold load it pays today; pre-warming must never break the loop). Returns the de-duplicated list it
+    asked to warm — empty if the kill-switch LUCID_PREWARM=0 is set. `_warm(model, keep_alive)` is
+    injectable for tests (no real Ollama)."""
+    if not PREWARM:
+        return []
+    keep = keep_alive if keep_alive is not None else PREWARM_KEEP_ALIVE
+    want = models if models is not None else [MODEL, NARRATOR_MODEL]
+    uniq = list(dict.fromkeys(m for m in want if m))   # de-dup, preserve order (narrator==VLM → one warm)
+    warm = _warm or _preload_one
+    for m in uniq:
+        try:
+            warm(m, keep)
+        except Exception:
+            pass   # fail-open: one model failing to warm never stops the others, nor the app
+    return uniq
 
 
 def frame_to_b64(path):

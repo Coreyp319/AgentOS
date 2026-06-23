@@ -399,6 +399,41 @@ def readiness():
     }
 
 
+# --- anticipatory residency (ADR-0045): warm the narrator + VLM when the app is opened -------------
+# The "app opened" signal is the first /api/state poll after a GAP. An open tab polls every 2.5–5 s, so
+# a gap longer than that means the app was closed and reopened (or this is the first touch since the
+# server started) — exactly when warming pays off. Fire-and-forget in a daemon thread so /api/state never
+# blocks on a model load. Skipped while a beat is generating (don't contend with the live i2v lease) and
+# for any model already resident (no redundant reload). Wholly best-effort + fail-open.
+PREWARM_GAP = float(os.environ.get("LUCID_PREWARM_GAP", "90"))
+_PREWARM_LAST = [0.0]   # monotonic ts of the previous /api/state (a list so the trigger can mutate it)
+
+
+def _maybe_prewarm():
+    if not L.E.PREWARM:
+        return
+    now = time.monotonic()
+    prev, _PREWARM_LAST[0] = _PREWARM_LAST[0], now
+    if prev and (now - prev) < PREWARM_GAP:
+        return   # steady polling → same open, already handled
+    threading.Thread(target=_prewarm_bg, daemon=True).start()
+
+
+def _prewarm_bg():
+    try:
+        if not _http_ok(f"{L.E.OLLAMA}/api/version"):
+            return                                  # Ollama down → nothing to warm into
+        with TURN_LOCK:
+            if TURN["phase"] == "dreaming":
+                return                              # a beat is mid-generation → don't touch VRAM
+        resident = S._resident_models(L.E.OLLAMA) or set()
+        want = [m for m in (L.E.MODEL, L.E.NARRATOR_MODEL) if m and m not in resident]
+        if want:
+            L.E.prewarm_models(models=want)
+    except Exception:
+        pass
+
+
 def _ensure_lease(epoch=None):
     """Warm-keep: hold ONE batch lease across the session's ComfyUI ops (text-opening + i2v beats).
     Reuse the held lease if ComfyUI still answers; otherwise (none, or stale because a preempt
@@ -1378,6 +1413,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/healthz":   # X-Lucid-Pid lets a second instance ID this owner (yield/takeover)
             return self._send(200, "ok", "text/plain", {"X-Lucid-Pid": str(os.getpid())})
         if path == "/api/state":
+            _maybe_prewarm()   # ADR-0045: on app-open, warm the narrator + VLM in the background (fail-open)
             return self._send(200, json.dumps(state()), "application/json")
         if path == "/api/beats":   # slow (Ollama) — fetched separately so the page never blocks
             from urllib.parse import urlparse, parse_qs

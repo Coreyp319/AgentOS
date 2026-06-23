@@ -866,6 +866,14 @@ def _classify_generation_failure(e):
 
 
 # ---------------- one leased, confirmed-evicted, gated video beat ----------------
+def _evict_targets():
+    """The Ollama models that MUST leave VRAM before the ~17 GB i2v lease (B1, ADR-0015 §3): the vision
+    model AND the (possibly swapped-in) narrator. De-duped, order preserved — when the narrator IS the
+    vision model it's one evict. This list grew to include the narrator because anticipatory pre-warm
+    (ADR-0045) can keep the ~8.7 GB narrator resident, and 8.7 + 17 GB OOMs a 24 GB card."""
+    return list(dict.fromkeys([E.MODEL, E.NARRATOR_MODEL]))
+
+
 def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=False, length=None,
                    rating="sfw", guides=None, seed=None, quality="draft", raise_errors=False):
     """B1 dance: actively evict beat model (`ollama stop`) + confirm -> lease -> generate -> release. Returns clip path,
@@ -883,9 +891,10 @@ def generate_video(session, prompt, anchor_frame, tier="batch", external_lease=F
     `guides` (LTX-only spatial feed-forward): an ordered list of (frame_abs_path, t_seconds, tag)
     forwarded to E.run_beat, which pins each frame as an LTXVAddGuide keyframe (fail-open; Wan ignores)."""
     private = ST.is_private(session)
-    if not S.force_evict(E.MODEL):
-        log(f"could not evict '{E.MODEL}' from VRAM — refusing to load video (B1 fail-closed)")
-        return None
+    for _m in _evict_targets():   # BOTH the VLM and a swapped-in narrator — pre-warm (ADR-0045) can hold either
+        if not S.force_evict(_m):
+            log(f"could not evict '{_m}' from VRAM — refusing to load video (B1 fail-closed)")
+            return None
     token = None
     if not external_lease:
         token = lease_spawn(tier)
