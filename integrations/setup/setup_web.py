@@ -17,13 +17,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
+import socket
 import subprocess
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib import error as _urlerr, request as _urlreq
 from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
@@ -31,6 +34,9 @@ sys.path.insert(0, str(HERE))
 import setup  # noqa: E402
 
 WIZARD = HERE / "wizard.html"
+ASSETS = HERE / "assets"                         # preview thumbnails for the Desktop section (/img/<name>)
+_IMG_RE = re.compile(r"^[A-Za-z0-9_-]+\.(webp|png|svg|jpg)$")
+_IMG_CT = {"webp": "image/webp", "png": "image/png", "svg": "image/svg+xml", "jpg": "image/jpeg"}
 HOST = os.environ.get("AGENTOS_SETUP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("AGENTOS_SETUP_PORT", "9125"))
 TOKEN = secrets.token_hex(16)                  # anti-CSRF; rotates per process
@@ -187,6 +193,112 @@ def jobs_view(reg: dict) -> list[dict]:
     return [job_view(reg, j) for j in js]
 
 
+# ── desktop section: proxy the ADR-0043 adopt engine on :9123 (the grown front door) ──────────
+# The :9123 status panel is the SINGLE catalog + ledger authority (adopt.list_components). The
+# wizard NEVER parses components.conf itself and NEVER shells the driver — it proxies the panel's
+# already-hardened /adopt engine server-to-server over loopback. The browser only ever talks to
+# :9125; this hop is :9125 → :9123 with a fresh request (no client headers reflected outward).
+_PANEL_PORT = int(os.environ.get("AGENTOS_STATUS_PORT", "9123"))
+_PANEL = f"http://127.0.0.1:{_PANEL_PORT}"
+
+# Presentation metadata for the Desktop section. The panel's /components.json stays the source of
+# truth for WHAT is adoptable + its live state; this only GROUPS + annotates what it returns, so the
+# pipe-delimited catalog format never has to change. Rows not listed fall to "integrations".
+_DESKTOP_GROUPS = {
+    "keyhole": "ambient", "window-drag-wind": "ambient", "reactive-wallpaper": "ambient",
+    "aurora-theme": "look", "aurora-panel": "look", "swaync-aurora": "look",
+    "hermes-plugins": "agents", "gpu-coordinator": "agents",
+}
+# Rows whose apply.sh ends in a manual desktop step the proxy can't perform — surfaced AFTER a
+# successful adopt so a green "adopted" never lies (ux CRITICAL).
+_POST_ADOPT = {
+    "keyhole": "Add the Keyhole widget to your tray: right-click the system tray → "
+               "Configure System Tray → Entries.",
+}
+
+
+class _NoRedirect(_urlreq.HTTPRedirectHandler):
+    """Never follow a redirect on a panel call (explicit loopback, no redirect-following)."""
+    def redirect_request(self, *a, **k):
+        return None
+
+
+_OPENER = _urlreq.build_opener(_NoRedirect)
+
+
+def _panel_get(path: str, timeout: float = 1.5) -> tuple[int, object, str]:
+    """GET a panel JSON route over loopback. Returns (code, obj|None, why). Distinguishes a panel
+    that is DOWN ('refused') from one that is merely SLOW ('timeout') so the UI stays honest."""
+    req = _urlreq.Request(_PANEL + path, headers={"Host": f"127.0.0.1:{_PANEL_PORT}",
+                                                  "Accept": "application/json"})
+    try:
+        with _OPENER.open(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"null"), ""
+    except _urlerr.HTTPError as e:
+        return e.code, None, "http"
+    except _urlerr.URLError as e:
+        reason = getattr(e, "reason", None)
+        if isinstance(reason, ConnectionRefusedError):
+            return 0, None, "refused"
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return 0, None, "timeout"
+        return 0, None, "error"
+    except (socket.timeout, TimeoutError):
+        return 0, None, "timeout"
+    except Exception:
+        return 0, None, "error"
+
+
+def _panel_post(path: str, body: dict, token_path: str, token_header: str,
+                timeout: float = 6.0) -> tuple[int, object, str]:
+    """Server-to-server POST to a panel write route: fetch its same-origin token, then POST a FRESH
+    request — loopback Host, NO client/forwarding headers reflected — so classify_origin().can_copy_fix
+    passes and nothing from the browser crosses the hop (must-fix #4)."""
+    tcode, tobj, twhy = _panel_get(token_path, timeout=2.0)
+    if tcode != 200 or not isinstance(tobj, dict) or not tobj.get("token"):
+        return 0, None, twhy or "panel token unavailable"
+    req = _urlreq.Request(_PANEL + path, data=json.dumps(body).encode(), method="POST",
+                          headers={"Host": f"127.0.0.1:{_PANEL_PORT}",
+                                   "Content-Type": "application/json",
+                                   token_header: tobj["token"]})
+    try:
+        with _OPENER.open(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"null"), ""
+    except _urlerr.HTTPError as e:                    # 403/409 carry a JSON {error} the panel chose
+        try:
+            return e.code, json.loads(e.read() or b"null"), ""
+        except Exception:
+            return e.code, None, "http"
+    except _urlerr.URLError as e:
+        reason = getattr(e, "reason", None)
+        if isinstance(reason, ConnectionRefusedError):
+            return 0, None, "refused"
+        return 0, None, "error"
+    except Exception:
+        return 0, None, "error"
+
+
+def _desktop_state(timeout: float = 1.5) -> dict:
+    """The Desktop section's catalog + badges, folded from the panel's /components.json (the single
+    authority). Advisory DISPLAY only — never drives a mutating default. Lives off the /api/state
+    hot path on its own /api/desktop endpoint so a slow panel can't stall every state poll."""
+    code, obj, why = _panel_get("/components.json", timeout=timeout)
+    if code != 200 or not isinstance(obj, dict):
+        return {"reachable": False, "why": why or "error", "enabled": True, "components": []}
+    rows = []
+    for c in obj.get("components", []):
+        if c.get("root") != "no" or c.get("tier") not in ("desktop", "hermes"):
+            continue
+        row = {"id": c.get("id"), "tier": c.get("tier"), "desc": c.get("desc", ""),
+               "state": c.get("state"), "adoptable": bool(c.get("adoptable")),
+               "removable": bool(c.get("removable")),
+               "group": _DESKTOP_GROUPS.get(c.get("id"), "integrations")}
+        if c.get("id") in _POST_ADOPT:
+            row["post_adopt"] = _POST_ADOPT[c["id"]]
+        rows.append(row)
+    return {"reachable": True, "enabled": bool(obj.get("enabled", True)), "components": rows}
+
+
 # ── HTTP ──────────────────────────────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):                  # quiet
@@ -230,8 +342,33 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"prompt": setup.suggest_opening_prompt(mod if mod in ("image", "video") else "image")})
         elif path == "/api/stored":
             self._json(200, {"fetched": setup.read_manifest().get("fetched", [])})
+        elif path == "/api/desktop":
+            self._json(200, _desktop_state())
+        elif path == "/api/component_jobs":
+            code, obj, _why = _panel_get("/adopt.json", timeout=1.5)
+            self._json(200, obj if (code == 200 and isinstance(obj, dict)) else {"jobs": []})
+        elif path.startswith("/img/"):
+            self._serve_asset(path[len("/img/"):])
         else:
             self._send(404, b"not found", "text/plain")
+
+    def _serve_asset(self, name: str):
+        """Serve a Desktop-section preview thumbnail from ./assets, allowlisted by name (no traversal)."""
+        if not _IMG_RE.match(name):
+            self._send(404, b"not found", "text/plain")
+            return
+        try:
+            body = (ASSETS / name).read_bytes()
+        except OSError:
+            self._send(404, b"not found", "text/plain")
+            return
+        ext = name.rsplit(".", 1)[1].lower()
+        self.send_response(200)
+        self.send_header("Content-Type", _IMG_CT.get(ext, "application/octet-stream"))
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=86400")    # previews are static
+        self.end_headers()
+        self.wfile.write(body)
 
     def _guard(self) -> bool:
         if not self._is_local():
@@ -298,6 +435,38 @@ class Handler(BaseHTTPRequestHandler):
                 return
             svc = "huggingface" if self._body().get("svc") in ("hf", "huggingface") else "civitai"
             self._json(200, {"ok": setup.keyring_clear(svc), "svc": svc})    # ADR-0044 "Forget token"
+        elif path == "/api/component":
+            # Adopt/remove a desktop/agent component by PROXYING the panel's hardened /adopt engine.
+            # Defense-in-depth: the id+action are re-validated here against the SAME live /components.json
+            # fold (one authority, no second parser) before the hop; install.sh re-validates again.
+            if not self._guard():
+                return
+            body = self._body()
+            comp_id = str(body.get("id", ""))
+            action = str(body.get("action", "adopt"))
+            if action not in ("adopt", "unadopt"):
+                self._json(400, {"error": "bad action"})
+                return
+            ds = _desktop_state()
+            if not ds["reachable"]:
+                self._json(503, {"error": "the status panel (:9123) isn't reachable"})
+                return
+            row = next((c for c in ds["components"] if c["id"] == comp_id), None)
+            if not row:
+                self._json(409, {"error": "not an adoptable desktop component"})
+                return
+            if action == "adopt" and not row.get("adoptable"):
+                self._json(409, {"error": "not one-click adoptable here"})
+                return
+            if action == "unadopt" and not row.get("removable"):
+                self._json(409, {"error": "this component is install-only here"})
+                return
+            code, obj, why = _panel_post("/adopt", {"id": comp_id, "action": action},
+                                         "/adopt/token", "X-Adopt-Token")
+            if code == 0:
+                self._json(503, {"error": why or "couldn't reach the status panel"})
+                return
+            self._json(code, obj if obj is not None else {"error": "panel error"})
         else:
             self._send(404, b"not found", "text/plain")
 

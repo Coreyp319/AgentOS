@@ -114,3 +114,24 @@ A probe that cannot determine state (e.g. `kpackagetool6` absent on a headless h
 - New surface: `GET /components.json`, `GET /adopt/token`, `GET /adopt.json`, `POST /adopt`, plus
   `adopt.py` (in-sandbox core) and `adopt_run.py` (out-of-sandbox worker), mirroring the dispatch
   pair. Tested headless; the privileged path gets a security review like ADR-0039's.
+
+## Amendment (2026-06-23) — `gpu-coordinator` promoted to a one-click component
+
+The highest-value agent wiring — the Hermes `gpu-coordinator` plugin that wraps live inference in the
+agentosd VRAM lease so an interactive turn preempts the overnight dream (ADR-0006/0010) — was a hand-run
+`DEPLOY.md`. It is now a `components.conf` row (`tier=hermes, default=off, root=no`,
+`hermes/gpu-coordinator/apply.sh`+`restore.sh`), one-click adoptable on the Features shelf and the
+ADR-0044 setup front door. Reversibility is preserved as the substrate requires:
+
+- The config snapshot is **create-if-absent** (a second apply never clobbers a good backup with already-
+  mutated config), and `restore.sh` **surgically removes only the appended `plugins.enabled` block**,
+  disclosing a lossy whole-file revert only as a fallback — never a silent clobber.
+- The jeepney preflight only **warns** (the plugin is fail-open, degrading to the `busctl` transport);
+  the REST control API binding + `hermes mcp add agentos` stay **manual** (folding them in would make
+  restore under-reverse).
+- The 5 plugin files are installed by name (never globbed) and removed by name.
+- Fixed in passing: the `hermes-plugins` probe pointed at the `gpu-coordinator` dir (a pre-existing bug);
+  it now probes `needs-you-signal`, and `gpu-coordinator` gets its own probe. `_driver.sh --preflight`
+  selectors (`~/.hermes` exists + jeepney) widened to include it.
+
+The wizard reaches this engine by proxy, not by forking it (ADR-0044). Tests: status-panel 165, setup 73.

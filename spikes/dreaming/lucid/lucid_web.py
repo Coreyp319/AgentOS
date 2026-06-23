@@ -728,6 +728,36 @@ def beats(node_id=None):
         return []
 
 
+# ---------------- entry openings ("ways in") ----------------
+# The entry page asks for a few model-authored SFW openings. Generating them runs a (cheap, 3B,
+# keep_alive:0) Ollama pass, so we cache the result process-wide for a while: the model runs at most
+# once per TTL no matter how many tabs/visits hit the entry, and a curated fallback means it never
+# blocks. Refresh is best-effort serialized so a thundering herd of first-loads rolls once.
+_OPENINGS = {"items": [], "ts": 0.0}
+_OPENINGS_TTL = 6 * 3600          # regenerate at most every ~6h (the openings are ambient, not per-dream)
+_OPENINGS_LOCK = threading.Lock()
+
+
+def openings(n=4):
+    """Cached entry openings (each {seed,title,line}). Serves a warm cache instantly; rolls the model
+    at most once per TTL; always returns n via the engine's curated fallback. Fail-open by construction."""
+    now = time.monotonic()
+    items = _OPENINGS["items"]
+    if items and (now - _OPENINGS["ts"]) < _OPENINGS_TTL:
+        return items[:n]
+    with _OPENINGS_LOCK:                                  # one roll even under a first-load herd
+        items = _OPENINGS["items"]
+        if items and (time.monotonic() - _OPENINGS["ts"]) < _OPENINGS_TTL:
+            return items[:n]
+        try:
+            fresh = L.openings(max(n, 4))
+        except Exception:                                 # noqa: BLE001 — never let the entry break
+            fresh = []
+        if fresh:
+            _OPENINGS["items"], _OPENINGS["ts"] = fresh, time.monotonic()
+        return (fresh or items)[:n]
+
+
 # ---------------- page (instrument glass; status panel / keyhole register) ----------------
 PAGE = """<!DOCTYPE html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><meta name=color-scheme content=dark><meta name=csrf content="__CSRF__">
@@ -952,6 +982,8 @@ function paint(s){LAST=s;lastSig=sig(s);
  app.innerHTML=build(s);
  const o2=document.getElementById('own');
  if(sv&&o2){o2.value=sv.v;try{o2.setSelectionRange(sv.a,sv.b);}catch(e){}o2.focus();}
+ const ot=document.getElementById('opentext');               // ADR-0044 setup-wizard handoff: prefill once from ?prompt=
+ if(ot&&PREFILL){ot.value=PREFILL;PREFILL='';try{ot.focus();}catch(e){}}
  if(s.chain&&s.readiness.can_dream&&s.turn.phase!=='dreaming')loadBeats();
  manageTicker(s.turn);
  announce(s);}
@@ -1042,6 +1074,11 @@ async function doDelete(){delArmed=false;let j;
 function nextDelay(){if(document.hidden)return 15000;
  return (LAST&&LAST.turn&&LAST.turn.phase==='dreaming')?2500:5000;}
 async function loop(){await load();setTimeout(loop,nextDelay());}
+// ADR-0044 setup-wizard handoff: a model-written opening prompt arrives as ?prompt=… — prefill it
+// into #opentext ONCE (never auto-start: the user still clicks Begin, preserving the B2 likeness
+// gate + rating_floor), then strip it from the URL so it can't linger in history or a shared screen.
+let PREFILL=(new URLSearchParams(location.search).get('prompt')||'').slice(0,2000);
+if(PREFILL){try{history.replaceState({},'',location.pathname+location.hash);}catch(e){}}
 loop();
 </script></body></html>"""
 
@@ -1347,6 +1384,8 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query).get("node", [None])[0]   # which beat to grow from (default tip)
             nid = int(q) if (q is not None and q.lstrip("-").isdigit()) else None
             return self._send(200, json.dumps({"beats": beats(nid)}), "application/json")
+        if path == "/api/openings":   # entry "ways in" — model-authored openings (cached, fail-open)
+            return self._send(200, json.dumps({"openings": openings(4)}), "application/json")
         if path == "/api/clip":
             return self._serve_media("clip")
         if path == "/api/frame":

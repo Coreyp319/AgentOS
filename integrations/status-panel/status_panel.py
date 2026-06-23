@@ -341,6 +341,21 @@ def classify_origin(peer_ip: str, headers: dict) -> dict:
     return {"remote": remote, "host": fhost, "can_copy_fix": can_copy_fix, "why": why}
 
 
+def resolve_dispatch_target(body: dict) -> tuple[str | None, str]:
+    """Resolve a /dispatch target, failing CLOSED to local (ADR-0039 critical):
+      • an omitted/garbled target → 'hermes' (an empty/forged body must NEVER silently egress to cloud);
+      • a launcher-class request (source=launcher — a KRunner/.desktop verb, no browser consent surface)
+        → forced 'hermes', and an explicit 'claude' is REFUSED at the boundary, not by the client.
+    Returns (target, error); a non-empty error means reject the request (409). The browser UI still
+    reaches the cloud by sending target='claude' itself, behind its own once-per-session consent."""
+    target = str(body.get("target", "hermes")) or "hermes"
+    if str(body.get("source", "")) == "launcher":
+        if target == "claude":
+            return None, "the KRunner dispatch launcher is local-only (Hermes); cloud dispatch needs the panel's consent"
+        return "hermes", ""
+    return target, ""
+
+
 def _tailnet_host_base(forwarded_host) -> str | None:
     """`4090.tailXXXX.ts.net:9123` → `4090.tailXXXX.ts.net` (drop the port the phone is ON, so
     sibling doors can be built for other ports). None for a missing/malformed host — never build
@@ -707,7 +722,10 @@ class Handler(BaseHTTPRequestHandler):
             _err(400, "invalid json")
             return
         svc_id = str(body.get("id", ""))
-        target = str(body.get("target", "claude"))
+        target, lerr = resolve_dispatch_target(body)   # fail-closed-to-local + launcher-class gate (critical)
+        if lerr:
+            _err(409, lerr)
+            return
         svc, reason = dsp.validate(svc_id, target, cached_status())
         if not svc:
             _err(409, reason)                  # 409: not a malformed request, just not allowed now

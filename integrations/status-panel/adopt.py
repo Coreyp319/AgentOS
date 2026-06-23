@@ -119,11 +119,13 @@ PROBES: dict[str, tuple] = {
     "keyhole":          ("applet", "org.agentos.keyhole"),
     "window-drag-wind": ("kwin", "agentos-window-drag-wind"),
     "swaync-race":      ("file", "~/.config/systemd/user/swaync.service.d/nimbus-race.conf"),
+    "reactive-wallpaper": ("file", "~/.local/state/agentos/reactive-wallpaper/prev-wallpaper.json"),
     "aurora-theme":     ("kconfig", ("kdeglobals", "KDE", "widgetStyle", "Union")),
     "dolphin-create":   ("file", "~/.local/share/kio/servicemenus/agentos-create-video.desktop"),
     "browser-host":     ("file", "~/.local/share/agentos/agentos_create_video_host.py"),
     "firefox-pin":      ("file", "/etc/firefox/policies/policies.json"),
-    "hermes-plugins":   ("file", "~/.hermes/plugins/gpu-coordinator"),
+    "hermes-plugins":   ("file", "~/.hermes/plugins/needs-you-signal"),   # the needs-you-signal plugin (NOT gpu-coordinator)
+    "gpu-coordinator":  ("file", "~/.hermes/plugins/gpu-coordinator"),    # promoted from DEPLOY.md to a component
     "tailscale-remote": ("tailscale", None),
 }
 

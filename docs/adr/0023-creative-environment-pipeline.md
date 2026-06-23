@@ -210,3 +210,27 @@ the review added these binding amendments:
   `useStartBeatPreviews`, the dwell trigger + the seed→preview thumb swap with the non-colour "this path"
   eyebrow tell. Tests: `test_lucid_preview.py` (24). Draft lane reused from
   [ADR-0033](0033-lucid-quality-two-tier-and-identity-carry.md).
+
+## Amendment (2026-06-23) — the shader wallpaper is the default *adoptable* reactive wallpaper
+
+The no-UE **procedural shader** wallpaper (the design-0023 amber-grass / Hills lineage, `com.nimbus.aurora`
+Style<9, agent.json-driven) is now a one-click `reactive-wallpaper` component (`tier=desktop, off, root=no`),
+adoptable from the ADR-0043 Features shelf and the ADR-0044 setup front door. It is reversible by
+construction: prior `{wallpaperPlugin, Style, Image?}` captured in a **single** `evaluateScript` read,
+written **atomically** and **idempotently** (a pre-existing prev-state is never overwritten, so a second
+apply can't record Hills-as-prior and corrupt the revert), with an absent-file restore falling back to a
+safe default **with a message** — never a silent no-op. The prev-state holds operations/inverse only (no
+usage timestamps, no `reduceMotion`); plasmashell pid resolution is hardened (exact `comm` + same-UID).
+
+**This inverts the UE-as-stage emphasis:** the shader is the *recommended* reactive wallpaper; **UE remains
+a manual "pro" upgrade (flag + link only)** — it needs an engine path + sudo and stays explicitly not
+driver-managed.
+
+Folded in with it (closing the ambient "stale ≠ serene" honesty gap for the QML consumer, parity with
+`scene.rs`/ADR-0030 D9): the wallpaper's `main.qml` gains a **`heartbeat.json` freshness read** keyed on the
+producer's `updated_at` advancing (STALE_SECS=8.0). When the feed goes blind, the wallpaper drops to a
+*distinct* quieter-than-idle look (drift 0.7×, backlight one step down, agent uniforms held at a small
+non-zero "unknown") instead of rendering byte-identical to a genuinely calm fleet. Because the pack source
+can also carry in-progress Style≥9 work, the component does **not** silently deploy it — it checks the
+installed plugin and prints an honest activation note (a deliberate Nimbus-pack re-install) rather than
+over-claiming stale-detection it doesn't yet have live.

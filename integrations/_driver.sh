@@ -124,11 +124,11 @@ preflight() {
     python3 -c "import PIL, numpy" >/dev/null 2>&1; _pf "Python Pillow + numpy — Lucid/Share image ops" $? "pacman -S python-pillow python-numpy"
   fi
   # the Hermes-coupled components need the orchestrator install
-  if _anysel hermes-dashboard hermes-plugins; then
+  if _anysel hermes-dashboard hermes-plugins gpu-coordinator; then
     { [ -d "$HOME/.hermes" ]; }; _pf "Hermes orchestrator (~/.hermes)" $? "install Hermes Agent first (it is the orchestrator; AgentOS is the substrate under it)"
   fi
   # the gpu-coordinator plugin prefers the pure-python persistent D-Bus transport; degrades to busctl
-  if _sel hermes-plugins; then
+  if _anysel hermes-plugins gpu-coordinator; then
     python3 -c "import jeepney" >/dev/null 2>&1; _pf "Python jeepney — gpu-coordinator persistent lease transport (else busctl fallback)" $? "pip install --user jeepney  (optional; cooperative-lease churns without it)"
   fi
   # ComfyUI runtime (its own venv) is the dreaming backend

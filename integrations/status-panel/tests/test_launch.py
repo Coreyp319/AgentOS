@@ -294,6 +294,23 @@ class GenLaunchers(unittest.TestCase):
             gl.remove(apps_dir=apps)
             self.assertTrue(foreign.exists(), "remove must not delete a foreign launcher either")
 
+    def test_dispatch_launcher_is_constant_and_marked(self):
+        # ADR-0039 dispatch-from-KRunner: the ONE non-URL launcher — a CONSTANT, helper-gated emitter.
+        body = gl.dispatch_entry()[gl.DISPATCH_FILE]
+        self.assertIn(gl.MARKER, body)                         # provenance-gated removal
+        self.assertIn("Exec=/usr/bin/env bash ", body)        # invoked via bash → helper stays 0644
+        self.assertIn(str(gl.DISPATCH_HELPER), body)          # fixed absolute path, no catalog interp
+        self.assertNotIn("xdg-open", body)                    # not a url door
+        self.assertNotIn("\n\n", body)
+
+    def test_dispatch_helper_is_0644_regular_file(self):
+        self.assertTrue(gl.DISPATCH_HELPER.is_file())
+        self.assertEqual(gl.DISPATCH_HELPER.stat().st_mode & 0o777, 0o644)
+        self.assertTrue(gl._helper_safe())
+
+    def test_dispatch_rides_the_all_entries_set(self):
+        self.assertIn(gl.DISPATCH_FILE, gl._all_entries("icon"))
+
 
 class LaunchRoutes(unittest.TestCase):
     """Spin up the real Handler to lock the routes/guards that live in do_GET: the launch view,

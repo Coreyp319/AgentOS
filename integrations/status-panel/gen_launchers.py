@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,8 @@ CATALOG_PATH = HERE / "services.json"
 DEFAULT_ICON = HERE / "icons" / "icon-192.png"
 APPS_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "applications"
 PREFIX = "agentos-launch-"           # our namespace — restore globs this to remove cleanly
+DISPATCH_HELPER = HERE / "dispatch_launch.sh"        # the ONE non-URL launcher target (ADR-0039)
+DISPATCH_FILE = f"{PREFIX}dispatch.desktop"
 
 _URL_RE = re.compile(r"^https?://[^\s;]+$")          # trusted catalog, but keep Exec injection-free
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")       # safe filename component
@@ -76,6 +79,50 @@ def desktop_entries(catalog: dict, icon: str = "applications-internet") -> dict:
     return out
 
 
+def dispatch_entry(icon: str = "system-run") -> dict:
+    """The ONE launcher whose Exec is a fixed SCRIPT, not a catalog url (ADR-0039 dispatch-from-KRunner).
+    CONSTANT emitter: the absolute helper path is resolved here and never interpolated from catalog
+    data, so gen_launchers' Exec-injection-free guarantee still holds for this non-URL entry. The helper
+    is invoked as `bash <abs>` so it stays 0644 — a flipped exec bit can't turn it into a direct-exec
+    foothold. The dispatch itself is Hermes-only + consent-gated (see dispatch_launch.sh)."""
+    body = (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=AgentOS: dispatch a fix\n"
+        "GenericName=AgentOS service repair\n"
+        "Comment=Dispatch a local Hermes agent to investigate and fix a down AgentOS service\n"
+        f"Exec=/usr/bin/env bash {shlex.quote(str(DISPATCH_HELPER))}\n"
+        f"Icon={icon}\n"
+        "Terminal=false\n"
+        "Categories=Utility;\n"
+        "Keywords=agentos;dispatch;fix;repair;hermes;\n"
+        "StartupNotify=false\n"
+        "NoDisplay=false\n"               # KRunner-reachable (type "dispatch"/"agentos")
+        "X-AgentOS-Launch=true\n"
+    )
+    return {DISPATCH_FILE: body}
+
+
+def _helper_safe() -> bool:
+    """Emit the dispatch launcher ONLY if its helper exists, is a regular file, is 0644, and is owned
+    by us — so the Exec target is exactly the file we shipped, never a swapped-in or world-writable one."""
+    try:
+        st = DISPATCH_HELPER.stat()
+    except OSError:
+        return False
+    return (DISPATCH_HELPER.is_file()
+            and (st.st_mode & 0o777) == 0o644
+            and st.st_uid == os.getuid())
+
+
+def _all_entries(icon: str) -> dict:
+    """The full launcher set: URL doors + (when its helper is safe) the one dispatch launcher."""
+    entries = desktop_entries(_load_catalog(), icon=icon)
+    if _helper_safe():
+        entries.update(dispatch_entry())
+    return entries
+
+
 def _load_catalog() -> dict:
     return json.loads(CATALOG_PATH.read_text())
 
@@ -95,7 +142,7 @@ def _ours(path: Path) -> bool:
 
 def install(apps_dir: Path = APPS_DIR, icon: str | None = None) -> list[str]:
     icon = icon or (str(DEFAULT_ICON) if DEFAULT_ICON.exists() else "applications-internet")
-    entries = desktop_entries(_load_catalog(), icon=icon)
+    entries = _all_entries(icon)
     apps_dir.mkdir(parents=True, exist_ok=True)
     # Write new/updated launchers FIRST, atomically (temp + os.replace) — a crash never leaves a
     # torn .desktop KRunner would index as garbage, nor fewer launchers than we started with.
@@ -141,7 +188,7 @@ def main(argv=None):
         r = remove()
         print(f"✓ removed {len(r)} AgentOS launcher(s) from {APPS_DIR}")
     else:
-        for fname, body in desktop_entries(_load_catalog(), icon=str(DEFAULT_ICON)).items():
+        for fname, body in _all_entries(str(DEFAULT_ICON)).items():
             print(f"--- {fname} ---\n{body}")
 
 

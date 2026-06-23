@@ -156,3 +156,26 @@ no desktop-bricking blocker but several real must-fixes, all applied above:
   re-probe attention, atomic create + claim, stuck-incident reaper, `Sec-Fetch-Site` check.
 - **UX/a11y** — honest two-phase label, surfaced refusals, `aria-live` region, 24px target,
   focus restore, calmer Atrium (no infinite spinner), `confidence` surfaced.
+
+## Amendment (2026-06-23) — dispatch-from-KRunner + fail-closed-to-local hardening
+
+A KRunner-reachable launcher (`dispatch_launch.sh`, a fixed-`Exec` `.desktop` riding the ADR-0031
+`gen_launchers` set) now POSTs the existing `/dispatch` route — the small reuse path, **not** a new
+`org.kde.krunner1` runner (which this ADR/ADR-0031 deferred). Because KRunner has **no browser consent
+surface**, an ADR-0044 review found a latent leak — `/dispatch` defaulted an omitted `target` to
+**`claude`** with cloud ON by default, so a one-keystroke launcher (or a malformed/forged body) could
+have silently shipped a redacted journal off-box. Two boundary changes close it:
+
+- **`/dispatch` fails CLOSED to local.** An omitted/garbled `target` now resolves to `hermes`, never
+  `claude` (`resolve_dispatch_target`, unit-tested). The browser still reaches cloud by sending
+  `target=claude` itself, behind its existing once-per-session consent.
+- **Launcher-class gate.** A request carrying `source=launcher` is **forced to `hermes`, and an explicit
+  `claude` is refused with 409 at the route** — the trust boundary enforces local-only, not a string in
+  the launcher script. A test asserts the launcher path can never produce a `claude` incident.
+- The helper builds its body with `json.dumps` (target structurally un-overridable), validates the
+  service id, confirms via a `notify-send` action **before** POSTing, does **not** auto-pick when >1
+  service needs attention (routes to the panel), and stays `0644` (invoked via `bash`; install-time
+  asserts 0644 + owner). The emitter is a **constant** (fixed absolute `Exec`, no catalog interpolation,
+  byte-pinned test) so `gen_launchers`' injection-free guarantee holds for the one non-URL entry.
+- **A cloud (`claude`) KRunner verb is NOT shipped** — it would re-open this ADR's consent decision and
+  needs its own amendment first.

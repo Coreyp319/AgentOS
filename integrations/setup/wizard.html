@@ -84,6 +84,38 @@
   a{color:var(--blue)} .foot{color:var(--faint);font-size:.74rem;margin-top:30px;line-height:1.8}
   .foot .stored{color:var(--muted)} .foot button{font:inherit;font-size:.72rem;color:var(--blue);background:none;border:0;cursor:pointer;padding:0;text-decoration:underline}
   code{background:rgba(255,255,255,.06);padding:1px 6px;border-radius:5px;color:var(--muted)}
+  /* ── Desktop section — restrained: plain rows + a small honest preview, no extra glass ── */
+  .dsec{padding:14px 18px}
+  .dsec > summary{cursor:pointer;list-style:none;color:var(--text);font-weight:560;font-size:.95rem;display:flex;justify-content:space-between;align-items:center}
+  .dsec > summary::-webkit-details-marker{display:none}
+  .dsec > summary .chev{color:var(--muted);font-size:.78rem;font-weight:400}
+  .dgroup{margin:16px 0 2px}
+  .dgroup .ghd{font-size:.85rem;font-weight:640;color:var(--text)}
+  .dgroup .gld{font-size:.78rem;color:var(--muted);margin:2px 0 4px;line-height:1.45}
+  .drow{display:flex;gap:13px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
+  .drow .thumb,.drow .swatch{width:84px;height:48px;border-radius:8px;flex:none;border:1px solid var(--line-hi);background:var(--bg-2)}
+  .drow .thumb{object-fit:cover;display:block}
+  .drow .swatch{display:flex;overflow:hidden}
+  .drow .swatch > i{flex:1}
+  .drow .meta{flex:1;min-width:0}
+  .drow .nm{font-size:.92rem;font-weight:560}
+  .drow .dsc{color:var(--muted);font-size:.78rem;margin-top:2px;line-height:1.45}
+  .drow .eff{color:var(--faint);font-size:.74rem;margin-top:3px}
+  .drow .post{color:var(--amber);font-size:.76rem;margin-top:5px}      /* honest residual manual step */
+  .don{color:var(--up);font-size:.74rem;font-weight:640;white-space:nowrap}
+  /* ── Remote access (Tailscale) card — copy-don't-execute; the wizard runs nothing here ── */
+  .tcard{padding:14px 18px}
+  .tcard > summary{cursor:pointer;list-style:none;color:var(--text);font-weight:560;font-size:.95rem;display:flex;justify-content:space-between;align-items:center}
+  .tcard > summary::-webkit-details-marker{display:none}
+  .tcard > summary .chev{color:var(--muted);font-size:.78rem;font-weight:400}
+  .twarn{margin-top:12px;padding:13px 15px;border-radius:var(--radius-sm);border:1px solid color-mix(in srgb,var(--red) 38%,transparent);background:color-mix(in srgb,var(--red) 7%,transparent)}
+  .twarn p{font-size:.82rem;margin:0 0 9px;line-height:1.5}
+  .twarn .th{color:var(--amber)}
+  .twarn ul{margin:0 0 9px;padding-left:18px;font-size:.82rem;line-height:1.6}
+  .twarn .tbottom{color:var(--amber);margin-bottom:0}
+  .tconsent{display:flex;gap:9px;align-items:flex-start;font-size:.82rem;margin:13px 0 0;cursor:pointer;line-height:1.5}
+  .tconsent input{margin-top:3px;flex:none}
+  .tcmd{font-family:ui-monospace,monospace;font-size:.72rem;color:var(--text);background:rgba(0,0,0,.3);border:1px solid var(--line-hi);border-radius:var(--radius-sm);padding:11px 13px;overflow:auto;white-space:pre;line-height:1.6;margin:8px 0}
   /* one calm first-paint stagger (idle is sacred — runs once, then stillness) */
   @keyframes rise{from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none}}
   body.first .feat{animation:rise .35s ease both}
@@ -113,6 +145,12 @@
 
   <div id="progress" role="status" aria-live="polite" aria-atomic="false"></div>
 
+  <h2>Customize your desktop <span class="lede">· optional — the AgentOS look, ambient instruments, and agent wiring</span></h2>
+  <details id="desktop-sec" class="card dsec">
+    <summary>Desktop customizations <span class="chev" id="dchev">show ▾</span></summary>
+    <div id="desktop"><div class="dsc" style="color:var(--muted);margin-top:10px">checking what's installed…</div></div>
+  </details>
+
   <h2>Accounts <span class="lede">· only the Mature video lane needs one</span></h2>
   <div class="card creds">
     <div class="dsc" style="color:var(--muted);font-size:.82rem">A free <a href="https://civitai.com/user/account" target="_blank" rel="noopener">Civitai</a> token unlocks the Wan mature checkpoints. A <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">HuggingFace</a> token is only needed for gated models. Tokens go to your OS keyring — never a file, never sent anywhere but the download.</div>
@@ -125,6 +163,36 @@
     </div>
     <div id="credMsg" role="status" aria-live="polite"></div>
   </div>
+
+  <h2>Remote access <span class="lede">· optional — reach these UIs from your phone over Tailscale</span></h2>
+  <details class="card tcard">
+    <summary>Expose the AgentOS UIs to your tailnet <span class="chev" id="tchev">show ▾</span></summary>
+    <div class="twarn">
+      <p class="th"><b>⚠ Remote access exposes unauthenticated desktop UIs to your whole tailnet. Read this before you copy anything.</b></p>
+      <p><b>These UIs have NO per-request authentication. Tailnet membership is the entire authorization boundary.</b> Anyone on your Tailscale account — every device you've added <b>or shared</b>, and your account itself if it is compromised — can reach, with no password:</p>
+      <ul>
+        <li><b>Lucid (<code>:8765</code>)</b> — can generate <b>explicit (18+) content</b> and <b>drive the GPU / VRAM lease</b>.</li>
+        <li><b>Status panel (<code>:9123</code>)</b> and <b>Models panel (<code>:9124</code>)</b> — your system state and model library.</li>
+        <li><b>Hermes board (<code>:9119</code>)</b> — <b>can drive the agent.</b></li>
+        <li><b>Share hub (<code>:8770</code>)</b> — push photos straight into your box.</li>
+      </ul>
+      <p><b>Your credentials are never exposed.</b> This setup page (<b>port <code>9125</code></b>) is <b>on-box only and is never put on the tailnet</b> — it holds your Hugging&nbsp;Face / Civitai token entry. Those tokens live in your OS keyring (or, only if no keyring is reachable, a disclosed <code>0600</code> file) and <b>never leave this machine.</b> The Hermes REST control API (<code>:8642</code>) and ComfyUI (<code>:8188</code>, heavy + unauthenticated) are <b>deliberately NOT exposed</b> — keep them that way.</p>
+      <p><b><code>serve</code>, never <code>funnel</code>.</b> <code>tailscale serve</code> = tailnet-only. <code>tailscale funnel</code> = <b>the public internet</b> — never run it. After enabling, verify every line of <code>tailscale serve status</code> reads <b>“tailnet only.”</b> Never router-port-forward, never bind <code>0.0.0.0</code>, never use <code>funnel</code>/<code>ngrok</code>.</p>
+      <p><b>Reboot gap — eyes open.</b> Leaving <code>tailscaled</code> <b>enabled</b> is what keeps these unauthenticated UIs reachable across <b>every reboot</b>. Only do this if you have <b>2FA + a <code>tag:agentos</code> ACL</b> in place. If <code>tailscaled</code> is disabled, your box drops off the tailnet after a reboot and these UIs vanish until you re-run <code>sudo systemctl enable --now tailscaled</code>.</p>
+      <p><b>Lower the blast radius.</b> Turn on Tailscale <b>2FA</b> (highest leverage), apply a <code>tag:agentos</code> ACL so only <i>your</i> devices reach these ports, and never set <code>GATEWAY_ALLOW_ALL_USERS=true</code>.</p>
+      <p class="tbottom"><b>Bottom line: use <code>serve</code>, never <code>funnel</code>. Keep 2FA on. Restrict to your own devices with a <code>tag:agentos</code> ACL.</b></p>
+    </div>
+    <label class="tconsent"><input type="checkbox" id="tsok">
+      <span>I understand these UIs have no login; that anyone on my tailnet — every device I've added <b>or shared</b>, and my account if it is compromised — can reach Lucid (explicit content + GPU) and the agent board with no password; and that I will use <code>serve</code> (never <code>funnel</code>) and keep Tailscale 2FA on.</span></label>
+    <div id="tsteps" hidden>
+      <p class="dsc" style="margin-top:12px">Run these yourself — the wizard never runs them (they need sudo, and it deliberately can't expose itself):</p>
+      <pre class="tcmd">sudo pacman -S tailscale
+sudo systemctl enable --now tailscaled      # persist this — closes the reboot gap (only with 2FA + tag:agentos ACL)
+sudo tailscale up                           # opens an auth URL; use the same account on your phone
+integrations/agentosd-remote.sh up          # serve the UIs (down / status to reverse / inspect)</pre>
+      <p class="dsc">See <code>docs/REMOTE-ACCESS.md</code> for the <code>tag:agentos</code> ACL JSON + hardening.</p>
+    </div>
+  </details>
 
   <div class="foot">
     Prefer the terminal? <code>./install.sh --onboard</code> does the same.<br />
@@ -308,11 +376,117 @@
     e.target.replaceWith(box);
   });
 
+  // ── Desktop section (ADR-0044 grown front door): proxy the :9123 adopt engine ──
+  const DGROUPS=[
+    ["ambient","Ambient layer","Your desktop reflects the fleet — the wallpaper carries the mood, the keyhole tray the exact fact, your own window-drags the wind."],
+    ["look","Look","Aurora — one violet accent across the shell, windows, and notifications."],
+    ["agents","Agents","Wire Hermes to the GPU lease so live AI work yields the dream — and the desktop can fix a down service."],
+    ["integrations","Integrations","Right-click niceties and notification plumbing."],
+  ];
+  const DIMG={"reactive-wallpaper":"wallpaper-dream.webp","window-drag-wind":"wallpaper-wind.webp","keyhole":"keyhole.webp"};
+  const DEFFECT={
+    "aurora-theme":"Restyles your whole session — takes effect at next login.",
+    "aurora-panel":"Re-accents the Plasma panel & tray — takes effect at next login.",
+    "swaync-aurora":"Restyles notifications — takes effect at next login.",
+    "reactive-wallpaper":"Replaces your current wallpaper with the shader mood — Remove restores it.",
+    "gpu-coordinator":"Restarts the Hermes gateway.",
+    "hermes-plugins":"Restarts the Hermes gateway.",
+  };
+  const LOOKIDS=new Set(["aurora-theme","aurora-panel","swaync-aurora"]);
+  let DESKTOP={reachable:false}, CJOBS={}, dbusy={};
+
+  function dthumb(id){
+    if(DIMG[id]) return `<img class="thumb" src="/img/${DIMG[id]}" alt="" loading="lazy">`;
+    if(LOOKIDS.has(id)) return `<div class="swatch" aria-hidden="true"><i style="background:#765CC4"></i><i style="background:#9b82e0"></i><i style="background:#1a2238"></i></div>`;
+    return `<div class="swatch" aria-hidden="true" style="align-items:center;justify-content:center;color:var(--muted)">•</div>`;
+  }
+  function drow(c){
+    const id=c.id, adopted=c.state==="adopted", job=CJOBS[id];
+    const jobBusy = job && (job.status==="queued"||job.status==="applying"||job.status==="unadopting");  // adopt.py ACTIVE_STATUSES
+    const busyNow = dbusy[id] || jobBusy;
+    let right;
+    if(busyNow) right=`<span class="state busy">${dbusy[id]==="unadopt"?"removing…":"setting up…"}</span>`;
+    else if(adopted && c.removable) right=`<span class="don">✓ on</span> <button class="btn ghost" data-comp="${esc(id)}" data-act="unadopt">Remove</button>`;
+    else if(adopted) right=`<span class="don">✓ on</span>`;
+    else if(c.adoptable) right=`<button class="btn" data-comp="${esc(id)}" data-act="adopt">Apply</button>`;
+    else right=`<span class="state" style="color:var(--faint)">unavailable</span>`;
+    const eff = DEFFECT[id] ? `<div class="eff">${esc(DEFFECT[id])}</div>` : "";
+    const post = (adopted && c.post_adopt) ? `<div class="post">One more step: ${esc(c.post_adopt)}</div>` : "";
+    const failed = (job && job.status==="failed") ? `<div class="err">${esc(job.outcome||"that step didn't finish — see the status panel")}</div>` : "";
+    return `<div class="drow" data-drow="${esc(id)}">${dthumb(id)}
+      <div class="meta"><div class="nm">${esc(id)}</div><div class="dsc">${esc(c.desc||"")}</div>${eff}${post}${failed}</div>${right}</div>`;
+  }
+  function renderDesktop(){
+    const el=document.getElementById("desktop"); if(!el) return;
+    if(!DESKTOP.reachable){
+      const why=DESKTOP.why;
+      const msg = why==="refused"
+        ? "The AgentOS status panel (:9123) isn't running — these switch on once it starts (it usually starts at login)."
+        : why==="timeout" ? "Couldn't reach the status panel (:9123) just now — retrying…"
+        : "Couldn't reach the status panel (:9123).";
+      el.innerHTML=`<div class="dsc" style="color:var(--muted);margin-top:10px">${esc(msg)}</div>`; return;
+    }
+    if(DESKTOP.enabled===false){
+      el.innerHTML=`<div class="dsc" style="color:var(--muted);margin-top:10px">Feature adoption is switched off on this box (AGENTOS_ADOPT=0).</div>`; return;
+    }
+    const comps=DESKTOP.components||[];
+    let h="";
+    for(const [key,label,lede] of DGROUPS){
+      const rows=comps.filter(c=>c.group===key);
+      if(!rows.length) continue;
+      h+=`<div class="dgroup"><div class="ghd">${esc(label)}</div><div class="gld">${esc(lede)}</div>`
+        + rows.map(drow).join("") + `</div>`;
+    }
+    el.innerHTML = h || `<div class="dsc" style="color:var(--muted)">No desktop components found.</div>`;
+  }
+  async function refreshDesktop(){
+    const sec=document.getElementById("desktop-sec");
+    if(!sec||!sec.open) return;                          // idle is sacred — only poll while open
+    try{
+      const [d,j]=await Promise.all([
+        fetch("/api/desktop",{cache:"no-store"}).then(r=>r.json()),
+        fetch("/api/component_jobs",{cache:"no-store"}).then(r=>r.json()),
+      ]);
+      DESKTOP=d; CJOBS={};
+      for(const job of (j.jobs||[])){ if(job.comp && !CJOBS[job.comp]) CJOBS[job.comp]=job; }  // sorted newest-first
+      for(const id of Object.keys(dbusy)){                // drop optimistic busy once the job is terminal
+        const c=(d.components||[]).find(x=>x.id===id), job=CJOBS[id];
+        const reached = c && (dbusy[id]==="adopt" ? c.state==="adopted" : c.state!=="adopted");
+        // clear on ANY terminal status (a worker can land "adopted" while the probe still reads
+        // "unknown" on an under-provisioned host — else the row would spin forever). adopt.py TERMINAL.
+        if(reached || (job && (job.status==="adopted"||job.status==="available"||job.status==="failed"))) delete dbusy[id];
+      }
+      renderDesktop();
+    }catch(_){}
+  }
+  document.getElementById("desktop").addEventListener("click",async e=>{
+    const b=e.target.closest("button[data-comp]"); if(!b) return;
+    const id=b.dataset.comp, act=b.dataset.act;
+    dbusy[id]=act; renderDesktop();                       // optimistic ack — a 409 "already working" must read calm
+    const r=await post("/api/component",{id,action:act});
+    // a benign retry (dedupe "already working" or the 5s cooldown "just ran…") must read calm, not red
+    if(r && r.error && !/already|queued|working|just ran|give it a moment/i.test(r.error)){
+      delete dbusy[id]; renderDesktop();
+      const row=document.querySelector(`.drow[data-drow="${CSS.escape(id)}"] .meta`);
+      if(row){ const er=document.createElement("div"); er.className="err"; er.textContent=r.error; row.appendChild(er); setTimeout(()=>er.remove(),5000); }
+    }
+    refreshDesktop();
+  });
+  const _dsec=document.getElementById("desktop-sec");
+  _dsec.addEventListener("toggle",()=>{ document.getElementById("dchev").textContent=_dsec.open?"hide ▴":"show ▾"; if(_dsec.open) refreshDesktop(); });
+
+  // ── Remote access card: pure copy-don't-execute. The wizard never runs tailscale; the commands
+  // stay hidden until the consent box is ticked. No route here touches the network. ──
+  document.getElementById("tsok").addEventListener("change",e=>{ document.getElementById("tsteps").hidden=!e.target.checked; });
+  const _tcard=document.querySelector(".tcard");
+  _tcard.addEventListener("toggle",()=>{ document.getElementById("tchev").textContent=_tcard.open?"hide ▴":"show ▾"; });
+
   document.body.classList.add("first");
   setTimeout(()=>document.body.classList.remove("first"),700);
   refreshState(); refreshJobs();
   setInterval(refreshJobs,2500);
   setInterval(refreshState,8000);
+  setInterval(refreshDesktop,5000);
 </script>
 </body>
 </html>

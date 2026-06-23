@@ -209,3 +209,46 @@ promises and the shipped code. Reconciling here (corrections to our own claims, 
   uses `aria-live` for download/ready announcements, and gives the `tight`/`too-big` fit rungs
   non-colour glyphs (◐ / ⚠). Fit copy *warns*, never *guarantees* (it is isolation-only — it does not
   model the ~2.5 GB the always-on desktop already holds, ADR-0004).
+
+## Amendment (2026-06-23) — the wizard becomes the single first-run front door
+
+The `:9125` wizard grows from models-only into the **one first-run entry for *the desktop*** — models,
+desktop customizations, agent wiring, and remote access — by **reusing existing engines, not forking an
+installer** (Option A). Built + reviewed by a 6-lens panel (security · privacy · determinism · ux ·
+ambient · ai-product); three CRITICALs (KRunner→cloud dispatch, "adopted" lying for an incomplete row,
+stale-as-serene wallpaper) were resolved by design before build. Normative additions:
+
+- **Route-not-dashboard (binding).** The wizard *routes and adopts*; it is **not** a control center.
+  The ONLY live reads allowed are (1) the desktop catalog + badges folded from the panel's
+  `/components.json` and (2) adopt-job lifecycle from `/adopt.json` — both **advisory display**, never
+  driving a mutating default. Resource/health/service-state gauges are **out of scope** for `:9125`
+  (they belong to the keyhole tray + the `:9123` panel, ADR-0012/0031). This fences the aggregate
+  (models + desktop + agents + remote on one page) off the ADR-0031 anti-hub line.
+- **Desktop section = a proxy of the ADR-0043 adopt engine.** A collapsed "Customize your desktop"
+  section adopts `tier∈{desktop,hermes}, root=no` components by **server-to-server proxying** the
+  hardened `:9123` `/adopt` engine over loopback (`/api/desktop`, `/api/component`,
+  `/api/component_jobs`). The wizard never parses `components.conf` itself and never shells the driver;
+  it builds a FRESH request (no client headers reflected outward) and re-validates the id against the
+  same live fold before the hop. **The wizard token now gates software install/remove** — per-process
+  rotation + loopback-only binding are load-bearing; `GET /api/token` is loopback-readable by any local
+  UID under the accepted single-user threat model (gate it with `SO_PEERCRED` first if multi-user ever
+  enters scope). Grouping (Ambient / Look / Agents / Integrations) + preview thumbnails are setup-side
+  presentation only; the catalog stays the single authority.
+- **"Adopted" must not lie.** Rows whose `apply.sh` ends in a manual desktop step (keyhole's tray
+  placement) carry a `post_adopt` note surfaced after a successful adopt with a "one more step ↗"
+  affordance — never a bare ✓.
+- **Lucid handoff (owed since this ADR) closed.** The model-written opening prompt reaches Lucid as
+  `?prompt=…`; Lucid prefills `#opentext` once (`.value`, never `innerHTML`), **strips it from the URL**
+  (`history.replaceState`), truncates ≤2000 chars, and does **not** auto-start (the user still clicks
+  Begin — B2 likeness gate + `rating_floor` preserved).
+- **Remote access = copy-don't-execute, never self-exposing.** A bottom "Remote access" card surfaces
+  the `tailscale-remote` setup behind a consent checkbox with ample warnings (no per-request auth on the
+  exposed UIs; `serve` not `funnel`; the reboot gap). The wizard **runs no `tailscale` command**, does
+  **no live `serve`/`status` reflect** (which would leak tailnet identity metadata onto the credential
+  page), and **its own `:9125` is never added to the exposure list** — asserted by test.
+- **Retention map.** The durable stores the front door turns on are named: the dispatch ledger +
+  transcripts (`$XDG_STATE`, `0600`+TTL), the reactive-wallpaper prev-state cache, the adopt ledger.
+  `build_state()`/`_desktop_state()` output is in-memory, never persisted outside the `0700` runtime dir.
+
+Tests: setup **73**, status-panel **165**. Relates: ADR-0043 (adopt engine reused + `gpu-coordinator`
+row), ADR-0039 (dispatch hardening), ADR-0023 (reactive-wallpaper default), ADR-0031 (anti-hub bound).

@@ -1,7 +1,9 @@
-# Set up your models (the onboarding)
+# Set up AgentOS (the onboarding)
 
-This gets your box from "nothing to generate with" to **making your first image, video, or
-chat** — by looking at what you already have and downloading only what's missing.
+This is the **single first-run front door**: it gets your box from "nothing to generate with" to
+**making your first image, video, or chat** — by looking at what you already have and downloading
+only what's missing — and then lets you turn on **the desktop you want** (the look, the ambient
+instruments, the agent wiring) and, if you want it, remote access.
 
 Already have Ollama models or a ComfyUI folder full of weights? It finds them and **reuses
 them** — nothing is downloaded twice, nothing already there is touched.
@@ -33,6 +35,29 @@ there's no SFW video bundle yet — so each requires an explicit 18+ affirmation
 downloads, and `video-wan` additionally needs a free [Civitai](https://civitai.com) token.
 "No account" is not "no gate": the rating (what the model can make) and the account (whether a
 sign-up is needed) are two different things, and the mature gate is always opt-in, never automatic.
+
+## Customize your desktop
+
+Below the models, the wizard's **"Customize your desktop"** section turns the rest of AgentOS on —
+each item **one-click, reversible, and previewed** so you see what you're getting:
+
+- **Ambient layer** — the reactive shader wallpaper (a no-Unreal procedural "Hills" field that
+  reflects fleet state, with an honest *blind* look when the feed goes quiet), the **keyhole** tray
+  instrument, and window-drag → wind.
+- **Look** — **Aurora**: one violet accent across the shell, windows, and notifications
+  (Plasma-gated; takes effect at your next login).
+- **Agents** — wire Hermes to the GPU lease (`gpu-coordinator`, so live AI yields the dream) and the
+  needs-you signal.
+- **Integrations** — the right-click "Create Video" menus and notification plumbing.
+
+It doesn't reinvent anything: it **proxies the same adopt engine** as the status panel's Features
+page (ADR-0043), so a thing you turn on here is the same thing — and is undone the same way (Remove,
+or `./uninstall.sh --only <id>`). Components that aren't one-click (a `sudo`/manual step, or remote
+access) are shown as **copy-don't-execute**, never run for you.
+
+A bottom **Remote access** card walks you through exposing the UIs over Tailscale — with ample
+security warnings behind a consent box. The wizard runs nothing there, and is itself **never** put
+on your tailnet (it holds your tokens).
 
 ## If a model needs an account
 
@@ -67,5 +92,8 @@ never sent anywhere except the download itself. Remove it any time with
 ---
 
 *For maintainers:* the engine is `setup.py` (stdlib + `curl`/`ollama`/`secret-tool`; no `hf` CLI
-needed); the wizard is `setup_web.py` (localhost-only, never tailnet-served — see ADR-0044).
-Tests: `python3 -m unittest discover -s integrations/setup/tests`.
+needed); the wizard is `setup_web.py` (localhost-only, never tailnet-served — see ADR-0044). The
+"Customize your desktop" section is a **server-to-server proxy** of the `:9123` status panel's
+ADR-0043 adopt engine (`/api/desktop` · `/api/component` · `/api/component_jobs`); the wizard never
+parses `components.conf` itself and never shells the driver. Tests: `python3 -m unittest discover -s
+integrations/setup/tests` (and `…/status-panel/tests`).

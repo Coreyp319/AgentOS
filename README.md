@@ -40,12 +40,20 @@ cd integrations
 Everything installs as `--user` services; any privileged step is *printed*, never auto-run.
 Undo any of it with `./uninstall.sh`.
 
-**2 — Set up the AI models** — detect what's already here, download only the gaps:
+**2 — Set up models *and your desktop*** — the browser wizard is the one first-run front door:
+detect what's already here, download only the gaps, then turn on the desktop you want.
 
 ```bash
-./install.sh --onboard --web   # a browser wizard: pick text / image / video, watch it download
-./install.sh --onboard         # or the same, in the terminal
+./install.sh --onboard --web   # the wizard: models + desktop customizations + agents + remote access
+./install.sh --onboard         # or the model half in the terminal
 ```
+
+The wizard's **"Customize your desktop"** section turns on the AgentOS look (Aurora), the ambient
+instruments (the keyhole tray, the reactive shader wallpaper), and the agent wiring — each one-click
+and reversible, with a preview so you see what you're getting. It does this by **reusing the same
+adopt engine** as the status panel's Features page (ADR-0043), never a second installer. A bottom
+**Remote access** card walks you through exposing the UIs over Tailscale — with ample warnings, and
+copy-don't-execute (the wizard never runs it, and never puts itself on your tailnet).
 
 Text and image need **no account**. The 18+ video lane is opt-in and uses a free
 [Civitai](https://civitai.com) token kept in your OS keyring. Details:

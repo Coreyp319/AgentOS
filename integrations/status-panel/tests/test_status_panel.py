@@ -268,5 +268,28 @@ class CatalogDriftGuard(unittest.TestCase):
                          "ComfyUI must be tailnet:false (it has a url but isn't tailnet-served)")
 
 
+class DispatchTargetGate(unittest.TestCase):
+    """ADR-0039 critical: /dispatch fails CLOSED to local; a KRunner launcher can NEVER reach cloud."""
+
+    def test_omitted_target_defaults_to_local_hermes(self):
+        self.assertEqual(sp.resolve_dispatch_target({"id": "swaync"}), ("hermes", ""))
+
+    def test_empty_target_string_defaults_to_local(self):
+        self.assertEqual(sp.resolve_dispatch_target({"target": ""})[0], "hermes")
+
+    def test_browser_may_still_request_cloud(self):
+        # the web UI sends target=claude explicitly behind its own once-per-session consent
+        self.assertEqual(sp.resolve_dispatch_target({"target": "claude"}), ("claude", ""))
+
+    def test_launcher_class_cannot_reach_claude(self):
+        target, err = sp.resolve_dispatch_target({"source": "launcher", "target": "claude"})
+        self.assertIsNone(target)                  # refused at the boundary → 409
+        self.assertTrue(err)
+
+    def test_launcher_class_is_forced_to_hermes(self):
+        self.assertEqual(sp.resolve_dispatch_target({"source": "launcher"}), ("hermes", ""))
+        self.assertEqual(sp.resolve_dispatch_target({"source": "launcher", "target": "hermes"}), ("hermes", ""))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
