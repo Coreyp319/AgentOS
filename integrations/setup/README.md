@@ -21,15 +21,18 @@ Prefer the terminal? `./install.sh --onboard` does the same thing without a brow
 
 ## What you can make
 
-| Bundle | What it is | Account needed? |
-|---|---|---|
-| **text** | Chat + story writing (runs on Ollama) | No |
-| **image** | Make a picture from a description | No |
-| **video-10eros** | Image → short video (the LTX dream engine) | No |
-| **video-wan** | Image → short video (the Wan engine, the default) | A free Civitai token, for the 18+ models |
+| Bundle | What it is | Rating | Account / gate |
+|---|---|---|---|
+| **text** | Chat + story writing (runs on Ollama) | SFW | None — no account |
+| **image** | Make a picture from a description | SFW | None — no account |
+| **video-10eros** | Image → short video (the LTX dream engine) | **18+ (mature)** | No token (free HF mirror), **but an 18+ affirmation is required** |
+| **video-wan** | Image → short video (the Wan engine, the default) | **18+ (mature)** | A free Civitai token + an 18+ affirmation |
 
-**Text and image need no sign-up at all.** Only the mature (18+) video models live behind a
-free [Civitai](https://civitai.com) account — and that lane is always opt-in, never automatic.
+**Text and image are SFW and need no sign-up.** Both **video** lanes are **mature (18+)** —
+there's no SFW video bundle yet — so each requires an explicit 18+ affirmation before it
+downloads, and `video-wan` additionally needs a free [Civitai](https://civitai.com) token.
+"No account" is not "no gate": the rating (what the model can make) and the account (whether a
+sign-up is needed) are two different things, and the mature gate is always opt-in, never automatic.
 
 ## If a model needs an account
 

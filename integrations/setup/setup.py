@@ -259,7 +259,7 @@ def research_models(modality: str = "video", hw: dict | None = None, run=subproc
         f"real-person-likeness model. Be concise — a short ranked list, no preamble."
     )
     cmd = [claude, "-p", prompt, "--model", os.environ.get("AGENTOS_RESEARCH_MODEL", "claude-sonnet-4-6"),
-           "--allowedTools", "WebSearch", "WebFetch", "--output-format", "text"]
+           "--allowedTools", "WebSearch WebFetch", "--output-format", "text"]   # one arg — separate args drop WebFetch
     try:
         r = run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
     except Exception as e:
@@ -314,43 +314,104 @@ def artifact_auth(art: dict) -> str:
 
 
 # ── OS keyring (Secret Service / KWallet) — never a file ─────────────────────────────────────
-_KEYRING_ATTRS = {"service": "{svc}", "key": "api-token"}
+def _token_file(svc: str) -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return Path(base) / "agentos" / f"{svc}.token"
 
 
 def keyring_get(svc: str) -> str | None:
-    if not shutil.which("secret-tool"):
-        return None
-    try:
-        r = subprocess.run(["secret-tool", "lookup", "service", svc, "key", "api-token"],
-                           capture_output=True, text=True, timeout=10, check=False)
-        tok = r.stdout.strip()
-        return tok or None
+    if shutil.which("secret-tool"):
+        try:
+            r = subprocess.run(["secret-tool", "lookup", "service", svc, "key", "api-token"],
+                               capture_output=True, text=True, timeout=10, check=False)
+            if r.stdout.strip():
+                return r.stdout.strip()
+        except Exception:
+            pass
+    try:                                                   # disclosed 0600 fallback (no keyring)
+        p = _token_file(svc)
+        return (p.read_text().strip() or None) if p.exists() else None
     except Exception:
         return None
 
 
 def keyring_set(svc: str, token: str) -> bool:
-    if not shutil.which("secret-tool"):
-        return False
+    if shutil.which("secret-tool"):
+        try:
+            # token on stdin — never argv (it would show in /proc/<pid>/cmdline)
+            r = subprocess.run(["secret-tool", "store", "--label", f"AgentOS {svc} API token",
+                                "service", svc, "key", "api-token"],
+                               input=token, text=True, timeout=10, check=False)
+            if r.returncode == 0:
+                return True
+        except Exception:
+            pass
+    # Fallback: a DISCLOSED 0600 file (ADR-0044 §133) when no OS keyring is reachable.
     try:
-        # token on stdin — never argv (it would show in /proc/<pid>/cmdline)
-        r = subprocess.run(["secret-tool", "store", "--label", f"AgentOS {svc} API token",
-                            "service", svc, "key", "api-token"],
-                           input=token, text=True, timeout=10, check=False)
-        return r.returncode == 0
+        p = _token_file(svc)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(token)
+        print(f"  (no OS keyring found — token stored in {p} at 0600, not the keyring)", file=sys.stderr)
+        return True
     except Exception:
         return False
 
 
 def keyring_clear(svc: str) -> bool:
-    if not shutil.which("secret-tool"):
-        return False
+    ok = False
+    if shutil.which("secret-tool"):
+        try:
+            ok = subprocess.run(["secret-tool", "clear", "service", svc, "key", "api-token"],
+                                capture_output=True, text=True, timeout=10, check=False).returncode == 0
+        except Exception:
+            pass
     try:
-        r = subprocess.run(["secret-tool", "clear", "service", svc, "key", "api-token"],
-                           capture_output=True, text=True, timeout=10, check=False)
-        return r.returncode == 0
+        p = _token_file(svc)
+        if p.exists():
+            p.unlink()
+            ok = True
     except Exception:
-        return False
+        pass
+    return ok
+
+
+# ── reversibility manifest (ADR-0044 §152: what this wizard fetched, so it can be listed) ─────
+def manifest_path() -> Path:
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return Path(base) / "agentos" / "setup-manifest.json"
+
+
+def read_manifest() -> dict:
+    try:
+        return json.loads(manifest_path().read_text())
+    except Exception:
+        return {"v": 1, "fetched": []}
+
+
+def record_fetch(art: dict, dest: str) -> None:
+    """Append the inverse record for a completed fetch — the 'what's stored' audit + the basis for
+    a future refcount-gated Remove (ADR-0044). Best-effort, atomic; never blocks a download."""
+    try:
+        p = manifest_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = read_manifest()
+        data.setdefault("fetched", [])
+        if any(e.get("dest") == dest for e in data["fetched"]):
+            return
+        size = 0
+        if art.get("via") in ("hf", "civitai"):
+            try:
+                size = Path(dest).stat().st_size
+            except Exception:
+                pass
+        data["fetched"].append({"dest": dest, "via": art.get("via"), "bytes": size})
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, p)
+    except Exception:
+        pass
 
 
 # ── fetch (the real download; idempotent skip-if-present) ────────────────────────────────────
@@ -383,6 +444,7 @@ def fetch_artifact(art: dict, token: str | None = None, run=subprocess.run, dry:
         ok = getattr(r, "returncode", 1) == 0
         if ok:
             _invalidate_ollama_cache()          # the new model changes presence — re-read next time
+            record_fetch(art, ref)
         return {"ok": ok, "ref": ref}
 
     if via in ("hf", "civitai"):
@@ -407,6 +469,7 @@ def fetch_artifact(art: dict, token: str | None = None, run=subprocess.run, dry:
         r = run(cmd, input=stdin, text=True, check=False) if stdin is not None else run(cmd, check=False)
         if getattr(r, "returncode", 1) == 0 and Path(str(dest) + ".part").exists():
             os.replace(str(dest) + ".part", str(dest))            # atomic: only a complete file lands
+            record_fetch(art, str(dest))
             return {"ok": True, "dest": str(dest)}
         return {"ok": getattr(r, "returncode", 1) == 0, "dest": str(dest)}
 

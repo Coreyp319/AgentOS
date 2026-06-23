@@ -311,7 +311,7 @@
       "modality": "video",
       "rating": "mature",
       "tier": "hero",
-      "desc": "The LTX-2.3 (10Eros) dream lane — every weight from a free HuggingFace mirror, no account.",
+      "desc": "The LTX-2.3 (10Eros) dream lane. 18+ (mature) — needs an age affirmation, but every weight is a free HuggingFace mirror (no token).",
       "models": [
         "i2v-dream-10eros",
         "t2i-opening",
@@ -328,7 +328,7 @@
       "modality": "video",
       "rating": "mature",
       "tier": "hero",
-      "desc": "The Wan 2.2 Enhanced-NSFW dream lane (the shipped default). Needs a free Civitai token for the checkpoint + anatomy LoRAs.",
+      "desc": "The Wan 2.2 Enhanced-NSFW dream lane (the default). 18+ (mature) — needs an age affirmation + a free Civitai token for the checkpoint + anatomy LoRAs.",
       "models": [
         "i2v-dream",
         "t2i-opening",

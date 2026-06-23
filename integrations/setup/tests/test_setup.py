@@ -333,5 +333,44 @@ class TextAidsRest(ComfyTmp):
         self.assertFalse(setup.research_models("video", claude="/no/such/claude")["ok"])
 
 
+class KeyringFallbackAndManifest(ComfyTmp):
+    def setUp(self):
+        super().setUp()
+        os.environ["XDG_CONFIG_HOME"] = self.tmp
+        os.environ["XDG_STATE_HOME"] = self.tmp
+        self._owhich = setup.shutil.which
+        setup.shutil.which = lambda x: None if x == "secret-tool" else self._owhich(x)
+
+    def tearDown(self):
+        setup.shutil.which = self._owhich
+        os.environ.pop("XDG_CONFIG_HOME", None)
+        os.environ.pop("XDG_STATE_HOME", None)
+        super().tearDown()
+
+    def test_keyring_falls_back_to_0600_file(self):
+        import stat
+        self.assertTrue(setup.keyring_set("civitai", "tok123"))
+        p = setup._token_file("civitai")
+        self.assertTrue(p.exists())
+        self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o600)     # disclosed 0600 fallback
+        self.assertEqual(setup.keyring_get("civitai"), "tok123")
+        self.assertTrue(setup.keyring_clear("civitai"))
+        self.assertIsNone(setup.keyring_get("civitai"))
+
+    def test_record_fetch_writes_manifest(self):
+        setup.record_fetch({"via": "ollama", "ref": "m:1"}, "m:1")
+        self.assertTrue(any(e["dest"] == "m:1" for e in setup.read_manifest()["fetched"]))
+
+
+class ResearchArgv(unittest.TestCase):
+    def test_allowedtools_is_one_arg(self):
+        cap = {}
+        f = tempfile.mkstemp(prefix="fakeclaude-")[1]
+        setup.research_models("video", hw={"vram_gb": 24, "ram_gb": 62}, claude=f,
+                              run=lambda c, **k: (cap.setdefault("cmd", c), type("R", (), {"stdout": "x", "returncode": 0})())[1])
+        i = cap["cmd"].index("--allowedTools")
+        self.assertEqual(cap["cmd"][i + 1], "WebSearch WebFetch")   # one arg — separate args drop WebFetch
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

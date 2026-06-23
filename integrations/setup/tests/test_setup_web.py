@@ -183,6 +183,38 @@ class Routes(unittest.TestCase):
     def test_research_route_starts_job(self):
         self.assertEqual(self._post("/api/research", {"modality": "video"}, token=sw.TOKEN)[0], 202)
 
+    def test_suggest_prompt_route(self):
+        old = setup.suggest_opening_prompt
+        setup.suggest_opening_prompt = lambda m: "a test prompt"
+        try:
+            st, body = self._req("GET", "/api/suggest_prompt?modality=image")
+        finally:
+            setup.suggest_opening_prompt = old
+        self.assertEqual(st, 200)
+        self.assertEqual(json.loads(body)["prompt"], "a test prompt")
+
+    def test_stored_audit_route(self):
+        st, body = self._req("GET", "/api/stored")
+        self.assertEqual(st, 200)
+        self.assertIn("fetched", json.loads(body))
+
+    def test_forget_needs_token(self):
+        self.assertEqual(self._post("/api/forget", {"svc": "civitai"})[0], 403)
+
+    def test_forget_with_token(self):
+        old = setup.keyring_clear
+        setup.keyring_clear = lambda s: True
+        try:
+            st, _ = self._post("/api/forget", {"svc": "civitai"}, token=sw.TOKEN)
+        finally:
+            setup.keyring_clear = old
+        self.assertEqual(st, 200)
+
+    def test_state_has_reuse_ledger(self):
+        d = json.loads(self._req("GET", "/api/state")[1])
+        self.assertIn("found_gb", d)
+        self.assertIn("missing_gb", d)
+
     def test_creds_stores_to_keyring_not_logged(self):
         captured = {}
         old = setup.keyring_set

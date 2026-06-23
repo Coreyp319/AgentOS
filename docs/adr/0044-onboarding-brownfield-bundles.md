@@ -1,6 +1,10 @@
 # ADR-0044 — Guided onboarding: brownfield detect → bundle fetch → first reviewable result
 
-Status: Proposed (v1 = all three modalities, SFW + an opt-in Mature lane)
+Status: Accepted — v1 built + shipped on master (2026-06-23). CLI engine (`setup.py`) + browser
+wizard (`setup_web.py`/`wizard.html`) + ComfyUI bootstrap + text-first ordering + hardware-aware
+fit + optional research agent; all three modalities, SFW + an opt-in Mature lane. Token via curl
+stdin (never argv). 49 setup + 10 web tests green; real downloads validated. Design-council review
+in progress; the localhost-only/never-tailnet, keyring-credential, and Mature-opt-in invariants hold.
 Date: 2026-06-23
 Relates to / inherits: ADR-0001 (substrate, don't-reinvent), ADR-0002 (Ollama does
 residency; configure-don't-rebuild), ADR-0005 (reversible-by-default tx), ADR-0008 +
@@ -174,3 +178,34 @@ installing a parallel copy.
   credential keyring + HF/Civitai mid-flow walkthrough; (5) the Mature opt-in lane (age gate +
   Civitai + tailnet carve-out + denylist). Each is independently shippable; the SFW no-account
   path (1–3) reaches a first result before the credentialed lane (4–5) lands.
+
+## Amendments (post design-council review, 2026-06-23)
+
+The council (`docs/design/0044-setup-wizard-council-brief.md`) flagged drift between this ADR's
+promises and the shipped code. Reconciling here (corrections to our own claims, not new behavior):
+
+- **Fetch worker — NOT the ADR-0043 systemd-run worker.** The setup wizard runs each fetch as a
+  direct `subprocess.Popen` of `setup.py` (`setup_web.py`), not the sandboxed `systemd-run --user`
+  worker the dispatch/adopt surfaces use. Rationale: the installer is not a hardened, network-facing
+  surface that must confine its actuator — it *is* the installer, run deliberately by the user. Any
+  earlier wording implying the systemd-run worker is corrected to this.
+- **Token to curl via stdin, never argv.** Downloads pass the Authorization header through
+  `curl --config -` (stdin), so the token never appears in `/proc/<pid>/cmdline`.
+- **Keyring 0600 fallback — implemented.** When no Secret Service is reachable, the token is
+  stored in a disclosed `0600 O_CREAT` file under `$XDG_CONFIG_HOME/agentos/` (announced on stderr),
+  so a headless install isn't a dead-end. Keyring is the default; the file is the disclosed exception.
+- **Reversibility — partial, honestly scoped.** A per-fetch inverse manifest
+  (`$XDG_STATE_HOME/agentos/setup-manifest.json`) is written on every successful download, surfaced
+  as a read-only "what's stored" audit, and paired with a "Forget token" action (keyring_clear).
+  Per-bundle **weight** removal is **deferred a phase** — it must be refcount-gated because shared
+  artifacts (`b2-vision`, `narrator`, `t2i-opening`) recur across bundles. Until it ships, the UI
+  says "listed", never "removable".
+- **Rating ≠ account gate (honesty).** `rating` (capability: sfw|mature) and the account gate
+  (token needed or not) are independent. Copy across the README/registry/wizard is reconciled so a
+  mature bundle can't read as "no gate". **Both video bundles are mature (18+); there is no SFW video
+  lane yet** — a real `rating:"sfw"` Apache-Wan i2v bundle (+ a structured `fetch_gate` registry
+  field) is a proposed, human-gated follow-up (the council's ADR stub), not shipped this round.
+- **Accessibility.** The wizard honors `prefers-reduced-motion` / `prefers-reduced-transparency`,
+  uses `aria-live` for download/ready announcements, and gives the `tight`/`too-big` fit rungs
+  non-colour glyphs (◐ / ⚠). Fit copy *warns*, never *guarantees* (it is isolation-only — it does not
+  model the ~2.5 GB the always-on desktop already holds, ADR-0004).

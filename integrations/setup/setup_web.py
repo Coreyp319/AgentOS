@@ -70,8 +70,19 @@ def build_state(reg: dict | None = None) -> dict:
             "why": b.get("why", ""), "fit": setup.bundle_fit(reg, b, hw),
         })
     creds = {svc: bool(setup.keyring_get(svc)) for svc in ("huggingface", "civitai")}
+    found_gb = missing_gb = 0.0                  # the reuse ledger: what's already here vs the gap
+    for m in setup.models(reg):
+        if m.get("modality") == "selector":
+            continue
+        sz = float(m.get("size_gb", 0) or 0)
+        if setup.model_status(m)["state"] == "have":
+            found_gb += sz
+        else:
+            missing_gb += sz
     return {"bundles": out_bundles, "creds": creds, "comfyui": setup.comfyui_present(),
-            "hardware": hw, "lucid_url": "http://127.0.0.1:8765", "generated_at": time.time()}
+            "hardware": hw, "found_gb": int(found_gb), "missing_gb": round(missing_gb, 1),
+            "stored_count": len(setup.read_manifest().get("fetched", [])),
+            "lucid_url": "http://127.0.0.1:8765", "generated_at": time.time()}
 
 
 # ── fetch jobs (a plain subprocess of the engine; progress = models present / total) ──────────
@@ -194,6 +205,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"token": TOKEN})
         elif path == "/api/jobs":
             self._json(200, {"jobs": jobs_view(setup.load_registry())})
+        elif path == "/api/suggest_prompt":
+            from urllib.parse import parse_qs
+            mod = parse_qs(urlsplit(self.path).query).get("modality", ["image"])[0]
+            self._json(200, {"prompt": setup.suggest_opening_prompt(mod if mod in ("image", "video") else "image")})
+        elif path == "/api/stored":
+            self._json(200, {"fetched": setup.read_manifest().get("fetched", [])})
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -257,6 +274,11 @@ class Handler(BaseHTTPRequestHandler):
             job = start_research(str(self._body().get("modality", "video")))
             self._json(202 if job else 409,
                        {"id": job["id"], "status": "started"} if job else {"error": "already researching"})
+        elif path == "/api/forget":
+            if not self._guard():
+                return
+            svc = "huggingface" if self._body().get("svc") in ("hf", "huggingface") else "civitai"
+            self._json(200, {"ok": setup.keyring_clear(svc), "svc": svc})    # ADR-0044 "Forget token"
         else:
             self._send(404, b"not found", "text/plain")
 
