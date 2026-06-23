@@ -93,7 +93,7 @@ export default function App() {
   return (
     // the cinematic dream view gets a roomier width (stage + side-gutter choices); the other sections
     // stay focused at the narrow default column.
-    <div className={'wrap' + (active === 'dream' && hasDream ? ' wide' : '')}>
+    <div className={'wrap' + ((active === 'dream' && hasDream) || active === 'new' ? ' wide' : '')}>
       <div className="brand">
         <span className="mark">Lucid</span>
         <span className="tag">— a dream, one beat at a time</span>

@@ -953,3 +953,184 @@ a{ color:var(--inst-blue) }
   animation:unseal 1s cubic-bezier(.2,.7,.2,1) forwards }
 @keyframes unseal{ 0%{ transform:translateX(0); opacity:0 } 16%{ opacity:1 } 100%{ transform:translateX(320%); opacity:0 } }
 @media (prefers-reduced-motion:reduce){ .lib-grid.unsealing{ overflow:visible } .lib-grid.unsealing::after{ display:none } }
+
+/* ============================================================================================
+   The entry "fork in the dark" (Corey's design — claude.ai/design "Lucid Entry", imported 2026-06-23).
+   A few model-authored "ways in" arranged around a central compose node. Bound to the AgentOS
+   instrument tokens for cohesion with the dream view it hands off to (the design's #7aa2ff accent →
+   --inst-blue). Mobile-first: cards stack in flow; at ≥900px they take the corners with connector
+   paths converging on the centre. The safety contract (B2 consent, Private/Mature, the standalone red
+   line) is re-integrated — the prototype dropped it and the binding privacy consult rules it required.
+   ============================================================================================ */
+.fork{ position:relative; display:flex; flex-direction:column; align-items:center; text-align:center;
+  width:100%; padding-bottom:24px }
+
+/* immersive ambient — fixed full-viewport, behind the whole page; removed under reduced-transparency */
+.fork-amb{ position:fixed; inset:0; z-index:-1; pointer-events:none; overflow:hidden }
+.fork-aurora{ position:absolute; inset:-16%; filter:blur(52px) saturate(116%); opacity:.5;
+  animation:develop 7s ease both }
+.fork-aurora i{ position:absolute; border-radius:50%; mix-blend-mode:screen; display:block }
+.fork-aurora i:nth-child(1){ width:55%; height:66%; left:4%; top:8%; background:radial-gradient(circle,#27306E,transparent 62%); animation:drift1 21s ease-in-out infinite }
+.fork-aurora i:nth-child(2){ width:60%; height:62%; right:2%; top:3%; background:radial-gradient(circle,#8A6BDC,transparent 62%); animation:drift2 25s ease-in-out infinite }
+.fork-aurora i:nth-child(3){ width:56%; height:58%; left:22%; bottom:-6%; background:radial-gradient(circle,#4A5AD2,transparent 62%); animation:drift3 29s ease-in-out infinite }
+.fork-grain{ position:absolute; inset:0; opacity:.05; mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") }
+.fork-vig{ position:absolute; inset:0; background:radial-gradient(125% 92% at 50% 24%, transparent 42%, rgba(7,8,12,.74)) }
+.fork-vig.inner{ background:radial-gradient(112% 82% at 50% 46%, transparent 36%, rgba(7,8,12,.7)) }
+/* rising motes — slow, sparse, decorative */
+.fork-motes .mote{ position:absolute; bottom:-12px; border-radius:50%; will-change:transform,opacity }
+.mote.m0{ left:9%;  width:5px; height:5px; background:radial-gradient(circle,rgba(170,196,255,.9),transparent 70%); animation:fork-rise 23s linear -2s infinite }
+.mote.m1{ left:21%; width:3px; height:3px; background:radial-gradient(circle,rgba(170,196,255,.8),transparent 70%); animation:fork-rise 31s linear -9s infinite }
+.mote.m2{ left:34%; width:6px; height:6px; background:radial-gradient(circle,rgba(138,107,220,.85),transparent 70%); animation:fork-rise 27s linear -14s infinite }
+.mote.m3{ left:56%; width:4px; height:4px; background:radial-gradient(circle,rgba(170,196,255,.85),transparent 70%); animation:fork-rise 25s linear -19s infinite }
+.mote.m4{ left:73%; width:5px; height:5px; background:radial-gradient(circle,rgba(138,107,220,.8),transparent 70%); animation:fork-rise 29s linear -23s infinite }
+.mote.m5{ left:90%; width:4px; height:4px; background:radial-gradient(circle,rgba(170,196,255,.85),transparent 70%); animation:fork-rise 26s linear -16s infinite }
+
+/* one narrative invitation. The heading sits over the live ambient, so it carries its own soft dark
+   scrim — pinning the background dark under the small grey eyebrow/sub no matter where the aurora blobs
+   drift (a11y consult: the bright aurora point otherwise drops --inst-label/--inst-muted below AA, and
+   reduced-motion only freezes the aurora, it doesn't dim it). The greys are brightened a step toward
+   --inst-text LOCALLY — not the global tokens, which are tuned for the glass card. */
+.fork-head{ position:relative; z-index:1; display:flex; flex-direction:column; align-items:center; width:100% }
+.fork-head::before{ content:''; position:absolute; z-index:-1; left:50%; top:48%; transform:translate(-50%,-50%);
+  width:min(150%,820px); height:260%; pointer-events:none;
+  background:radial-gradient(58% 60% at 50% 50%, rgba(7,8,12,.78), rgba(7,8,12,.5) 46%, transparent 74%) }
+.fork-eyebrow{ display:inline-flex; align-items:center; gap:9px; margin:6px 0 0; font-size:.7rem;
+  letter-spacing:.24em; text-transform:uppercase; color:color-mix(in srgb,var(--inst-text) 30%,var(--inst-label)) }
+.fork-eyebrow .spark{ color:var(--inst-blue) }
+.fork-hero{ margin:13px 0 0; font-family:var(--display); font-optical-sizing:auto; font-style:italic;
+  font-weight:340; font-size:clamp(2rem,4.6vw,3.05rem); line-height:1.08; letter-spacing:-.02em;
+  color:var(--inst-text); text-wrap:balance; max-width:20ch }
+.fork-hero span{ color:var(--inst-blue) }
+.fork-hero:focus{ outline:none }   /* programmatic focus target (tabIndex -1), no visible ring */
+.fork-sub{ margin:13px auto 0; max-width:46ch; font-size:.96rem; line-height:1.5;
+  color:color-mix(in srgb,var(--inst-text) 26%,var(--inst-muted)) }
+
+/* THE STAGE */
+.fork-stage{ position:relative; width:100%; max-width:560px; margin:22px auto 0; border-radius:20px;
+  overflow:hidden; background:#070810; box-shadow:0 50px 130px -62px #000, inset 0 0 0 1px var(--hairline);
+  display:flex; flex-direction:column; gap:12px; padding:16px }
+.fork-aurora.inner{ inset:-12%; opacity:.45; animation:develop 5s ease both }
+.fork-paths{ position:absolute; inset:0; width:100%; height:100%; z-index:2; pointer-events:none;
+  filter:drop-shadow(0 0 5px color-mix(in srgb,var(--inst-blue) 45%,transparent)) }
+.flowdash{ animation:fork-flow 3.6s linear infinite }
+.flownode{ animation:fork-nodepulse 3.2s ease-in-out infinite }
+
+/* glimpse cards (model-authored openings) */
+.glimpse{ position:relative; z-index:3; display:flex; flex-direction:column; gap:7px; text-align:left;
+  background:rgba(9,11,18,.82); border:1px solid rgba(255,255,255,.1); border-radius:13px; padding:9px;
+  cursor:pointer; color:inherit; font:inherit; box-shadow:0 16px 40px -22px rgba(0,0,0,.85);
+  transition:border-color .2s ease, transform .2s ease }
+.glimpse:hover:not(:disabled){ border-color:var(--inst-blue); transform:translateY(-2px) }
+.glimpse:disabled{ opacity:.6; cursor:default }
+.glimpse:focus-visible{ outline:2px solid var(--inst-blue); outline-offset:2px }
+.gl-thumb{ position:relative; display:block; width:100%; height:88px; border-radius:9px; overflow:hidden;
+  border:1px dashed color-mix(in srgb,var(--inst-blue) 45%,transparent);
+  background:radial-gradient(72% 62% at 50% 42%, color-mix(in srgb,var(--inst-blue) 28%,transparent), transparent), #0c1020 }
+.glimpse.g1 .gl-thumb{ border-color:color-mix(in srgb,#4A5AD2 48%,transparent); background:radial-gradient(72% 62% at 50% 42%, color-mix(in srgb,#4A5AD2 34%,transparent), transparent), #0c1020 }
+.glimpse.g2 .gl-thumb{ border-color:color-mix(in srgb,#8A6BDC 48%,transparent); background:radial-gradient(72% 62% at 50% 42%, color-mix(in srgb,#8A6BDC 34%,transparent), transparent), #0c1020 }
+.gl-tag{ position:absolute; left:8px; bottom:6px; font-size:7px; letter-spacing:.14em; text-transform:uppercase; color:rgba(230,233,240,.5) }
+.gl-eyebrow{ font-size:8.5px; letter-spacing:.1em; text-transform:uppercase; color:rgba(230,233,240,.6) }
+.gl-title{ font-size:14px; font-weight:600; color:var(--inst-text) }
+.gl-line{ font-family:var(--display); font-style:italic; font-weight:380; font-size:.84rem; line-height:1.36; color:var(--inst-muted) }
+/* subtle skeleton while the openings generate (the user groks the UI meanwhile) */
+.glimpse.skel{ cursor:default; pointer-events:none }
+.glimpse.skel .gl-thumb{ border-style:solid; border-color:var(--hairline); background:#0c1020 }
+.sk{ display:block; border-radius:5px; background:linear-gradient(100deg, rgba(255,255,255,.045) 30%, rgba(255,255,255,.1) 50%, rgba(255,255,255,.045) 70%); background-size:220% 100%; animation:fork-shimmer 1.9s linear infinite }
+.sk-eyebrow{ width:34%; height:7px } .sk-title{ width:74%; height:12px } .sk-line{ width:92%; height:9px }
+
+/* centre compose node (the convergence). Darker-than-default frosted glass (rgba over the bright stage
+   aurora) so the placeholder + hint + gift note clear AA even with transparency ON — the a11y consult
+   measured plain --glass over the aurora at ~2.3:1 for --inst-label. The blur keeps the frosted feel. */
+.fork-center{ position:relative; z-index:5; width:100%; background:rgba(17,20,30,.8);
+  border:1px solid color-mix(in srgb,var(--inst-blue) 38%,transparent); border-radius:18px; padding:15px;
+  backdrop-filter:blur(18px); text-align:left;
+  box-shadow:0 30px 80px -42px #000, 0 0 72px -28px color-mix(in srgb,var(--inst-blue) 50%,transparent) }
+.fork-center .note{ color:var(--inst-muted) }   /* the gift / clarity notes — brighter on the darker node */
+.fork-drop{ position:absolute; inset:0; z-index:6; display:grid; place-items:center; border-radius:18px;
+  background:color-mix(in srgb,var(--inst-blue) 18%, rgba(7,8,16,.78)); border:2px dashed var(--inst-blue) }
+.fork-drop span{ font-family:var(--display); font-style:italic; color:var(--inst-text); font-size:1.05rem; padding:0 16px }
+.fork-chip{ display:flex; align-items:center; gap:10px; margin-bottom:12px; padding:6px;
+  background:rgba(9,11,18,.5); border:1px solid var(--hairline); border-radius:11px }
+.chip-img{ width:34px; height:46px; object-fit:cover; border-radius:7px; flex:0 0 auto }
+.chip-meta{ flex:1 1 auto; min-width:0 }
+.chip-k{ font-size:.78rem; color:var(--inst-text) }
+.chip-name{ font-size:.7rem; color:var(--inst-label); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.chip-x{ flex:0 0 auto; width:26px; height:26px; display:grid; place-items:center; border-radius:50%;
+  background:transparent; border:1px solid var(--hairline); color:var(--inst-muted); font-size:16px; line-height:1; cursor:pointer }
+.chip-x:hover{ border-color:var(--inst-muted); color:var(--inst-text) }
+.fork-c-eyebrow{ display:flex; align-items:center; gap:7px; margin-bottom:10px; font-size:8.5px;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--inst-blue) }
+.fork-text{ width:100%; box-sizing:border-box; resize:none; background:transparent; border:none; outline:none;
+  color:var(--inst-text); font-family:var(--display); font-style:italic; font-weight:380; font-size:1.1rem;
+  line-height:1.42; min-height:58px }
+.fork-text::placeholder{ color:var(--inst-muted); opacity:1 }   /* brighter on the darker node (a11y) */
+.fork-gift{ margin:8px 0 0 }
+.fork-c-row{ display:flex; align-items:center; gap:9px; margin-top:11px; padding-top:12px; border-top:1px solid var(--hairline) }
+.fork-pick{ position:relative; display:inline-grid; place-items:center; width:38px; height:38px; flex:0 0 auto;
+  cursor:pointer; color:var(--inst-muted); border:1px solid var(--hairline); border-radius:50% }
+.fork-pick:hover{ border-color:var(--inst-muted); color:var(--inst-text) }
+.fork-pick:focus-within{ outline:2px solid var(--inst-blue); outline-offset:2px }
+.fork-c-hint{ flex:1 1 auto; font-size:.74rem; color:var(--inst-muted) }   /* brighter on the darker node (a11y) */
+.fork-go{ flex:0 0 auto; width:46px; height:46px; display:grid; place-items:center; background:var(--inst-blue);
+  color:#0b0e16; border:none; border-radius:50%; cursor:pointer;
+  box-shadow:0 8px 30px -10px color-mix(in srgb,var(--inst-blue) 75%,transparent) }
+.fork-go:hover:not(:disabled){ background:color-mix(in srgb,var(--inst-blue) 86%,#fff) }
+.fork-go:disabled{ opacity:.55; cursor:default }
+.go-spin{ width:18px; height:18px; border-radius:50%; border:2px solid rgba(11,14,22,.35); border-top-color:#0b0e16; animation:fork-spin .8s linear infinite }
+
+/* consent + status + nudge */
+.fork-consent{ width:100%; max-width:560px; margin:14px auto 0; text-align:left }
+.fork-live{ min-height:1.3em; margin-top:12px; font-size:var(--fs-sm); color:var(--inst-text) }
+.fork-needs{ color:var(--brand-warm) }
+.fork-nudge{ margin-top:8px; color:var(--brand-warm); font-size:.9rem; font-family:var(--display); font-style:italic }
+
+/* before-you-begin bar: declarations (left) + first-moment length (right) */
+.fork-bar{ width:100%; max-width:1120px; margin:22px auto 0; display:flex; align-items:flex-start;
+  justify-content:space-between; gap:24px 32px; flex-wrap:wrap; text-align:left }
+.fork-decl{ display:flex; flex-direction:column; gap:4px }
+.fork-len{ display:flex; flex-direction:column; align-items:flex-end; gap:8px }
+.fork-len-k{ font-size:.74rem; text-transform:uppercase; letter-spacing:.1em; color:var(--inst-label) }
+.fork-len-opts{ display:flex; gap:6px }
+.fork-len-opts .lenbtn{ flex:0 0 auto; min-width:42px }
+.fork-redline{ width:100%; max-width:1120px; margin:14px auto 0; text-align:left;
+  font-size:var(--fs-sm); color:var(--inst-text) }
+
+/* declaration switches (shared grammar; state by knob POSITION + glyph + aria-checked, never colour alone) */
+.thr-switch{ display:flex; align-items:flex-start; gap:12px; padding:6px 0; cursor:pointer }
+.thr-track{ flex:0 0 auto; position:relative; width:38px; height:22px; margin-top:1px; background:var(--inst-deep);
+  border:1px solid var(--hairline); border-radius:999px; transition:background .2s, border-color .2s }
+.thr-knob{ position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%;
+  background:var(--inst-muted); transition:transform .2s, background .2s }
+.thr-switch input:checked + .thr-track{ background:color-mix(in srgb,var(--inst-blue) 30%,transparent); border-color:var(--inst-blue) }
+.thr-switch input:checked + .thr-track .thr-knob{ transform:translateX(16px); background:var(--inst-blue) }
+.thr-switch input:focus-visible + .thr-track{ outline:2px solid var(--inst-blue); outline-offset:2px }
+.thr-switch-text{ display:flex; flex-direction:column; gap:2px }
+.thr-switch-name{ display:inline-flex; align-items:center; gap:8px; color:var(--inst-text) }
+
+/* keyframes (drift1/2/3 + develop are shared with the dream stage) */
+@keyframes fork-rise{ 0%{ transform:translateY(0) scale(1); opacity:0 } 8%{ opacity:.7 } 92%{ opacity:.5 } 100%{ transform:translateY(-104vh) scale(.4); opacity:0 } }
+@keyframes fork-flow{ to{ stroke-dashoffset:-32 } }
+@keyframes fork-nodepulse{ 0%,100%{ opacity:.55 } 50%{ opacity:1 } }
+@keyframes fork-shimmer{ to{ background-position:-220% center } }
+@keyframes fork-spin{ to{ transform:rotate(360deg) } }
+
+/* the fork layout proper — corners + centre + measured connector paths — only where there is room */
+@media (min-width:900px){
+  .fork-stage{ max-width:1120px; height:clamp(548px,63vh,650px); display:block; padding:0 }
+  .glimpse{ position:absolute; width:232px }
+  .glimpse.g0{ top:28px; left:26px } .glimpse.g1{ bottom:28px; left:26px }
+  .glimpse.g2{ top:28px; right:26px } .glimpse.g3{ bottom:28px; right:26px }
+  .fork-center{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:336px; max-width:calc(100% - 540px); min-width:300px }
+  .fork-consent{ max-width:1120px }
+}
+
+@media (prefers-reduced-motion:reduce){
+  .fork-aurora, .fork-aurora i, .mote, .flowdash, .flownode, .sk, .go-spin{ animation:none !important }
+  .mote{ display:none } .sk{ background:rgba(255,255,255,.06) }
+}
+@media (prefers-reduced-transparency:reduce){
+  .fork-amb .fork-aurora, .fork-grain{ display:none }
+  .fork-center{ backdrop-filter:none; background:rgba(20,23,34,.96) }
+}

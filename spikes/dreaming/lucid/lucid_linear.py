@@ -339,6 +339,18 @@ def propose(context, n=4, rating="sfw", frame_b64=None):
     return out[:n]
 
 
+def openings(n=4):
+    """Entry-page "ways in": n model-authored SFW dream openings (each {seed,title,line}), with a
+    curated fallback so the entry never blocks. Pure-text + VRAM-light (cheap 3B, keep_alive:0). The
+    red line is rating-independent and re-enforced when the chosen seed is actually started — these
+    are previews only and never widen it."""
+    try:
+        return E.propose_openings(n)
+    except Exception as e:   # noqa: BLE001 — total fail-open; the engine already tops up from the pool
+        log(f"openings failed ({e}) — using curated pool")
+        return E._FALLBACK_OPENINGS[:n]
+
+
 # ---------------- juncture prompt refine (model proposes, code disposes) ----------------
 REFINE_MAX_IN = 600     # a rough next-beat idea, not an essay
 

@@ -904,6 +904,89 @@ def propose_beats(context, n=4):
     return beats[:n]
 
 
+# ── opening glimpses (entry "fork in the dark") ─────────────────────────────────────────────────
+# The entry page offers a few model-authored "ways in" — frame-0 openings the viewer can step into,
+# beside the always-present "describe your own". These are NOT beats (there is no current frame to
+# continue from); they are whole openings. Generated SFW with the CHEAP base MODEL (qwen2.5vl:3b,
+# not the 8.7GB narrator-beats) — the entry is pre-declaration, the openings stay tasteful, and a 3B
+# is fast + VRAM-light (keep_alive:0 evicts right after). Mature only ever applies once a dream is
+# actually started (the floor), never to these previews. Always has a curated fallback so the entry
+# never blocks on the model.
+_OPEN_SYS = (
+    "You write opening frames for a silent, dream-like video tool. Propose EXACTLY {n} DIFFERENT "
+    "dream openings — the very first image of a dream, before anything moves.\n"
+    "Pull the {n} in genuinely different directions: different places, palettes, moods, scales — an "
+    "intimate interior and a vast landscape, a calm one and an uncanny one. Each should feel like a "
+    "doorway you could step through, evocative and a little strange, in plain dream-logic. No people's "
+    "faces as the subject; keep them about place, light, weather, and one quietly surreal thing.\n"
+    "For each opening write, IN PLAIN ENGLISH:\n"
+    "  - \"seed\": a concrete present-tense VISUAL description of that first frame, under 30 words "
+    "(what the camera sees — place, light, the one surreal detail). This is what gets painted.\n"
+    "  - \"title\": a SHORT 3-6 word fragment that completes the phrase \"a way in…\", lowercase, no "
+    "leading ellipsis (e.g. \"into an orchard at dusk\", \"over still black water\").\n"
+    "  - \"line\": ONE short, vivid present-tense sentence naming the moment (e.g. \"A door stands "
+    "open in the long grass; the light is going amber.\").\n"
+    "Keep every opening strictly SFW — no nudity or sexual content. RED LINE (never violate): no "
+    "minors, no real or identifiable real people.\n"
+    "Return ONLY JSON — EXACTLY {n} openings: "
+    '{{"openings":[{{"seed":"...","title":"...","line":"..."}}]}}.'
+)
+
+
+def _sanitize_open(o):
+    """code disposes: cap lengths, strip a stray leading ellipsis on the title, drop empties."""
+    if not isinstance(o, dict):
+        return None
+    seed = (o.get("seed") or "").strip()[:240]
+    title = (o.get("title") or "").strip().lstrip("…. ").strip()[:48]
+    line = (o.get("line") or "").strip()[:160]
+    return {"seed": seed, "title": title, "line": line} if (seed and title and line) else None
+
+
+# Curated fallback pool (Corey's four from Lucid Entry.dc.html + extras), sampled when the model is
+# unreachable / returns junk / is too slow. Same voice as the generated ones, always SFW.
+_FALLBACK_OPENINGS = [
+    {"seed": "A door left open in an orchard at dusk, the light going amber",
+     "title": "into an orchard at dusk", "line": "A door stands open in the long grass; the light is going amber."},
+    {"seed": "A city of paper folding quietly into the rain",
+     "title": "through falling paper", "line": "A city folds itself, quietly and completely, into the rain."},
+    {"seed": "Aurora unspooling slowly over still black water",
+     "title": "over still black water", "line": "An aurora unspools across a dark, mirror-still lake."},
+    {"seed": "The sea turning, very slowly, into glass",
+     "title": "toward a glass sea", "line": "The tide stops, and the water begins to set like glass."},
+    {"seed": "A lantern-lit train carriage drifting through deep snow at night",
+     "title": "through a snow-bound night", "line": "A warm carriage drifts on, alone, across an endless field of snow."},
+    {"seed": "A library where the books are slowly lifting off the shelves and hovering",
+     "title": "into a rising library", "line": "The books leave their shelves and hang, open, in the still air."},
+    {"seed": "A desert at dawn where the dunes are made of soft blue light",
+     "title": "across dunes of light", "line": "The dunes glow a soft blue, and the first light pours between them."},
+    {"seed": "A greenhouse at night with bioluminescent flowers breathing slowly",
+     "title": "into a glowing greenhouse", "line": "In the dark glass house, the flowers breathe their own pale light."},
+]
+
+
+def propose_openings(n=4):
+    """Generate `n` distinct SFW dream openings via the cheap base model. Best-effort: any failure
+    (model down, bad JSON, too few) tops up from the curated fallback so the entry always has cards.
+    Returns a list of {seed, title, line}. Pure-text, keep_alive:0 — VRAM-light by construction."""
+    out = []
+    try:
+        raw = _ollama_json(_OPEN_SYS.format(n=n), "Write the openings now.",
+                           model=MODEL, temperature=BEAT_TEMP)
+        data = json.loads(raw)
+        out = [o for o in (_sanitize_open(x) for x in data.get("openings", [])) if o]
+    except Exception:   # noqa: BLE001 — fail-open to the curated pool; the entry must never break
+        out = []
+    if len(out) < n:    # top up (de-duped by title) from the fallback so we always return n
+        seen = {o["title"].lower() for o in out}
+        for fb in _FALLBACK_OPENINGS:
+            if len(out) >= n:
+                break
+            if fb["title"].lower() not in seen:
+                out.append(dict(fb)); seen.add(fb["title"].lower())
+    return out[:n]
+
+
 def story_context(tree, node_id):
     """The path from root to node, as a short synopsis the LLM can continue."""
     chain, cur = [], node_id

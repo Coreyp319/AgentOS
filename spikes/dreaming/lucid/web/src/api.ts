@@ -128,6 +128,23 @@ export function useBeats(enabled: boolean, session: string, nodeId: number, dwel
   })
 }
 
+// Entry "ways in": a few model-authored SFW openings the viewer can step through. The server caches
+// them process-wide (~6h TTL) and always returns 4 via a curated fallback, so this never hangs and
+// rolls the model at most once per TTL. We keep them for the session (staleTime Infinity) — the entry
+// shows a subtle skeleton while the first fetch lands, then the openings settle in. The `seed` is the
+// t2i prompt that an opening starts from; title/line are the card copy.
+export type Opening = { seed: string; title: string; line: string }
+export function useOpenings(enabled = true) {
+  return useQuery<Opening[]>({
+    queryKey: ['openings'],
+    queryFn: () => getJSON('/api/openings').then((j) => (j.openings ?? []) as Opening[]),
+    enabled,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: 1,
+  })
+}
+
 // ---- mutations ----
 // `resets`: extra query keys to drop on settle. A dream advancing the chain gets a fresh (session,tipId)
 // key for free, but starting/burning/deleting a dream must EVICT the prior dream's held menu so the
