@@ -13,7 +13,7 @@ is the `dreamTex` the live windable shader warps with wind (ADR-0009 dream-as-
 texture: model proposes the look, code disposes the motion).
 
 Local-first: runs on the local ComfyUI (no cloud). Reuses the proven
-spikes/dreaming/comfy_client.py HTTP primitives (don't reinvent).
+apps/dreaming/comfy_client.py HTTP primitives (don't reinvent).
 
   python3 ref_to_look.py <reference.jpg> [--out out/ref_look.png]
       [--denoise 0.58] [--ckpt ...] [--prompt ...] [--seed N]

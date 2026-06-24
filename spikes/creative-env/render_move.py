@@ -203,7 +203,7 @@ def main() -> int:
          f"{graded_dir if not no_grade else '(none)'}/")
     _log(f"first final frame: {first_frame}")
     _log("lucid seam (Design-0023 §[5], lucid_engine.py:269):")
-    _log(f'  python3 spikes/dreaming/lucid/lucid_engine.py start amber --image "{first_frame}"')
+    _log(f'  python3 apps/dreaming/lucid/lucid_engine.py start amber --image "{first_frame}"')
     return 0
 
 

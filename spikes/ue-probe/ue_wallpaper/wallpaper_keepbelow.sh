@@ -20,7 +20,7 @@
 set -u
 UE="$HOME/UnrealEngine/Engine/Binaries/Linux/UnrealEditor"
 PROJ="$HOME/UnrealProjects/AgentOSBlank/AgentOSBlank.uproject"
-MAP="/Game/AgentOS/CalmWallpaper"
+MAP="${AGENTOS_WALLPAPER_MAP:-/Game/AgentOS/CalmWallpaper}"   # override: AGENTOS_WALLPAPER_MAP=/Game/AgentOS/PrismField
 MAXFPS="${AGENTOS_WALLPAPER_FPS:-30}"   # override: AGENTOS_WALLPAPER_FPS=15 ./wallpaper_keepbelow.sh
 [ -x "$UE" ]   || { echo "FATAL: missing $UE"; exit 1; }
 [ -f "$PROJ" ] || { echo "FATAL: missing $PROJ"; exit 1; }
