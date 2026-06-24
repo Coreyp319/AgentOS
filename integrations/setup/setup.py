@@ -60,8 +60,8 @@ NODE_PACKS = [
     ("ComfyUI-KJNodes", "https://github.com/kijai/ComfyUI-KJNodes"),
     ("ComfyUI-LTXVideo", "https://github.com/Lightricks/ComfyUI-LTXVideo"),
 ]
-_DEFAULT_PROMPT = {"image": "a quiet harbor at dawn, soft mist on still water",
-                   "video": "a calm forest stream in morning light, gentle drifting motion"}
+_DEFAULT_PROMPT = {"image": "A young girl in a red dress dancing gracefully on a sunlit beach.",
+                   "video": "A young girl in a red dress dancing gracefully on a sunlit beach."}
 
 
 # ── registry ────────────────────────────────────────────────────────────────────────────────

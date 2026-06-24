@@ -318,7 +318,7 @@ class TextAidsRest(ComfyTmp):
         old = setup._text_model_present
         setup._text_model_present = lambda: None
         try:
-            self.assertIn("forest", setup.suggest_opening_prompt("video"))
+            self.assertIn("dancing", setup.suggest_opening_prompt("video"))
         finally:
             setup._text_model_present = old
 
