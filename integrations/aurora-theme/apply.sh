@@ -7,6 +7,22 @@
 # opt-in (off by default in components.conf).
 set -euo pipefail
 
+# kread_ini: read a KDE config value via awk instead of kreadconfig6. kreadconfig6 is a Qt GUI
+# binary that write-locks its own ~/.config/kreadconfig6rc even to READ, and pops a blocking
+# "kreadconfig6rc not writable" modal when that probe fails (cold boot / a read-only-home unit).
+# awk has no toolkit, so it never stalls or shows a dialog. Searches the XDG cascade (config-home
+# wins), like kreadconfig6. Args: file group key. Writes still use kwriteconfig6.
+kread_ini() {
+  local b IFS=:
+  for b in "${XDG_CONFIG_HOME:-$HOME/.config}" ${XDG_CONFIG_DIRS:-/etc/xdg}; do
+    if [ -r "$b/$1" ]; then
+      awk -v g="[$2]" -v k="$3" '
+        $0==g {f=1; next} /^\[/ {f=0}
+        f { i=index($0,"="); if (i>0 && substr($0,1,i-1)==k) { print substr($0,i+1); exit } }' "$b/$1"
+    fi
+  done | head -n1
+}
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 UNION="$DATA/union/css"
@@ -80,10 +96,10 @@ printf 'UNION_STYLE_NAME=aurora\n' > "$ENVD/union-style.conf"
 # 5. Back up the prior widget style + colour scheme ONCE, then activate (reversible).
 #    Never record "Union" as the thing to restore to (that would be a no-op revert);
 #    fall back to kvantum, this box's pre-Union widget style.
-cur_style="$(kreadconfig6 --file kdeglobals --group KDE --key widgetStyle 2>/dev/null || true)"
+cur_style="$(kread_ini kdeglobals KDE widgetStyle)"
 [ "$cur_style" = "Union" ] && cur_style=kvantum
 [ -s "$STATE/prev-widgetstyle" ] || printf '%s\n' "${cur_style:-kvantum}" > "$STATE/prev-widgetstyle"
-cur_scheme="$(kreadconfig6 --file kdeglobals --group General --key ColorScheme 2>/dev/null || true)"
+cur_scheme="$(kread_ini kdeglobals General ColorScheme)"
 [ "$cur_scheme" = "AuroraDark" ] || [ "$cur_scheme" = "AuroraLight" ] && cur_scheme=""
 [ -s "$STATE/prev-colorscheme" ] || [ -z "$cur_scheme" ] || printf '%s\n' "$cur_scheme" > "$STATE/prev-colorscheme"
 

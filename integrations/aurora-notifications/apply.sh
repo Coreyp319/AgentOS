@@ -28,6 +28,22 @@
 # Aurora instrument register, not a side effect. Fully reverted by restore.sh.
 set -euo pipefail
 
+# kread_ini: read a KDE config value via awk instead of kreadconfig6. kreadconfig6 is a Qt GUI
+# binary that write-locks its own ~/.config/kreadconfig6rc even to READ, and pops a blocking
+# "kreadconfig6rc not writable" modal when that probe fails (cold boot / a read-only-home unit).
+# awk has no toolkit, so it never stalls or shows a dialog. Searches the XDG cascade (config-home
+# wins), like kreadconfig6. Args: file group key. Writes still use kwriteconfig6.
+kread_ini() {
+  local b IFS=:
+  for b in "${XDG_CONFIG_HOME:-$HOME/.config}" ${XDG_CONFIG_DIRS:-/etc/xdg}; do
+    if [ -r "$b/$1" ]; then
+      awk -v g="[$2]" -v k="$3" '
+        $0==g {f=1; next} /^\[/ {f=0}
+        f { i=index($0,"="); if (i>0 && substr($0,1,i-1)==k) { print substr($0,i+1); exit } }' "$b/$1"
+    fi
+  done | head -n1
+}
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 THEMES="$DATA/plasma/desktoptheme"
@@ -39,7 +55,7 @@ mkdir -p "$STATE"
 
 # 1. Resolve the target theme: reuse the active aurora clone if the shell is
 #    already on one (aurora-panel ran), else clone the active theme now.
-cur="$(kreadconfig6 --file plasmarc --group Theme --key name 2>/dev/null || true)"
+cur="$(kread_ini plasmarc Theme name)"
 : "${cur:=default}"
 case "$cur" in
   *-aurora) clone="$cur" ;;                         # already on an aurora clone — just retune its dialog chrome
@@ -80,7 +96,7 @@ install -m644 "$SRC_SVGZ" "$dst/dialogs/background.svgz"
 echo "✓ installed Aurora instrument-navy dialog chrome (#161a28 card, ~12px radius, soft lift)"
 
 # 3. Point the shell at the clone (no-op if aurora-panel already did).
-if [ "$(kreadconfig6 --file plasmarc --group Theme --key name 2>/dev/null)" != "$clone" ]; then
+if [ "$(kread_ini plasmarc Theme name)" != "$clone" ]; then
   kwriteconfig6 --file plasmarc --group Theme --key name "$clone"
   echo "✓ Plasma shell theme → $clone"
 fi
