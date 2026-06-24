@@ -31,6 +31,11 @@
     --blue: var(--inst-blue);
     --card: var(--glass); --card-line: var(--hairline); --card-line-hi: var(--hairline-hi);
 
+    /* unified AgentOS type (local, fc-list verified): Fira Sans body, Fira Sans Condensed display, Hack mono */
+    --sans: "Fira Sans", "Fira Sans Book", -apple-system, system-ui, "Segoe UI", sans-serif;
+    --display: "Fira Sans Condensed", "Fira Sans", system-ui, sans-serif;
+    --mono: "Hack", "JetBrains Mono", ui-monospace, "DejaVu Sans Mono", monospace;
+
     /* ── Status ramp — 5 live hues + 1 reserved. fg (text-on-glass), ring (halo) and line
        (border) are DERIVED via color-mix, so re-hueing a base carries its whole family. ── */
     --st-up:      #74d39a;
@@ -84,7 +89,7 @@
   html, body { height: 100%; }
   body {
     margin: 0;
-    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-family: var(--sans);
     color: var(--text);
     background:
       radial-gradient(1200px 700px at 78% -8%, color-mix(in srgb, var(--inst-blue) 10%, transparent), transparent 60%),
@@ -135,7 +140,7 @@
     content: ""; position: absolute; inset: 9px; border-radius: 4px;
     background: var(--bg-0); opacity: 0.55;
   }
-  .brand h1 { font-size: var(--fs-display); font-weight: var(--fw-semibold); margin: 0; line-height: 1.1; }
+  .brand h1 { font-family: var(--display); font-size: var(--fs-display); font-weight: var(--fw-semibold); margin: 0; line-height: 1.1; }
   .brand .sub { font-size: var(--fs-sm); color: var(--muted); margin-top: 2px; }
 
   .health { display: flex; flex-direction: column; align-items: flex-end; gap: var(--sp-2); }
@@ -172,6 +177,7 @@
   /* ── groups ─────────────────────────────────────────── */
   .group { margin-top: var(--sp-7); }
   .group > h2 {
+    font-family: var(--display);
     font-size: var(--fs-2xs); font-weight: var(--fw-semibold); text-transform: uppercase;
     letter-spacing: 1.4px; color: var(--faint); margin: 0 0 var(--sp-3) var(--sp-1);
   }
@@ -200,7 +206,7 @@
 
   /* Inline "Why?" — a read-only journalctl tail, expanded under a failed row. */
   .why { margin: 0; padding: 0 var(--sp-5) var(--sp-4) calc(var(--sp-5) + 25px);
-         font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; font-size: var(--fs-3xs);
+         font-family: var(--mono); font-size: var(--fs-3xs);
          color: var(--muted); white-space: pre-wrap; word-break: break-word; line-height: 1.55;
          max-height: 200px; overflow: auto; border-top: 1px dashed var(--card-line); padding-top: var(--sp-3); }
   .why[hidden] { display: none; }
@@ -310,7 +316,7 @@
 
   /* Features / progressive adoption (ADR-0043) — a calm browse surface below the boot stack. */
   .features { margin-top: var(--sp-7); }
-  .features h2 { font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--muted);
+  .features h2 { font-family: var(--display); font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--muted);
     letter-spacing: .2px; margin: 0 0 var(--sp-3); }
   .features .hint { color: var(--faint); font-size: var(--fs-2xs); font-weight: var(--fw-regular); }
   .feat { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4);

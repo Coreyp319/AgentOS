@@ -36,11 +36,12 @@
     --st-red-ring:color-mix(in srgb,var(--st-red) 20%,transparent);
     --st-idle-ring:color-mix(in srgb,var(--st-idle) 15%,transparent);
 
-    /* type — a humanist serif for the content, a true mono for the instrument readouts, a clean
-       system sans for body. Distinctive without a web font (offline/PWA: zero blocking resources). */
-    --serif:"Palatino","Palatino Linotype","Book Antiqua","URW Palladio L","P052","Iowan Old Style","Charter","Noto Serif",Georgia,"Times New Roman",serif;
-    --mono:ui-monospace,"SF Mono","JetBrains Mono","DejaVu Sans Mono",Menlo,monospace;
-    --sans:"Inter",ui-sans-serif,-apple-system,BlinkMacSystemFont,system-ui,"Segoe UI",sans-serif;
+    /* unified AgentOS type (local, fc-list verified; zero web fonts — offline/PWA-safe): Fira Sans body,
+       Hack mono for the instrument readouts, P052 (a local Palatino) serif for the almanac content —
+       the editorial serif converged with Lucid so the family reads as one voice. */
+    --serif:"P052","Palatino","URW Palladio L","Iowan Old Style","Noto Serif",Georgia,"Times New Roman",serif;
+    --mono:"Hack","JetBrains Mono",ui-monospace,"DejaVu Sans Mono",monospace;
+    --sans:"Fira Sans","Fira Sans Book",ui-sans-serif,-apple-system,system-ui,"Segoe UI",sans-serif;
 
     --gutter:22px;                    /* the status-mark column the index hangs from */
     font-synthesis:none; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;

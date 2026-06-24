@@ -1,7 +1,7 @@
 /* AgentOS instrument register (canon: integrations/design/instrument-tokens.md) + the Lucid-only
-   authored-narrative serif. Data stays system-font; serif (Fraunces) is legal ONLY on the wordmark,
-   the beat caption, the elapsed timer, and the model-authored narrative lines (beat / segment / future /
-   gutter prompts) — per the visual-systems + brand reviews. */
+   authored-narrative serif. Data uses the unified AgentOS body (Fira Sans) + mono (Hack); the editorial
+   serif (P052, a local Palatino) is legal ONLY on the wordmark, the beat caption, the elapsed timer, and
+   the model-authored narrative lines (beat / segment / future / gutter prompts) — per the brand review. */
 :root{
   --inst-base:#12141c; --inst-deep:#161a28; --inst-horizon:#1a2238;
   --inst-text:#e6e9f0; --inst-muted:#8a90a0; --inst-label:#878c9b; /* G7/ADR-0019 F1b: #7a8090→#878c9b clears AA 4.53:1 on glass card */
@@ -10,7 +10,10 @@
   --st-up:#74d39a; --st-idle:#757c8e; --st-unknown:#6f7894; --st-red:#ec7676; --st-amber:#f2c879;
   --st-red-line:color-mix(in srgb,var(--st-red) 40%,transparent);
   --blue-wash:color-mix(in srgb,var(--inst-blue) 11%,transparent);
-  --display:"Fraunces Variable",Georgia,"Times New Roman",serif; /* serif never rendered in a warm token */
+  /* unified AgentOS type — all local (fc-list verified); see the header note for where the serif is legal */
+  --sans:"Fira Sans","Fira Sans Book",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Hack","JetBrains Mono",ui-monospace,"DejaVu Sans Mono",monospace;
+  --display:"P052","Palatino","URW Palladio L","Iowan Old Style","Noto Serif",Georgia,serif; /* serif never rendered in a warm token */
   --fs-sm:.8125rem; --fs-xs:.75rem;
   --radius-sm:9px; --radius-md:16px; --blur-raised:14px;
   /* ADR-0025/0032 the four NOTE-direction triads (hue · ink-on-glass · shape glyph), named once so a re-hue
@@ -26,7 +29,7 @@
 
 *{ box-sizing:border-box }
 body{
-  margin:0; color:var(--inst-text); font:15px/1.55 system-ui,sans-serif; min-height:100vh;
+  margin:0; color:var(--inst-text); font:15px/1.55 var(--sans); min-height:100vh;
   background:
     radial-gradient(1000px 600px at 80% -10%, color-mix(in srgb,var(--inst-blue) 8%,transparent), transparent 60%),
     linear-gradient(160deg, var(--inst-base), var(--inst-deep) 45%, var(--inst-horizon));

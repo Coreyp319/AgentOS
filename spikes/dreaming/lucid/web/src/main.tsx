@@ -2,8 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'motion/react'
-import '@fontsource-variable/fraunces' // self-hosted, bundled into dist — NO CDN (per the type review)
-import './theme.css'
+import './theme.css'   // editorial serif converged onto system P052 (unified AgentOS type); no bundled webfont
 import App from './App'
 
 // gcTime 10min: the beats query is unobserved for the whole (multi-minute) 'dreaming' phase, so a 60s
