@@ -257,6 +257,29 @@ see-it-to-tune-it last mile.
 
 ---
 
+## AMD / ROCm (experimental — ADR-0048)
+
+The whole playbook above assumes the **NVIDIA/CUDA 4090**. AMD (RDNA3 e.g. RX 7900 XTX / RDNA4
+RX 9070) runs the *same ComfyUI workflows* via ROCm, but with real caveats — treat it as
+experimental and slower:
+
+- **Install torch from the ROCm wheel, not CUDA:** `--index-url https://download.pytorch.org/whl/rocmX.Y`
+  (match your installed ROCm). The onboarding `setup.py` picks this automatically when it detects an
+  AMD GPU (`_torch_index`); `apps/dreaming/start-comfyui.sh` auto-adds the AMD launch flags.
+- **No fp8 acceleration on RDNA3.** fp8 weights still *load and fit* 24 GB, but compute falls back to
+  FP16/BF16 (zero speedup), and fp8 is currently *broken* (not just slow) on RDNA4. **Prefer GGUF
+  quants** (`ComfyUI-GGUF` is pure-PyTorch → ROCm-safe), and use **non-K formats (Q4_0/Q5_0/Q8_0)** —
+  K-quants (Q4_K/Q5_K) are slow/heavy on the dequant path. Q8 is the capacity-vs-speed sweet spot.
+- **Attention:** use `--use-pytorch-cross-attention` (SDPA → AOTriton). xformers is unavailable and
+  Flash-Attention is fragile on RDNA3 (no backward). Set `PYTORCH_HIP_ALLOC_CONF=expandable_segments:True`
+  to dodge the ROCm allocator's fragmentation OOM-false-positives on long sessions.
+- **Speed:** image work ~2× slower than the 4090; **Wan 2.2 / Hunyuan video ~2.5–3.5× slower** (the
+  fp8 disadvantage compounds). AMD's own datapoint: Wan 2.2 5B ≈ 25 s/frame on an RX 9070. RealESRGAN
+  upscale is fine. Hunyuan *Video* on consumer AMD is plausible but under-reported — validate before
+  relying on it. Full sourcing: `docs/research/0014-amd-gpu-support.md`.
+
+---
+
 ## Benchmarks (measured 2026-06-16, RTX 4090, these prompts/settings)
 
 | Config | Res / frames / steps | Time | Note |
