@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# nimbus-ue-wallpaper — start/stop the AgentOS UE "Indigo Channel" (UE 5.8, Vulkan)
+# as a desktop wallpaper, mirroring nimbus-flux-wallpaper so the com.nimbus.aurora
+# wallpaper plugin can select it as a 3-D engine Style (ADR-0029 §A).
+#
+#   nimbus-ue-wallpaper [--owner <plugin-id>]   # start (default owner com.nimbus.aurora)
+#   nimbus-ue-wallpaper --stop                  # stop UE + watchdog
+#
+# UE is an external engine that renders its own window — exactly the nimbus-flux
+# pattern — so the integration is identical: launch on select, and a background
+# watchdog tears it down the instant another wallpaper PLUGIN is picked (style->style
+# changes within aurora are handled by main.qml's syncEngine, which --stops us).
+#
+# START = the proven keep-below launcher (UE -game at the wallpaper slot, with the
+# 21:9 camera + cursor-showing GameMode + NoCapture fixes baked into the project).
+# The clean input-less path is the layer-shell engine patch (gated on a UE source
+# build); this no-build path is what's selectable today.
+set -u
+
+PLUGIN_ID="com.nimbus.aurora"            # default owner: aurora selects this engine
+KEEPBELOW="$HOME/Documents/AgentOS/spikes/ue-probe/ue_wallpaper/wallpaper_keepbelow.sh"
+APPLETSRC="$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc"
+WPID="/tmp/nimbus-ue-watchdog.pid"
+UE_MATCH="AgentOSBlank.uproject"         # the -game proc's unique cmdline marker
+
+# ADR-0029 §3 — UE's two-number VRAM footprint for the coordinator's throttle-to-coexist decision (D4):
+# a dream that would be VRAM-denied first asks UE to shrink full→floor (coexist) instead of denying.
+# Defaults are the Phase-A trivial-scene measurements; RE-MEASURE per tableau (a richer Indigo-Channel
+# scene frees more at the floor rung). A full−floor below the daemon's MIN_THROTTLE_GAIN keeps the
+# throttle INERT until the gain is worthwhile — so a too-low number here means "no throttle", never an OOM.
+UE_FULL_MIB="${AGENTOS_UE_FULL_MIB:-1300}"
+UE_FLOOR_MIB="${AGENTOS_UE_FLOOR_MIB:-1000}"
+COORD_DEST="org.agentos.Coordinator1"; COORD_PATH="/org/agentos/Coordinator1"
+
+stop() {
+    # Unregister from the VRAM coordinator FIRST (ADR-0029 §3) — no-op if the throttle isn't built/running.
+    busctl --user call "$COORD_DEST" "$COORD_PATH" "$COORD_DEST" UnregisterWallpaper >/dev/null 2>&1 || true
+    [ -f "$WPID" ] && kill "$(cat "$WPID" 2>/dev/null)" 2>/dev/null
+    rm -f "$WPID"
+    pkill -f "$UE_MATCH" 2>/dev/null      # UE -game window proc (launcher cmdline never contains this)
+}
+
+# Parse --stop / --owner (back-compat: no --owner => com.nimbus.aurora).
+OWNER="$PLUGIN_ID"; do_stop=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --stop)     do_stop=1 ;;
+        --owner)    shift; OWNER="${1:-$PLUGIN_ID}" ;;
+        --owner=*)  OWNER="${1#--owner=}" ;;
+        --*)        : ;;                 # ignore unknown flags
+    esac
+    shift
+done
+PLUGIN_ID="$OWNER"
+if [ "$do_stop" = 1 ]; then stop; exit 0; fi
+
+[ -x "$KEEPBELOW" ] || { echo "nimbus-ue-wallpaper: missing keep-below launcher $KEEPBELOW" >&2; exit 1; }
+
+stop                                     # clean slate (kill any prior UE + watchdog)
+
+# Fully detach UE so it survives this launcher/DataSource exec returning — same as
+# nimbus-flux's `setsid -f`. The keep-below script backgrounds UE, applies the KWin
+# wallpaper-slot rule, then exits, leaving UE running in the detached session.
+setsid -f bash "$KEEPBELOW" >/tmp/nimbus-ue-wallpaper.log 2>&1 </dev/null
+
+# Watchdog: once UE is the wallpaper, stop it the moment another wallpaper PLUGIN is
+# selected. `seen` guards the startup race before plasmashell persists wallpaperplugin=.
+(
+    seen=0
+    while sleep 2; do
+        pgrep -f "$UE_MATCH" >/dev/null || exit 0
+        if grep -q "^wallpaperplugin=$PLUGIN_ID\$" "$APPLETSRC" 2>/dev/null; then
+            seen=1
+        elif [ "$seen" = 1 ]; then
+            pkill -f "$UE_MATCH" 2>/dev/null
+            exit 0
+        fi
+    done
+) >/dev/null 2>&1 &
+echo $! > "$WPID"
+disown 2>/dev/null || true
+
+# ADR-0029 §3 — once UE is up, REGISTER it with the VRAM coordinator as a throttleable wallpaper, so a
+# dream that would be VRAM-denied throttles UE to its floor rung (coexist) instead of denying. Background
+# (UE takes a moment to spawn); harmless if the coordinator/throttle isn't built (the call just fails).
+# Unregistered by stop(). RegisterWallpaper(pid:u32, full_mib:u64, floor_mib:u64) — signature `utt`.
+(
+    for _ in $(seq 1 30); do
+        sleep 1
+        upid="$(pgrep -f "$UE_MATCH" | head -1)"
+        [ -n "$upid" ] || continue
+        busctl --user call "$COORD_DEST" "$COORD_PATH" "$COORD_DEST" \
+            RegisterWallpaper utt "$upid" "$UE_FULL_MIB" "$UE_FLOOR_MIB" >/dev/null 2>&1 || true
+        break
+    done
+) >/dev/null 2>&1 &
+disown 2>/dev/null || true

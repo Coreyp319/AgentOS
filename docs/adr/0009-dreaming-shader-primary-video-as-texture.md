@@ -1,6 +1,10 @@
 # ADR-0009: Dreaming — procedural shader is primary; video is texture-input + on-demand, not the medium
 
 - Status: Proposed
+- Superseded in part by: [ADR-0029](0029-ue-wallpaper-primary-shader-fallback-floor.md) — **§1**'s
+  primary/fallback ordering is inverted for the *ambient wallpaper surface only* (live UE 5.8 is
+  primary; the procedural shader becomes the mandatory fallback floor). §2–§4 and the
+  idle-byte-identical contract **stand** and continue to constrain ADR-0029.
 - Date: 2026-06-16
 - Supersedes: [ADR-0008](0008-dreaming-via-local-video-gen.md) decisions §1, §4, §6 (and the
   "shader = reduced-motion / fallback renderer" framing). Keeps ADR-0008's intent: 3D as the

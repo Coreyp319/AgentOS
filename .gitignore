@@ -16,3 +16,8 @@ __pycache__/
 # editor/tool backups (DesignSync *.orig conflict-origins, *.bak) — never commit
 *.orig
 *.bak
+
+# compiled spike binaries — rebuild from the in-place .c sources (build.sh), never commit ELF
+/spikes/ue-probe/sdl3_vulkan/sdl3_vulkan_wallpaper
+/spikes/ue-probe/ue_wallpaper/libagentos_layershell.so
+/spikes/ue-probe/wallpaper_role/wallpaper_role_plasma

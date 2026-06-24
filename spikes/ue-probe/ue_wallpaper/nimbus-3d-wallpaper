@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# nimbus-3d-wallpaper — dispatcher for nimbus-aurora's 3-D engine Styles. Keeps the two
+# external wallpaper engines mutually exclusive: the bevy engine (nimbus-flux, styles
+# 9..13) and the AgentOS UE wallpaper (style 14). Called by interactive-bg/main.qml's
+# syncEngine() as a SINGLE command — Plasma's executable DataSource tokenizes via KShell,
+# which expands $HOME but aborts on shell meta-chars like ';', so the QML must never chain;
+# the chaining lives here in real bash instead.
+#
+#   nimbus-3d-wallpaper ue   [--owner <id>]          # UE  (stops flux first)
+#   nimbus-3d-wallpaper flux <scene> [--owner <id>]  # bevy (stops UE first)
+#   nimbus-3d-wallpaper stop                          # stop both
+set -u
+FLUX="$HOME/.local/bin/nimbus-flux-wallpaper"
+UE="$HOME/.local/bin/nimbus-ue-wallpaper"
+echo "$(date '+%F %T') dispatch: $*" >> /tmp/nimbus-3d-wallpaper.log   # invocation trace
+
+cmd="${1:-stop}"; shift 2>/dev/null || true
+case "$cmd" in
+    ue)
+        [ -x "$FLUX" ] && "$FLUX" --stop 2>/dev/null
+        exec "$UE" "$@" ;;
+    flux)
+        scene="${1:-cyberpunk}"; shift 2>/dev/null || true
+        [ -x "$UE" ] && "$UE" --stop 2>/dev/null
+        exec "$FLUX" "$scene" "$@" ;;
+    stop|*)
+        [ -x "$FLUX" ] && "$FLUX" --stop 2>/dev/null
+        [ -x "$UE" ]   && "$UE" --stop 2>/dev/null ;;
+esac
