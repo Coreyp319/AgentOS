@@ -36,7 +36,20 @@ def _vram():
         free, total = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
         return {"free_gb": round(free / 1024, 1), "total_gb": round(total / 1024, 1)}
     except Exception:
-        return {"free_gb": None, "total_gb": None}
+        pass
+    # AMD fallback — sysfs VRAM in bytes; no ROCm/root needed (ADR-0048). free = total − used.
+    try:
+        import glob
+        for dev in sorted(glob.glob("/sys/class/drm/card[0-9]*/device")):
+            if open(os.path.join(dev, "vendor")).read().strip() != "0x1002":      # 0x1002 = AMD
+                continue
+            total = int(open(os.path.join(dev, "mem_info_vram_total")).read().strip())
+            used = int(open(os.path.join(dev, "mem_info_vram_used")).read().strip())
+            if total:
+                return {"free_gb": round((total - used) / 1024**3, 1), "total_gb": round(total / 1024**3, 1)}
+    except Exception:
+        pass
+    return {"free_gb": None, "total_gb": None}
 
 
 def audit():

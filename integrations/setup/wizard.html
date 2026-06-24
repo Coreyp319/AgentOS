@@ -491,8 +491,9 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
   }
   function renderFit(s){
     const el=document.getElementById("fit"); if(!el) return;
+    const vtag = ((s.hardware||{}).vendor==='amd') ? ' · AMD (experimental)' : '';
     document.getElementById("gpuName").textContent = s.hardware&&s.hardware.vram_gb
-      ? `${s.hardware.vram_gb} GB GPU · ${s.hardware.ram_gb} GB RAM` : "GPU not detected";
+      ? `${s.hardware.vram_gb} GB GPU${vtag} · ${s.hardware.ram_gb} GB RAM` : "GPU not detected";
     const vram=(s.hardware||{}).vram_gb||0;
     const heavy=heaviestVideoBundle();
     const peak=heavy?(heavy.peak_gb||0):0;

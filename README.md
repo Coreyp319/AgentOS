@@ -23,7 +23,9 @@ Nimbus `ui-audit` agent.
 
 > New here? This is the short path from a fresh checkout to making your first thing.
 
-**What you need:** a Linux box with a recent NVIDIA GPU and KDE Plasma 6. Already have
+**What you need:** a Linux box with a recent NVIDIA GPU and KDE Plasma 6. (AMD RDNA3/RDNA4
+via ROCm is **experimental** — local LLMs work well, video "dreaming" runs but slower; see
+[ADR-0048](docs/adr/0048-amd-gpu-support.md).) Already have
 [Ollama](https://ollama.com) or a [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
 install with models? Great — setup **detects and reuses them** (brownfield-first); it never
 re-downloads or clobbers what's already there.

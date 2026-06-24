@@ -287,6 +287,23 @@ class Runtime(ComfyTmp):
         self.assertIn("torch", steps)
         self.assertIn(setup.TORCH_INDEX, steps)
 
+    def test_comfyui_setup_amd_uses_rocm_torch_index(self):
+        # ADR-0048 Phase 2: an AMD box installs the ROCm torch wheel, never the CUDA one. Force the
+        # venv-absent path so steps are built regardless of the test box's ComfyUI install.
+        orig = setup.comfy_root
+        setup.comfy_root = lambda: Path(tempfile.gettempdir()) / "agentos-no-such-comfy"
+        try:
+            steps = " ".join(" ".join(s) for s in setup.comfyui_setup(dry=True, vendor="amd")["steps"])
+        finally:
+            setup.comfy_root = orig
+        self.assertIn(setup.TORCH_INDEX_ROCM, steps)
+        self.assertNotIn(setup.TORCH_INDEX, steps)   # not the CUDA index
+
+    def test_torch_index_by_vendor(self):
+        self.assertEqual(setup._torch_index("amd"), setup.TORCH_INDEX_ROCM)
+        self.assertEqual(setup._torch_index("nvidia"), setup.TORCH_INDEX)
+        self.assertEqual(setup._torch_index(None), setup.TORCH_INDEX)   # default = CUDA
+
     def test_detect_hardware_parses_nvidia_smi(self):
         ow = setup.shutil.which
         setup.shutil.which = lambda x: "/usr/bin/nvidia-smi" if x == "nvidia-smi" else None
@@ -296,6 +313,33 @@ class Runtime(ComfyTmp):
             setup.shutil.which = ow
         self.assertEqual(hw["vram_mib"], 24564)
         self.assertGreater(hw["vram_gb"], 23)
+        self.assertEqual(hw["vendor"], "nvidia")           # ADR-0048: vendor is reported
+
+    def test_detect_hardware_amd_sysfs_fallback(self):
+        # No nvidia-smi → the AMD sysfs reader supplies VRAM + vendor, same dict shape (ADR-0048).
+        ow, oamd = setup.shutil.which, setup._amd_vram_mib
+        setup.shutil.which = lambda x: None
+        setup._amd_vram_mib = lambda: (24560, 23000)
+        try:
+            hw = setup.detect_hardware(run=lambda *a, **k: type("R", (), {"stdout": "", "returncode": 0})())
+        finally:
+            setup.shutil.which, setup._amd_vram_mib = ow, oamd
+        self.assertEqual(hw["vendor"], "amd")
+        self.assertEqual(hw["vram_mib"], 24560)
+        self.assertEqual(hw["vram_free_mib"], 23000)
+        self.assertGreater(hw["vram_gb"], 23)
+
+    def test_detect_hardware_no_gpu_reports_none(self):
+        # Neither vendor present → honest zeros + vendor None (fail-open; the wizard shows no bar).
+        ow, oamd = setup.shutil.which, setup._amd_vram_mib
+        setup.shutil.which = lambda x: None
+        setup._amd_vram_mib = lambda: (0, 0)
+        try:
+            hw = setup.detect_hardware()
+        finally:
+            setup.shutil.which, setup._amd_vram_mib = ow, oamd
+        self.assertIsNone(hw["vendor"])
+        self.assertEqual(hw["vram_mib"], 0)
 
     def test_bundle_fit(self):
         reg = {"models": [{"id": "big", "size_gb": 24}, {"id": "small", "size_gb": 2}],
