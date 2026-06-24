@@ -56,6 +56,36 @@ VALID_ACTIONS = ("adopt", "unadopt")
 #   status-panel   — it is THIS page; removing it kills the surface you're clicking from.
 NO_ONECLICK_REMOVE = frozenset({"core-substrate", "status-panel"})
 
+# Human-readable display names for the catalog. The pipe-delimited components.conf stays the source
+# of truth for WHAT exists (id is the stable key everything keys off); this is presentation only, so
+# every surface (status panel + setup wizard) shows a real name instead of the raw slug id. An id not
+# listed here falls back to its own slug — adding a component never breaks, it just reads less prettily
+# until a name is added.
+FRIENDLY_NAMES = {
+    "core-substrate":      "AgentOS core service",
+    "hermes-dashboard":    "Hermes agent board",
+    "comfyui":             "ComfyUI engine",
+    "lucid":               "Lucid — the dreaming app",
+    "status-panel":        "Status page",
+    "models-panel":        "Models panel",
+    "share-hub":           "Phone-to-box photo share",
+    "lucid-drain":         "Background video queue",
+    "keyhole":             "Keyhole tray instrument",
+    "window-drag-wind":    "Window-drag wind",
+    "reactive-wallpaper":  "Reactive wallpaper",
+    "portal-timeout":      "Portal cold-boot fix",
+    "aurora-theme":        "Aurora theme",
+    "aurora-panel":        "Aurora panel & tray",
+    "aurora-notifications": "Aurora notifications",
+    "dolphin-create":      "Create Video — Dolphin menu",
+    "browser-host":        "Create Video — browser menu",
+    "krunner-finder":      "KRunner — ask Claude/Hermes/web",
+    "firefox-pin":         "Pin the Firefox extension",
+    "hermes-plugins":      "Needs-you signal",
+    "gpu-coordinator":     "GPU coordinator for Hermes",
+    "tailscale-remote":    "Remote access (Tailscale)",
+}
+
 # ── rate limits + reaper (abuse + resource guard), mirroring dispatch.py ─────────────────────
 COOLDOWN_S = 5.0            # don't re-run the SAME component within this window of a finish
 MAX_ACTIVE = 2             # cap concurrent in-flight adoptions
@@ -124,9 +154,6 @@ PROBES: dict[str, tuple] = {
     # aurora-panel writes this marker on apply and rm -f's it on restore (see aurora-panel/apply.sh,
     # restore.sh) — the only stable signal, since the cloned theme name is dynamic (<theme>-aurora).
     "aurora-panel":     ("file", "~/.local/share/aurora-theme/prev-plasmatheme"),
-    # swaync-aurora overwrites style.css (which otherwise exists as the macOS-mimic default), so mere
-    # presence can't tell — match the Aurora style's marker comment. restore swaps/removes the file.
-    "swaync-aurora":    ("file-contains", ("~/.config/swaync/style.css", "Aurora swaync style")),
     "dolphin-create":   ("file", "~/.local/share/kio/servicemenus/agentos-create-video.desktop"),
     "browser-host":     ("file", "~/.local/share/agentos/agentos_create_video_host.py"),
     "firefox-pin":      ("file", "/etc/firefox/policies/policies.json"),
@@ -244,7 +271,8 @@ def list_components(local: bool) -> list[dict]:
     The origin-independent state is cached; the local-only flags are applied per request."""
     out = []
     for r in _probed_rows():
-        row = {"id": r["id"], "tier": r["tier"], "default": r["default"], "root": r["root"],
+        row = {"id": r["id"], "name": FRIENDLY_NAMES.get(r["id"], r["id"]),
+               "tier": r["tier"], "default": r["default"], "root": r["root"],
                "desc": r["desc"], "state": r["state"],
                "adoptable": bool(local and r["root"] == "no"),
                "removable": r["id"] not in NO_ONECLICK_REMOVE}   # sensitive units: install-only here

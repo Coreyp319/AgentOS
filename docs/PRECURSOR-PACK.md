@@ -28,7 +28,7 @@ shader engine, the local-AI Modelfiles) has **no copy here, by design**.
 |---|---|---|
 | `1-base` (WhiteSur+macOS install) | — | **pack-only** |
 | `2-settings-refine` (CoreyLavender, Kvantum, icons) | `integrations/aurora-theme`, `aurora-panel`, `design` | **re-expressed** |
-| `3-krunner-finder` (spotlight-blur, row-tweak, claude-runner) | — | **pack-only** |
+| `3-krunner-finder` (spotlight-blur, row-tweak, claude-runner) | `integrations/krunner-finder` (drives the pack's `claude-runner` installer; spotlight-blur + row-tweak stay pack-only) | **adopted (thin glue; runner stays pack-authored)** |
 | `4-login-lock` | — | **pack-only** |
 | `5-system-qol` (fish) | — | **pack-only** |
 | `6-local-ai` (Modelfiles, kv-cache, hermes-forge, ui-audit) | `integrations/hermes`, `integrations/models` (different concern); ui-audit → [ADR-0034](adr/0034-deterministic-ui-audit-and-screenshot-auditability.md) | **mostly pack-only** |
@@ -37,7 +37,7 @@ shader engine, the local-AI Modelfiles) has **no copy here, by design**.
 | `9-gpu-effects` (aurora wallpaper, window-reactive) | `integrations/reactive-wallpaper`, `window-drag-wind` | **glue net-new; renderer inherited** |
 | `10-shader-engine` (hexen, nimbus-flux, dream) | — (kill/relaunch target only) | **pack-only** |
 | `11-app-unify` (chromium/electron/firefox/flatpak) | — | **pack-only** |
-| `12-dreaming` (shader nightly-dream) | `spikes/dreaming`, `integrations/lucid*`, `comfyui` | **reframed (shader → video)** |
+| `12-dreaming` (shader nightly-dream) | `apps/dreaming`, `integrations/lucid*`, `comfyui` | **reframed (shader → video)** |
 
 ## The engaged modules, in detail
 
@@ -69,7 +69,7 @@ daemon with a KWin script emitting `Gust()` over D-Bus `org.agentos.Wind1` → R
 ### Dreaming — `12-dreaming` + `10-shader-engine/dream` → Lucid/ComfyUI (reframed)
 The pack's dreaming was Bevy/GLSL/WFC with **no AI-gen meshes**. [ADR-0009](adr/0009-dreaming-shader-primary-video-as-texture.md)
 supersedes [ADR-0008](adr/0008-dreaming-via-local-video-gen.md) (§1/§4/§6). AgentOS's "dreaming" is a
-net-new ComfyUI text/image-to-video pipeline ("Lucid", `spikes/dreaming/lucid/`) sharing **zero** files with
+net-new ComfyUI text/image-to-video pipeline ("Lucid", `apps/dreaming/lucid/`) sharing **zero** files with
 the pack. The Modelfiles, `ollama-kv-cache.conf`, and `hermes-forge/` stay pack-only (Ollama-serving config
 AgentOS deliberately doesn't reimplement — [ADR-0002](adr/0002-thin-gateway-configure-ollama.md)).
 `integrations/models` (presence resolver/audit) and `integrations/hermes` (gpu-coordinator lease plugin,

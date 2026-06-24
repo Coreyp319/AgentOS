@@ -131,6 +131,10 @@ preflight() {
   if _anysel hermes-plugins gpu-coordinator; then
     python3 -c "import jeepney" >/dev/null 2>&1; _pf "Python jeepney — gpu-coordinator persistent lease transport (else busctl fallback)" $? "pip install --user jeepney  (optional; cooperative-lease churns without it)"
   fi
+  # the KRunner runner installer + the runner itself talk over D-Bus via python-dbus + gobject
+  if _sel krunner-finder; then
+    python3 -c "import dbus, gi" >/dev/null 2>&1; _pf "Python python-dbus + python-gobject — KRunner runner" $? "sudo pacman -S --needed python-dbus python-gobject (else the runner can't start)"
+  fi
   # ComfyUI runtime (its own venv) is the dreaming backend
   if _anysel comfyui lucid; then
     { [ -x "$HOME/ComfyUI/.venv/bin/python" ]; }; _pf "ComfyUI runtime (~/ComfyUI/.venv)" $? "clone + venv ComfyUI (dreams fail-open to the shader without it)"
