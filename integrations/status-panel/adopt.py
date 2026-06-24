@@ -121,6 +121,12 @@ PROBES: dict[str, tuple] = {
     "swaync-race":      ("file", "~/.config/systemd/user/swaync.service.d/nimbus-race.conf"),
     "reactive-wallpaper": ("file", "~/.local/state/agentos/reactive-wallpaper/prev-wallpaper.json"),
     "aurora-theme":     ("kconfig", ("kdeglobals", "KDE", "widgetStyle", "Union")),
+    # aurora-panel writes this marker on apply and rm -f's it on restore (see aurora-panel/apply.sh,
+    # restore.sh) — the only stable signal, since the cloned theme name is dynamic (<theme>-aurora).
+    "aurora-panel":     ("file", "~/.local/share/aurora-theme/prev-plasmatheme"),
+    # swaync-aurora overwrites style.css (which otherwise exists as the macOS-mimic default), so mere
+    # presence can't tell — match the Aurora style's marker comment. restore swaps/removes the file.
+    "swaync-aurora":    ("file-contains", ("~/.config/swaync/style.css", "Aurora swaync style")),
     "dolphin-create":   ("file", "~/.local/share/kio/servicemenus/agentos-create-video.desktop"),
     "browser-host":     ("file", "~/.local/share/agentos/agentos_create_video_host.py"),
     "firefox-pin":      ("file", "/etc/firefox/policies/policies.json"),
@@ -177,6 +183,15 @@ def probe_present(comp: dict) -> bool | None:
         return out.strip() == expect
     if kind == "file":
         return Path(os.path.expanduser(arg)).exists()
+    if kind == "file-contains":
+        path, needle = arg
+        p = Path(os.path.expanduser(path))
+        if not p.exists():
+            return False
+        try:
+            return needle in p.read_text(errors="ignore")
+        except OSError:
+            return None
     if kind == "tailscale":
         if not shutil.which("tailscale"):
             return None
