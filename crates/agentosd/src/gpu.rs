@@ -151,9 +151,10 @@ impl GpuBackend {
     }
 
     /// Per-process VRAM holders. `None` == attribution unavailable (NVML present but no per-proc
-    /// data, OR an AMD/None backend) → the caller records the `-1` UNK sentinel. `Some(vec)` ==
-    /// attributed (possibly empty). Order: graphics processes then compute processes (NVML).
-    /// Blocking (NVML FFI) — async callers must run it under `spawn_blocking` (as `mem` notes).
+    /// data; a None backend; or an AMD GPU whose PCI address / `/proc` we can't read) → the caller
+    /// records the `-1` UNK sentinel. `Some(vec)` == attributed (possibly empty). NVIDIA: graphics
+    /// then compute processes, each with its class. AMD: `/proc/<pid>/fdinfo` DRM clients, all
+    /// `ProcClass::Unknown` (no gfx/compute split). Blocking — async callers must `spawn_blocking`.
     pub fn processes(&self) -> Option<Vec<ProcVram>> {
         match self {
             GpuBackend::Nvml(n) => {
@@ -176,8 +177,9 @@ impl GpuBackend {
                 // `attributed` flag), never a fabricated empty-attributed result.
                 attributed.then_some(out)
             }
-            // AMD per-process is ADR-0048 Phase 3 (libamdgpu_top / fdinfo). sysfs can't do per-PID.
-            GpuBackend::Amd(_) => None,
+            // AMD per-process via /proc/<pid>/fdinfo DRM accounting (ADR-0048 Phase 3); class is
+            // always Unknown (AMD has no gfx/compute split). `None` if it can't attribute at all.
+            GpuBackend::Amd(a) => a.processes(),
             GpuBackend::None => None,
         }
     }

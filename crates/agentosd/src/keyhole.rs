@@ -340,8 +340,8 @@ fn choose_workload(mut named: Vec<(String, i64)>, total_mib: i64) -> Workload {
 /// other CUDA workload that holds no agentosd lease and is no Ollama model.
 fn read_workload(gpu: &GpuBackend, total_mib: i64) -> Workload {
     // Compute holders (and AMD's unclassified `Unknown`, matching the telemetry/monitor routing) —
-    // the heavy GPU workload (ComfyUI/CUDA), never the graphics baseline. AMD has no per-process
-    // attribution yet (ADR-0048 Phase 3), so this is empty there until that backend lands.
+    // the heavy GPU workload (ComfyUI/CUDA), never the graphics baseline. On AMD the holder comes
+    // from /proc fdinfo as `Unknown` (no gfx/compute split — ADR-0048 Phase 3), so it shows here too.
     let named: Vec<(String, i64)> = gpu
         .processes()
         .unwrap_or_default()

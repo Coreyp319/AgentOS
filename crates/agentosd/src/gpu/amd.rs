@@ -8,20 +8,25 @@
 //!   * temp   — `device/hwmon/hwmon*/temp1_input` (m°C)
 //!   * name   — `device/product_name` (absent on some kernels → `None`)
 //!
-//! Per-process attribution is NOT here — sysfs is device-global. That's ADR-0048 Phase 3
-//! (`libamdgpu_top`/fdinfo). Every read fails soft to `None` (fail-open, ADR-0003).
+//! Per-process attribution (ADR-0048 Phase 3) does NOT come from sysfs (which is device-global) —
+//! it parses `/proc/<pid>/fdinfo` DRM-client accounting directly (no `libamdgpu_top`/libdrm dep),
+//! matched to this GPU's PCI address. Every read fails soft to `None` (fail-open, ADR-0003).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::{GpuMeta, MemInfo};
+use super::{GpuMeta, MemInfo, ProcClass, ProcVram};
 
 const AMD_VENDOR: &str = "0x1002";
 const DRM_ROOT: &str = "/sys/class/drm";
 
-/// A discovered AMD render device: its `device` sysfs dir and the hwmon dir for power/temp.
+/// A discovered AMD render device: its `device` sysfs dir, the hwmon dir for power/temp, and the
+/// PCI address (`pdev`, e.g. "0000:03:00.0") used to attribute `/proc/<pid>/fdinfo` DRM clients to
+/// this GPU (ADR-0048 Phase 3 per-process).
 pub struct AmdSysfs {
     device: PathBuf,
     hwmon: Option<PathBuf>,
+    pdev: Option<String>,
 }
 
 impl AmdSysfs {
@@ -43,7 +48,12 @@ impl AmdSysfs {
             let device = card.join("device");
             if read_trim(&device.join("vendor")).as_deref() == Some(AMD_VENDOR) {
                 let hwmon = find_hwmon(&device);
-                return Some(AmdSysfs { device, hwmon });
+                // `device` is a symlink to the PCI node, e.g. ../../../0000:03:00.0 — its basename is
+                // the `drm-pdev` we match fdinfo against. Absent (e.g. a non-symlink) → no per-proc.
+                let pdev = std::fs::read_link(&device)
+                    .ok()
+                    .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()));
+                return Some(AmdSysfs { device, hwmon, pdev });
             }
         }
         None
@@ -90,6 +100,80 @@ impl AmdSysfs {
     pub fn name(&self) -> Option<String> {
         read_trim(&self.device.join("product_name")).filter(|s| !s.is_empty())
     }
+
+    /// Per-process VRAM holders, from `/proc/<pid>/fdinfo` DRM-client accounting (ADR-0048 Phase 3).
+    /// `None` if we can't attribute at all (no PCI address, or `/proc` unreadable). Class is always
+    /// [`ProcClass::Unknown`] — AMD exposes per-PID VRAM but NOT a graphics/compute split, so the
+    /// consumers route these onto the compute side (the keyhole "who holds VRAM" / telemetry
+    /// itemisation work; the gfx-vs-compute *totals* can't be split on AMD — the decided trade-off).
+    ///
+    /// NOTE (ADR-0048): seeing *other users'* PIDs needs the daemon in the `render`/`video` group (or
+    /// `CAP_PERFMON`); without it this silently sees only our own jobs — degrade, never wedge. Not yet
+    /// hardware-validated (needs a Radeon); the fdinfo *parsing* is unit-tested with fixtures.
+    pub fn processes(&self) -> Option<Vec<ProcVram>> {
+        let pdev = self.pdev.as_deref()?;
+        Self::processes_in(Path::new("/proc"), pdev)
+    }
+
+    /// Testable core of [`processes`](Self::processes): scan `proc_root/<pid>/fdinfo` for DRM clients
+    /// on `pdev`. `None` if `proc_root` is unreadable; `Some([])` if readable but nothing holds VRAM.
+    fn processes_in(proc_root: &Path, pdev: &str) -> Option<Vec<ProcVram>> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(proc_root).ok()?.flatten() {
+            let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+                continue; // non-numeric /proc entries (self, sys, …)
+            };
+            if let Some(mib) = pid_vram_mib(&e.path().join("fdinfo"), pdev) {
+                if mib > 0 {
+                    out.push(ProcVram { pid, mib, class: ProcClass::Unknown });
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
+/// Sum a process's VRAM (MiB) across its UNIQUE DRM clients on GPU `pdev`, from `<fdinfo_dir>/*`. A
+/// process holds many fds per client, so we dedup by `drm-client-id` (max VRAM seen per client) then
+/// sum across clients. Returns `Some(0)` for a process with no DRM client on this GPU; `None` only if
+/// the fdinfo dir itself is unreadable (e.g. another user's PID without privilege) — degrade, not fake.
+fn pid_vram_mib(fdinfo_dir: &Path, pdev: &str) -> Option<u64> {
+    let mut by_client: HashMap<String, u64> = HashMap::new();
+    for fd in std::fs::read_dir(fdinfo_dir).ok()?.flatten() {
+        let Ok(text) = std::fs::read_to_string(fd.path()) else { continue };
+        let (mut this_pdev, mut client, mut vram_kib) = (None, None, None);
+        for line in text.lines() {
+            if let Some(v) = line.strip_prefix("drm-pdev:") {
+                this_pdev = Some(v.trim().to_string());
+            } else if let Some(v) = line.strip_prefix("drm-client-id:") {
+                client = Some(v.trim().to_string());
+            } else if let Some(v) = line.strip_prefix("drm-resident-vram:") {
+                vram_kib = parse_mem_kib(v); // standardized key, preferred
+            } else if vram_kib.is_none() {
+                if let Some(v) = line.strip_prefix("drm-memory-vram:") {
+                    vram_kib = parse_mem_kib(v); // amdgpu legacy fallback
+                }
+            }
+        }
+        if this_pdev.as_deref() == Some(pdev) {
+            if let (Some(c), Some(kib)) = (client, vram_kib) {
+                let slot = by_client.entry(c).or_insert(0);
+                *slot = (*slot).max(kib);
+            }
+        }
+    }
+    Some(by_client.values().sum::<u64>() / 1024) // KiB → MiB
+}
+
+/// Parse a DRM fdinfo memory value like "1024 KiB" / "2 MiB" → KiB. Bare number ⇒ KiB (amdgpu default).
+fn parse_mem_kib(v: &str) -> Option<u64> {
+    let mut it = v.split_whitespace();
+    let num: u64 = it.next()?.parse().ok()?;
+    Some(match it.next() {
+        Some("MiB") => num * 1024,
+        Some("B") | Some("bytes") => num / 1024,
+        _ => num, // "KiB" or no unit
+    })
 }
 
 /// `card0`, `card12` — a render card dir, NOT a connector like `card0-DP-1` (which has no GPU
@@ -209,5 +293,39 @@ mod tests {
         assert_eq!(meta.power_w, None);
         assert_eq!(meta.temp_c, None);
         assert_eq!(amd.name(), None);
+    }
+
+    #[test]
+    fn parse_mem_kib_handles_units() {
+        assert_eq!(parse_mem_kib("2048 KiB"), Some(2048));
+        assert_eq!(parse_mem_kib("2 MiB"), Some(2048));
+        assert_eq!(parse_mem_kib("4096"), Some(4096)); // bare ⇒ KiB
+        assert_eq!(parse_mem_kib("garbage"), None);
+    }
+
+    #[test]
+    fn fdinfo_sums_unique_clients_filtered_by_pdev() {
+        let fx = Fixture::new();
+        let pdev = "0000:03:00.0";
+        // pid 100: two fds → the SAME client 7 (counted ONCE: 2048 KiB) + client 8 (1024 KiB resident).
+        fx.put("100/fdinfo/3", &format!("drm-pdev:\t{pdev}\ndrm-client-id:\t7\ndrm-memory-vram:\t2048 KiB\n"))
+            .put("100/fdinfo/4", &format!("drm-pdev:\t{pdev}\ndrm-client-id:\t7\ndrm-memory-vram:\t2048 KiB\n"))
+            .put("100/fdinfo/5", &format!("drm-pdev:\t{pdev}\ndrm-client-id:\t8\ndrm-resident-vram:\t1024 KiB\n"))
+            // pid 200: a client on a DIFFERENT GPU → excluded.
+            .put("200/fdinfo/3", "drm-pdev:\t0000:09:00.0\ndrm-client-id:\t1\ndrm-memory-vram:\t9999 KiB\n")
+            // a non-numeric /proc entry → skipped.
+            .put("self/fdinfo/0", &format!("drm-pdev:\t{pdev}\ndrm-client-id:\t1\ndrm-memory-vram:\t500 KiB\n"));
+
+        let procs = AmdSysfs::processes_in(&fx.0, pdev).expect("/proc readable");
+        assert_eq!(procs.len(), 1, "only pid 100 holds VRAM on this GPU");
+        assert_eq!(procs[0].pid, 100);
+        assert_eq!(procs[0].mib, 3); // (client7 2048 once) + (client8 1024) = 3072 KiB = 3 MiB
+        assert_eq!(procs[0].class, ProcClass::Unknown); // AMD has no gfx/compute split
+    }
+
+    #[test]
+    fn fdinfo_unreadable_proc_is_none_not_zero() {
+        // Can't even read /proc → None (honest unknown), not an empty/fabricated result.
+        assert!(AmdSysfs::processes_in(Path::new("/no/such/proc-xyz"), "0000:03:00.0").is_none());
     }
 }
