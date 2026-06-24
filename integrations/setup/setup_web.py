@@ -65,7 +65,7 @@ def build_state(reg: dict | None = None) -> dict:
     out_bundles = []
     for b in setup.bundles(reg):                # registry is pre-sorted text → image → video
         is_mature = b.get("rating") == "mature"
-        plan = setup.plan_bundle(reg, b, include_mature=is_mature)
+        plan = setup.plan_bundle(reg, b, include_mature=is_mature, hw=hw)
         present = sum(1 for r in plan["rows"] if r["state"] == "have")
         out_bundles.append({
             "id": b["id"], "modality": b.get("modality"), "rating": b.get("rating", "sfw"),
@@ -74,8 +74,11 @@ def build_state(reg: dict | None = None) -> dict:
             "needs_auth": plan["needs_auth"], "manual": sum(1 for a in plan["gap"] if a.get("via") == "manual"),
             "order": b.get("order", 9), "needs_comfyui": b.get("needs_comfyui", False),
             "why": b.get("why", ""), "fit": setup.bundle_fit(reg, b, hw),
-            # the heaviest single-model footprint — the honest "peak" for the fit bar (GB held at once)
-            "peak_gb": setup.bundle_peak_gb(reg, b),
+            # the heaviest single-model footprint — the honest "peak" for the fit bar (GB held at once),
+            # reflecting the GPU-aware downselect (so a small card sees its fitting set, not the full bundle)
+            "peak_gb": setup.bundle_peak_gb(reg, b, hw),
+            # hero-tier models deferred because they don't fit this GPU (surfaced as an upgrade, not pulled)
+            "deferred": plan.get("deferred", []),
         })
     creds = {svc: bool(setup.keyring_get(svc)) for svc in ("huggingface", "civitai")}
     found_gb = missing_gb = 0.0                  # the reuse ledger: what's already here vs the gap
@@ -172,7 +175,8 @@ def job_view(reg: dict, job: dict) -> dict:
     if kind == "fetch":
         b = setup.find_bundle(reg, job.get("bundle", ""))
         if b:
-            plan = setup.plan_bundle(reg, b, include_mature=(b.get("rating") == "mature"))
+            plan = setup.plan_bundle(reg, b, include_mature=(b.get("rating") == "mature"),
+                                     hw=setup.detect_hardware())
             present = sum(1 for r in plan["rows"] if r["state"] == "have")
             total = len(plan["rows"])
     elif kind == "comfyui":

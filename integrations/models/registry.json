@@ -66,6 +66,7 @@
       "model": "hf.co/bartowski/MN-12B-Mag-Mell-R1-GGUF:Q5_K_M",
       "runtime": "ollama",
       "size_gb": 8.7,
+      "vram_gb": 13,
       "source": "huggingface: bartowski/MN-12B-Mag-Mell-R1-GGUF (Q5_K_M) — Mistral-Nemo 12B creative-writing merge, ChatML",
       "local": true,
       "safety_critical": false,

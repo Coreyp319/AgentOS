@@ -260,21 +260,38 @@ def detect_hardware(run=subprocess.run) -> dict:
             "vram_gb": round(vram_total / 1024, 1), "ram_gb": round(ram_gb, 1), "vendor": vendor}
 
 
-def bundle_peak_gb(reg: dict, bundle: dict) -> float:
-    """The bundle's heaviest single-model VRAM footprint (GB) — the 'peak' a render must hold at once.
-    Heuristic: loaded footprint ≈ size_gb (GGUF/fp8 weights dominate). This is the SAME number the fit
-    verdict is computed from, exposed so the UI can draw an honest peak-vs-VRAM bar (no fabricated value)."""
-    return round(max((float(m.get("size_gb", 0) or 0)
-                      for mid in bundle.get("models", []) if (m := find_model(reg, mid))), default=0.0), 1)
+# A model's loaded VRAM footprint (GB) — what it actually holds at runtime, NOT its download size.
+# Explicit `vram_gb` wins (a measured peak, e.g. the 12B beat-writer ≈13 GB; ADR-0045). Else an Ollama
+# LLM's runtime VRAM (weights + KV cache + CUDA context) runs well over its on-disk weights → derive
+# ~1.5× size_gb; ComfyUI registry sizes are ALREADY loaded peaks → used verbatim.
+def model_vram_gb(m: dict) -> float:
+    explicit = m.get("vram_gb")
+    if explicit:
+        return float(explicit)
+    size = float(m.get("size_gb", 0) or 0)
+    return round(size * 1.5, 1) if m.get("runtime") == "ollama" else size
+
+
+def _fits(gb: float, hw: dict) -> bool:
+    vram = hw.get("vram_gb", 0)
+    return bool(vram) and gb <= vram * 0.92          # 0.92 = headroom for the desktop + KV slack
+
+
+def bundle_peak_gb(reg: dict, bundle: dict, hw: dict | None = None) -> float:
+    """The heaviest single-model VRAM footprint (GB) of the models that will ACTUALLY run on this box
+    — the 'peak' a render must hold at once. With hw, reflects the tier-aware downselect (so the UI
+    draws an honest peak-vs-VRAM bar for THIS GPU); without hw, the full bundle."""
+    return round(max((model_vram_gb(m) for m in resolve_bundle(reg, bundle, hw)), default=0.0), 1)
 
 
 def bundle_fit(reg: dict, bundle: dict, hw: dict) -> str:
-    """Does the bundle's heaviest model fit this GPU? 'fits' | 'tight' | 'too-big' | 'unknown'.
-    Heuristic: a model's loaded VRAM footprint ≈ its size_gb (GGUF/fp8 weights dominate)."""
+    """Does the bundle (after the tier-aware downselect) fit this GPU? 'fits' | 'tight' | 'too-big' |
+    'unknown'. A bundle whose defining model IS its hero (the video lane) can't downselect, so it
+    honestly reads 'too-big' on a small GPU rather than silently dropping the lane."""
     vram = hw.get("vram_gb", 0)
     if not vram:
         return "unknown"
-    biggest = bundle_peak_gb(reg, bundle)
+    biggest = bundle_peak_gb(reg, bundle, hw)
     if biggest <= vram * 0.92:
         return "fits"
     if biggest <= vram:
@@ -521,16 +538,40 @@ def fetch_artifact(art: dict, token: str | None = None, run=subprocess.run, dry:
 
 
 # ── bundle resolution + planning ─────────────────────────────────────────────────────────────
-def resolve_bundle(reg: dict, bundle: dict) -> list[dict]:
-    return [m for mid in bundle.get("models", []) if (m := find_model(reg, mid))]
+def select_models(reg: dict, bundle: dict, hw: dict | None = None) -> tuple[list[dict], list[dict]]:
+    """(keep, deferred): the models to fetch/run on THIS GPU, and the hero-tier models deferred because
+    they don't fit. A non-fitting hero is deferred ONLY if dropping it leaves another model of its OWN
+    modality in the bundle — so a bundle's defining model (the video lane's i2v hero, the only video
+    model) is never dropped; it stays and the bundle honestly reads 'too-big'. Minimum-tier models are
+    always kept. No hw / unknown VRAM → (full bundle, []): fail-open, never cut blind."""
+    full = [m for mid in bundle.get("models", []) if (m := find_model(reg, mid))]
+    if not hw or not hw.get("vram_gb"):
+        return full, []
+    deferred, deferred_ids = [], set()
+    for m in full:
+        if m.get("tier") != "hero" or _fits(model_vram_gb(m), hw):
+            continue
+        mod = m.get("modality")
+        if any(x["id"] != m["id"] and x["id"] not in deferred_ids and x.get("modality") == mod for x in full):
+            deferred.append(m)
+            deferred_ids.add(m["id"])
+    keep = [m for m in full if m["id"] not in deferred_ids]
+    return keep, deferred
 
 
-def plan_bundle(reg: dict, bundle: dict, include_mature: bool = False) -> dict:
+def resolve_bundle(reg: dict, bundle: dict, hw: dict | None = None) -> list[dict]:
+    return select_models(reg, bundle, hw)[0]
+
+
+def plan_bundle(reg: dict, bundle: dict, include_mature: bool = False, hw: dict | None = None) -> dict:
     """Reconcile a bundle against the box: which models are present, which need fetching, what
-    auth/size that implies. The mature lane is excluded unless include_mature."""
+    auth/size that implies. The mature lane is excluded unless include_mature. With hw, hero-tier
+    models that don't fit this GPU are deferred (not fetched) and reported under `deferred` — so a
+    small-VRAM box gets the fitting set, with the heavy upgrade surfaced rather than silently pulled."""
+    use, deferred = select_models(reg, bundle, hw)
     rows, gap_arts, need_auth, denied = [], [], set(), []
     total_gb = 0.0
-    for m in resolve_bundle(reg, bundle):
+    for m in use:
         if m.get("rating") == "mature" and not include_mature:
             rows.append({"id": m["id"], "rating": "mature", "state": "skipped-mature"})
             continue
@@ -548,7 +589,9 @@ def plan_bundle(reg: dict, bundle: dict, include_mature: bool = False) -> dict:
         if st["state"] != "have":
             total_gb += float(m.get("size_gb", 0) or 0)
     return {"bundle": bundle["id"], "rows": rows, "gap": gap_arts, "needs_auth": sorted(need_auth),
-            "approx_gb": round(total_gb, 1), "denied": denied}
+            "approx_gb": round(total_gb, 1), "denied": denied,
+            "deferred": [{"id": m["id"], "name": m.get("role") or m["id"], "vram_gb": model_vram_gb(m)}
+                         for m in deferred]}
 
 
 def fetch_plan(plan: dict, tokens: dict | None = None, run=subprocess.run, dry: bool = False) -> list[dict]:
@@ -595,26 +638,33 @@ def _cmd_detect(reg: dict) -> int:
     return 0
 
 
-def _cmd_bundles(reg: dict) -> int:
+def _cmd_bundles(reg: dict, full: bool = False) -> int:
+    hw = None if full else detect_hardware()
     print("Curated bundles (a bundle is just a query over the registry):\n")
     for b in bundles(reg):
-        plan = plan_bundle(reg, b, include_mature=(b.get("rating") == "mature"))
+        plan = plan_bundle(reg, b, include_mature=(b.get("rating") == "mature"), hw=hw)
         have = sum(1 for r in plan["rows"] if r["state"] == "have")
+        defer = (f" · defers {', '.join(d['id'] for d in plan['deferred'])} (won't fit this GPU)"
+                 if plan.get("deferred") else "")
         print(f"  {b['id']:18} {b.get('modality',''):6} {b.get('rating','sfw'):7} "
-              f"{have}/{len(plan['rows'])} present · ~{plan['approx_gb']}GB to fetch")
+              f"{have}/{len(plan['rows'])} present · ~{plan['approx_gb']}GB to fetch{defer}")
     return 0
 
 
-def _cmd_plan(reg: dict, bid: str, mature: bool) -> int:
+def _cmd_plan(reg: dict, bid: str, mature: bool, full: bool = False) -> int:
     b = find_bundle(reg, bid)
     if not b:
         print(f"unknown bundle: {bid} (see `bundles`)", file=sys.stderr)
         return 2
-    plan = plan_bundle(reg, b, include_mature=mature or b.get("rating") == "mature")
+    hw = None if full else detect_hardware()
+    plan = plan_bundle(reg, b, include_mature=mature or b.get("rating") == "mature", hw=hw)
     print(f"Plan for bundle '{bid}':\n")
     for r in plan["rows"]:
         print(f"  {_GLYPH.get(r['state'],'?')} {r['state']:13} {r['id']}")
     print(f"\n  gap: {len(plan['gap'])} file(s), ~{plan['approx_gb']} GB")
+    if plan.get("deferred"):
+        print(f"  ↑ deferred — won't fit {hw.get('vram_gb')} GB (re-run with --full to fetch anyway): "
+              f"{', '.join(d['id'] for d in plan['deferred'])}")
     if plan["needs_auth"]:
         print(f"  needs account/token: {', '.join(plan['needs_auth'])} "
               f"(store with: setup.py creds set <svc>)")
@@ -623,7 +673,7 @@ def _cmd_plan(reg: dict, bid: str, mature: bool) -> int:
     return 0
 
 
-def _cmd_fetch(reg: dict, bid: str, mature: bool, yes: bool) -> int:
+def _cmd_fetch(reg: dict, bid: str, mature: bool, yes: bool, full: bool = False) -> int:
     b = find_bundle(reg, bid)
     if not b:
         print(f"unknown bundle: {bid}", file=sys.stderr)
@@ -634,7 +684,11 @@ def _cmd_fetch(reg: dict, bid: str, mature: bool, yes: bool) -> int:
               "adult fetching adult models under your own accounts. No minors / no real-person "
               "likenesses (enforced denylist).", file=sys.stderr)
         return 3
-    plan = plan_bundle(reg, b, include_mature=is_mature)
+    hw = None if full else detect_hardware()
+    plan = plan_bundle(reg, b, include_mature=is_mature, hw=hw)
+    if plan.get("deferred"):
+        print(f"  ↑ deferring (won't fit {hw.get('vram_gb')} GB VRAM): "
+              f"{', '.join(d['id'] for d in plan['deferred'])} — re-run with --full to fetch anyway.")
     if not plan["gap"]:
         print(f"✓ '{bid}' is already fully present — nothing to fetch.")
         return 0
@@ -696,11 +750,12 @@ def _cmd_comfyui(yes: bool) -> int:
     return 1
 
 
-def _cmd_express(reg: dict, want_video: bool, mature: bool, yes: bool) -> int:
+def _cmd_express(reg: dict, want_video: bool, mature: bool, yes: bool, full: bool = False) -> int:
     """Ordered for speed + leverage: TEXT first (fast, no account — then it writes your prompts),
-    then the ComfyUI runtime, then IMAGE, then VIDEO."""
+    then the ComfyUI runtime, then IMAGE, then VIDEO. Hero models that don't fit this GPU are
+    deferred per bundle (pass --full to fetch them anyway)."""
     print("Express setup — text first (it's quick, and the model then helps write your prompts).\n")
-    print("① text"); _cmd_fetch(reg, "text", False, True)
+    print("① text"); _cmd_fetch(reg, "text", False, True, full)
     if not comfyui_present():
         print("\n② ComfyUI runtime (needed for image + video)")
         if yes:
@@ -710,10 +765,10 @@ def _cmd_express(reg: dict, want_video: bool, mature: bool, yes: bool) -> int:
             print(f"\n✦ Text is ready. Try it: ollama run {_text_model_present() or '<your model>'}")
             return 0
     if comfyui_present():
-        print("\n③ image"); _cmd_fetch(reg, "image", False, True)
+        print("\n③ image"); _cmd_fetch(reg, "image", False, True, full)
         if want_video:
             vb = "video-wan" if mature else "video-10eros"
-            print(f"\n④ video ({vb})"); _cmd_fetch(reg, vb, mature, yes)
+            print(f"\n④ video ({vb})"); _cmd_fetch(reg, vb, mature, yes, full)
     print(f"\n✦ Your first prompt (written by your text model): \"{suggest_opening_prompt('image')}\"")
     print("  Open Lucid → http://127.0.0.1:8765 and make it.")
     return 0
@@ -755,6 +810,7 @@ def main(argv: list[str]) -> int:
     cmd, rest = argv[0], argv[1:]
     mature = "--mature" in rest
     yes = "--yes" in rest or "-y" in rest
+    full = "--full" in rest                          # opt out of the GPU-aware downselect (fetch every model)
     pos = [a for a in rest if not a.startswith("-")]
     reg = load_registry()
     if cmd == "onboard":
@@ -764,15 +820,15 @@ def main(argv: list[str]) -> int:
     if cmd == "comfyui":
         return _cmd_comfyui(yes)
     if cmd == "express":
-        return _cmd_express(reg, want_video="video" in pos, mature=mature, yes=yes)
+        return _cmd_express(reg, want_video="video" in pos, mature=mature, yes=yes, full=full)
     if cmd == "research":
         return _cmd_research(pos[0] if pos else "video")
     if cmd == "bundles":
-        return _cmd_bundles(reg)
+        return _cmd_bundles(reg, full)
     if cmd == "plan":
-        return _cmd_plan(reg, pos[0] if pos else "", mature)
+        return _cmd_plan(reg, pos[0] if pos else "", mature, full)
     if cmd == "fetch":
-        return _cmd_fetch(reg, pos[0] if pos else "", mature, yes)
+        return _cmd_fetch(reg, pos[0] if pos else "", mature, yes, full)
     if cmd == "creds":
         return _cmd_creds(pos[1] if len(pos) > 1 else (pos[0] if pos else ""),
                           pos[0] if pos and pos[0] in ("set", "clear") else "set")

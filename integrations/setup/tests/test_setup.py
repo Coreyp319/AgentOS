@@ -406,6 +406,97 @@ class KeyringFallbackAndManifest(ComfyTmp):
         self.assertTrue(any(e["dest"] == "m:1" for e in setup.read_manifest()["fetched"]))
 
 
+# ── low-VRAM model selection — the 10 GB first-user fix ───────────────────────────────────────
+# A fresh user with a 10 GB GPU must NOT be told a 12B beat-writer "fits" (it loads to ~13 GB), and
+# must not have it auto-fetched. The wizard downselects hero models that won't fit, keeps the
+# minimum lane, and never silently drops a bundle's defining model (a video lane just reads too-big).
+def _hw(vram_gb):
+    return {"vram_gb": float(vram_gb), "vram_mib": int(vram_gb * 1024),
+            "vram_free_mib": int(vram_gb * 1024), "ram_gb": 32.0, "vendor": "nvidia"}
+
+
+class Footprint(unittest.TestCase):
+    def test_ollama_loaded_footprint_inflates_over_weights(self):
+        # an LLM's loaded VRAM (KV cache + CUDA context) >> its on-disk weights — mirror the daemon
+        self.assertEqual(setup.model_vram_gb({"runtime": "ollama", "size_gb": 8}), 12.0)
+
+    def test_comfyui_footprint_is_the_loaded_peak_verbatim(self):
+        # registry comfyui sizes are ALREADY loaded peaks — never apply the LLM multiplier to them
+        self.assertEqual(setup.model_vram_gb({"runtime": "comfyui", "size_gb": 24}), 24.0)
+
+    def test_explicit_vram_gb_overrides_derivation(self):
+        self.assertEqual(setup.model_vram_gb({"runtime": "ollama", "size_gb": 99, "vram_gb": 7}), 7.0)
+
+    def test_registry_12b_narrator_loads_to_more_than_10gb(self):
+        reg = setup.load_registry()
+        nb = setup.find_model(reg, "narrator-beats")
+        self.assertGreater(setup.model_vram_gb(nb), 12.0)   # ~13 GB loaded, not the 8.7 GB weights
+
+
+class LowVramSelection(unittest.TestCase):
+    def setUp(self):
+        self.reg = setup.load_registry()
+
+    def _ids(self, ms):
+        return [m["id"] for m in ms]
+
+    def test_10gb_defers_hero_beat_writer_keeps_minimum(self):
+        keep, deferred = setup.select_models(self.reg, setup.find_bundle(self.reg, "text"), _hw(10))
+        self.assertIn("narrator-beats", self._ids(deferred))     # the 12B is downselected out
+        self.assertNotIn("narrator-beats", self._ids(keep))
+        self.assertIn("narrator", self._ids(keep))               # the minimum fallback beat-writer stays
+        self.assertIn("b2-vision", self._ids(keep))              # safety model is never dropped
+
+    def test_10gb_text_and_image_fit_after_downselect(self):
+        self.assertEqual(setup.bundle_fit(self.reg, setup.find_bundle(self.reg, "text"), _hw(10)), "fits")
+        self.assertEqual(setup.bundle_fit(self.reg, setup.find_bundle(self.reg, "image"), _hw(10)), "fits")
+
+    def test_24gb_keeps_hero_beat_writer(self):
+        keep, deferred = setup.select_models(self.reg, setup.find_bundle(self.reg, "text"), _hw(24))
+        self.assertIn("narrator-beats", self._ids(keep))         # a capable GPU still gets the 12B
+        self.assertEqual(deferred, [])
+        self.assertEqual(setup.bundle_fit(self.reg, setup.find_bundle(self.reg, "text"), _hw(24)), "fits")
+
+    def test_10gb_video_too_big_but_defining_model_kept(self):
+        b = setup.find_bundle(self.reg, "video-wan")
+        keep, deferred = setup.select_models(self.reg, b, _hw(10))
+        self.assertIn("i2v-dream", self._ids(keep))              # the video model is NOT deferred away
+        self.assertIn("narrator-beats", self._ids(deferred))     # but the aux hero beat-writer is
+        self.assertEqual(setup.bundle_fit(self.reg, b, _hw(10)), "too-big")
+
+    def test_24gb_video_stays_tight_no_dev_box_regression(self):
+        # the 4090 dev box runs the 24 GB lane today; the fix must not flip it to too-big
+        self.assertEqual(setup.bundle_fit(self.reg, setup.find_bundle(self.reg, "video-wan"), _hw(24)), "tight")
+
+    def test_no_gpu_reading_does_not_downselect(self):
+        keep, deferred = setup.select_models(self.reg, setup.find_bundle(self.reg, "text"), _hw(0))
+        self.assertEqual(deferred, [])                           # fail-open: fetch the curated set
+        self.assertIn("narrator-beats", self._ids(keep))
+
+
+class PlanDownselect(ComfyTmp):
+    _MN12B = "hf.co/bartowski/MN-12B-Mag-Mell-R1-GGUF:Q5_K_M"
+
+    def test_10gb_plan_excludes_deferred_hero_from_gap(self):
+        reg = setup.load_registry()
+        plan = setup.plan_bundle(reg, setup.find_bundle(reg, "text"), hw=_hw(10))
+        self.assertNotIn(self._MN12B, [a.get("ref") for a in plan["gap"]])    # the 12B is not fetched
+        self.assertIn("narrator-beats", [d["id"] for d in plan["deferred"]])
+
+    def test_24gb_plan_includes_hero(self):
+        reg = setup.load_registry()
+        plan = setup.plan_bundle(reg, setup.find_bundle(reg, "text"), hw=_hw(24))
+        self.assertIn(self._MN12B, [a.get("ref") for a in plan["gap"]])
+        self.assertEqual(plan["deferred"], [])
+
+    def test_no_hw_plan_is_unchanged_full_curated_set(self):
+        # back-compat: a plan with no hw must behave exactly as before (no downselection)
+        reg = setup.load_registry()
+        plan = setup.plan_bundle(reg, setup.find_bundle(reg, "text"))
+        self.assertIn(self._MN12B, [a.get("ref") for a in plan["gap"]])
+        self.assertEqual(plan["deferred"], [])
+
+
 class ResearchArgv(unittest.TestCase):
     def test_allowedtools_is_one_arg(self):
         cap = {}

@@ -493,11 +493,13 @@ class FitBarHonesty(unittest.TestCase):
             self.assertIn("peak_gb", b)
 
     def test_bundle_peak_gb_is_the_heaviest_model(self):
+        # peak = the heaviest LOADED footprint (model_vram_gb), not the download size — an LLM loads
+        # to well over its weights, and the fit bar must be honest about that.
         reg = setup.load_registry()
         for b in reg.get("bundles", []):
-            sizes = [float((setup.find_model(reg, m) or {}).get("size_gb", 0) or 0)
-                     for m in b.get("models", [])]
-            expected = round(max(sizes), 1) if sizes else 0.0
+            foots = [setup.model_vram_gb(m) for mid in b.get("models", [])
+                     if (m := setup.find_model(reg, mid))]
+            expected = round(max(foots), 1) if foots else 0.0
             self.assertEqual(setup.bundle_peak_gb(reg, b), expected)
 
     def test_pacing_credits_the_substrate_not_the_keyhole(self):

@@ -252,3 +252,50 @@ stale-as-serene wallpaper) were resolved by design before build. Normative addit
 
 Tests: setup **73**, status-panel **165**. Relates: ADR-0043 (adopt engine reused + `gpu-coordinator`
 row), ADR-0039 (dispatch hardening), ADR-0023 (reactive-wallpaper default), ADR-0031 (anti-hub bound).
+
+## Amendment (2026-06-24) — the fit advisory becomes footprint-honest + tier/VRAM-aware downselect
+
+Validating the wizard for our **first external user (a 10 GB GPU)** — never exercised, since dev is a
+24 GB 4090 — surfaced a real over-promise: the wizard told a 10 GB user the **text + image** lanes
+"fit" while planning to fetch `narrator-beats` (MN-12B Q5_K_M, 8.7 GB on disk but **≈13 GB loaded**),
+and offered **no honest video story** (both video lanes are 24 GB hero). Root cause: `bundle_fit`
+treated download `size_gb` as the loaded footprint and `plan_bundle` fetched **every** model in a
+bundle regardless of GPU — the `tier` metadata already on every model/bundle was unused. Reviewed by
+`resource-safety-reviewer` (the advisory must agree with the coordinator's predict-before-load) and
+`ai-product-reviewer` (ship the smallest honest version, not a model-manager). Normative additions:
+
+- **Loaded footprint ≠ download size (`model_vram_gb`).** A model's *runtime* VRAM is what the fit
+  verdict now uses. An explicit registry `vram_gb` (a measured peak) wins — `narrator-beats` carries
+  `vram_gb: 13` (ADR-0045 cites ~13–14 GB live). Else an **Ollama** LLM derives `≈ 1.5 × size_gb`
+  (weights + KV cache + CUDA context) — chosen to mirror agentosd's admission undercount band
+  `[1.45, 2.0]` (`crates/agentosd/src/analyze.rs DEFAULT_UNDERCOUNT`) so the advisory never says
+  "fits" where the daemon's `admit` would later refuse (over-promise→refuse is the worst first-run;
+  under-promise is merely cautious). **ComfyUI** registry sizes are already loaded peaks → used
+  verbatim, never multiplied. The 0.92·VRAM "fits" threshold is retained as desktop/KV slack.
+- **Tier/VRAM-aware downselect (`select_models`).** A `tier: hero` model that doesn't fit this GPU is
+  **deferred** (surfaced as an upgrade, *not* fetched) — but **only when the bundle still serves its
+  own modality without it**. So on 10 GB the 12B beat-writer drops out of the text/image lanes (which
+  then honestly fit on the minimum `narrator` + `b2-vision`), while a **video** lane — whose defining
+  model *is* the hero — is **never gutted**: it keeps the full set and honestly reads `too-big`. A
+  bundle's `tier` is therefore the **floor** (works on minimum HW); a `minimum` bundle may legitimately
+  carry downselectable `hero` upgrades, resolving the "hero-in-a-minimum-bundle" reading. **Fail-open:**
+  no GPU reading → no downselect (the full curated set, prior behavior). `bundle_fit`/`bundle_peak_gb`/
+  `plan_bundle` are now `hw`-aware; the deferred set flows to the UI as "added automatically on a larger
+  card." Result gradient: **10 GB** text/image fit (12B deferred) · **16 GB+** the 12B re-activates ·
+  **24 GB** unchanged (video stays `tight` — no dev-box regression).
+- **Honest video at 10 GB → the research scout (FORK 2a).** No curated local video model fits ≤10 GB
+  today. The wizard tells the truth and routes to the existing `research_models()` scout (model
+  proposes VRAM-appropriate options, human disposes — never auto-edits the registry).
+- **Explicitly deferred (not this round).** (1) **Auto-swapping** a hero model for a smaller documented
+  fallback (e.g. `narrator-beats → hermes3:3b`, `vision → moondream`) — that is a model-substitution
+  engine, an ADR-0001 non-goal; deferral + the scout cover the need without it. (2) A **curated
+  low-VRAM video bundle** — a curated entry implies "we validated this," which requires a real ≤10 GB
+  GPU we don't have (dev is 24 GB); it waits on the external user's box or a borrowed card.
+- **Residual (still warns, never guarantees).** The advisory is isolation/install-time (no live NVML
+  read); model **co-residence** (`OLLAMA_MAX_LOADED_MODELS=2` + ADR-0045 pre-warm) and CPU-offload
+  remain the daemon's live `admit` to enforce. The verdict reports the worst single kept model, not the
+  warm-set sum — defensible because the daemon fails closed on each subsequent load.
+
+Tests: real-registry low-VRAM guards added (the `vram_gb: 13` linchpin, 10/16/24 GB lane verdicts,
+deferred-not-fetched, video→too-big-not-gutted). Relates: ADR-0004 (irreducible desktop floor),
+ADR-0010 (predict-before-load), ADR-0045 (MN-12B ≈13 GB live), ADR-0018 (size_vram undercount).

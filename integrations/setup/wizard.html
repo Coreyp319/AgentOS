@@ -178,6 +178,7 @@
     padding:1px 9px;border-radius:var(--radius-sm);border:1px solid currentColor}
   .brow .fit.tight{color:var(--amber)} .brow .fit.big{color:var(--red)}
   .brow .suggest{color:var(--blue);font-size:.78rem;margin-top:5px;font-style:italic}
+  .brow .upg{color:var(--faint);font-size:.76rem;margin-top:5px;line-height:1.4}   /* GPU-aware downselect: deferred upgrade */
   .brow .act{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:9px}
   .brow .installed{display:inline-flex;align-items:center;gap:7px;font-size:.74rem;color:var(--up);font-weight:560}
   .brow .installed .dot{font-size:.7em}
@@ -638,8 +639,10 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     const eng = b.modality ? b.modality : "";
     const blurb = ready ? (b.desc||b.why) : (b.why||b.desc);
     const fit = b.fit==="tight" ? `<div class="fit tight">◐ tight on this GPU</div>`
-      : b.fit==="too-big" ? `<div class="fit big">⚠ too big for this GPU — find a smaller one</div>` : "";
+      : b.fit==="too-big" ? `<div class="fit big">⚠ too big for your GPU — no local ${esc(b.modality||"")} model fits yet; try <b>Find latest ↗</b> (step 02) for one that does</div>` : "";
     const sug = (ready && suggested[b.id]) ? `<div class="suggest">Your text model suggests: “${esc(suggested[b.id])}”</div>` : "";
+    const defer = (b.deferred && b.deferred.length)
+      ? `<div class="upg">Fitted to your GPU — a heavier upgrade (${esc(b.deferred.map(d=>d.vram_gb).join(" + "))} GB) is deferred; it's added automatically on a larger card.</div>` : "";
     let act;
     if(busy[b.id]) act=`<span class="state busy">setting up…</span>`;
     else if(ready){
@@ -655,7 +658,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     return `<div class="brow" data-bid="${esc(b.id)}">
       <div class="ico" aria-hidden="true">${ico}</div>
       <div class="meta"><div class="nm">${esc(b.id)}${mature?'<span class="tag">18+</span>':''}<span class="eng">· ${esc(eng)}</span></div>
-        <div class="dsc">${esc(blurb)}</div>${fit}${sug}</div>
+        <div class="dsc">${esc(blurb)}</div>${fit}${sug}${defer}</div>
       <div class="act">${act}</div>
     </div>`;
   }
