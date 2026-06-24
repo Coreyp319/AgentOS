@@ -10,6 +10,7 @@ injected, so nothing here touches the real system. Run with:
 import json
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -289,6 +290,32 @@ class DispatchTargetGate(unittest.TestCase):
     def test_launcher_class_is_forced_to_hermes(self):
         self.assertEqual(sp.resolve_dispatch_target({"source": "launcher"}), ("hermes", ""))
         self.assertEqual(sp.resolve_dispatch_target({"source": "launcher", "target": "hermes"}), ("hermes", ""))
+
+
+class QuietServerErrors(unittest.TestCase):
+    """The polling panel must not spam the journal with a traceback every time a browser tab
+    closes mid-response — but it must still surface genuine handler bugs."""
+
+    def _handle(self, exc):
+        """Drive QuietHTTPServer.handle_error with `exc` raised, capturing the super() call."""
+        srv = sp.QuietHTTPServer.__new__(sp.QuietHTTPServer)  # no bind; we only test handle_error
+        called = []
+        with unittest.mock.patch.object(
+            sp.ThreadingHTTPServer, "handle_error",
+            lambda self, req, addr: called.append((req, addr)),
+        ):
+            try:
+                raise exc
+            except type(exc):
+                srv.handle_error("req", ("127.0.0.1", 0))
+        return called
+
+    def test_broken_pipe_is_swallowed(self):
+        for exc in (BrokenPipeError(), ConnectionResetError(), ConnectionAbortedError()):
+            self.assertEqual(self._handle(exc), [], f"{type(exc).__name__} should be swallowed")
+
+    def test_real_error_still_surfaces(self):
+        self.assertEqual(len(self._handle(ValueError("boom"))), 1)
 
 
 if __name__ == "__main__":

@@ -799,6 +799,22 @@ class Handler(BaseHTTPRequestHandler):
                    "application/json")
 
 
+class QuietHTTPServer(ThreadingHTTPServer):
+    """Swallow client-disconnect teardown without a traceback.
+
+    The panel auto-polls (status.json etc.), so a browser tab closing or refreshing mid-response
+    routinely breaks the socket while we're still writing — BrokenPipe/ConnectionReset are normal
+    here, not errors, and the stdlib default dumps a full traceback per occurrence (the journal
+    filled with them). Genuine handler exceptions still surface via the default handler.
+    """
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
     # Security floor (ADR-0031): the panel now serves /launch.json + a (local-only) shell one-liner
     # and your service map. It must stay loopback-bound; `tailscale serve` is the ONLY sanctioned
@@ -809,7 +825,7 @@ def main():
               f"AGENTOS_STATUS_ALLOW_NONLOOPBACK=1 to override.", file=sys.stderr)
         sys.exit(2)
     threading.Thread(target=_notify_loop, daemon=True).start()
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    srv = QuietHTTPServer((HOST, PORT), Handler)
     print(f"AgentOS status panel → http://{HOST}:{PORT}", flush=True)
     try:
         srv.serve_forever()
