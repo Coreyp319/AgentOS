@@ -52,6 +52,14 @@ _OLLAMA_LIST_CACHE: list[str] | None = None
 # ComfyUI runtime bootstrap (image/video need it; text does not — that's why text goes first).
 COMFY_REPO = "https://github.com/comfyanonymous/ComfyUI"
 TORCH_INDEX = "https://download.pytorch.org/whl/cu124"
+# AMD ROCm PyTorch wheel index (ADR-0048 Phase 2). ROCm/torch versions move fast and must match the
+# user's installed ROCm — override with AGENTOS_TORCH_INDEX_ROCM. Default tracks a recent stable wheel.
+TORCH_INDEX_ROCM = os.environ.get("AGENTOS_TORCH_INDEX_ROCM", "https://download.pytorch.org/whl/rocm6.2")
+
+
+def _torch_index(vendor: str | None) -> str:
+    """The PyTorch wheel index for this GPU vendor: ROCm for AMD, CUDA otherwise (ADR-0048)."""
+    return TORCH_INDEX_ROCM if vendor == "amd" else TORCH_INDEX
 # The core custom-node packs the shipped dream workflows need; the long tail is handled by
 # ComfyUI-Manager. Continue-on-failure — a missing pack degrades one workflow, not the install.
 NODE_PACKS = [
@@ -132,10 +140,10 @@ def comfyui_present() -> bool:
     return (comfy_root() / ".venv" / "bin" / "python").exists()
 
 
-def comfyui_setup(dry: bool = False, run=subprocess.run) -> dict:
-    """Bootstrap the ComfyUI runtime if absent: clone, make the uv venv, install torch (cu124) +
-    requirements, then the core node packs. Idempotent (skip-if-present); continue-on-failure for
-    node packs. Returns a result dict; `steps` when dry."""
+def comfyui_setup(dry: bool = False, run=subprocess.run, vendor: str | None = None) -> dict:
+    """Bootstrap the ComfyUI runtime if absent: clone, make the uv venv, install torch (CUDA on
+    NVIDIA, ROCm on AMD — ADR-0048) + requirements, then the core node packs. Idempotent
+    (skip-if-present); continue-on-failure for node packs. Returns a result dict; `steps` when dry."""
     root = comfy_root()
     venv_py = root / ".venv" / "bin" / "python"
     if venv_py.exists():
@@ -150,7 +158,9 @@ def comfyui_setup(dry: bool = False, run=subprocess.run) -> dict:
     else:
         steps.append(["python3", "-m", "venv", str(root / ".venv")])
         pip = [str(venv_py), "-m", "pip", "install"]
-    steps.append(pip + ["torch", "torchvision", "torchaudio", "--index-url", TORCH_INDEX])
+    if vendor is None:                              # ADR-0048: pick CUDA vs ROCm wheels by GPU vendor
+        vendor = detect_hardware().get("vendor")
+    steps.append(pip + ["torch", "torchvision", "torchaudio", "--index-url", _torch_index(vendor)])
     steps.append(pip + ["-r", str(root / "requirements.txt")])
     if dry:
         return {"ok": True, "steps": steps, "node_packs": [u for _, u in NODE_PACKS]}
@@ -201,8 +211,27 @@ def suggest_opening_prompt(modality: str = "image", model: str | None = None, ru
 
 
 # ── hardware detection (so the wizard can say what fits your GPU) ─────────────────────────────
+def _amd_vram_mib() -> tuple[int, int]:
+    """(total, free) AMD VRAM in MiB from sysfs, or (0, 0) if no AMD GPU is present. sysfs is the
+    dependency-free, root-free primary (ADR-0048): `mem_info_vram_{total,used}` are bytes and
+    free = total − used. We read it directly rather than take a ROCm/amd-smi dependency, because
+    sysfs keeps reporting even when amd-smi lags new silicon."""
+    for dev in sorted(Path("/sys/class/drm").glob("card[0-9]*/device")):
+        try:
+            if (dev / "vendor").read_text().strip() != "0x1002":          # 0x1002 = AMD
+                continue
+            total = int((dev / "mem_info_vram_total").read_text().strip()) // (1024 * 1024)
+            used = int((dev / "mem_info_vram_used").read_text().strip()) // (1024 * 1024)
+            if total:
+                return total, max(total - used, 0)
+        except (OSError, ValueError):
+            continue
+    return 0, 0
+
+
 def detect_hardware(run=subprocess.run) -> dict:
     vram_total = vram_free = 0
+    vendor = None
     if shutil.which("nvidia-smi"):
         try:
             r = run(["nvidia-smi", "--query-gpu=memory.total,memory.free",
@@ -211,8 +240,13 @@ def detect_hardware(run=subprocess.run) -> dict:
             if ln:
                 t, f = ln[0].split(",")
                 vram_total, vram_free = int(t.strip()), int(f.strip())   # MiB
+                vendor = "nvidia"
         except Exception:
             pass
+    if not vram_total:                              # no NVIDIA datum → try AMD via sysfs (ADR-0048)
+        t, f = _amd_vram_mib()
+        if t:
+            vram_total, vram_free, vendor = t, f, "amd"
     ram_gb = 0.0
     try:
         for line in Path("/proc/meminfo").read_text().splitlines():
@@ -221,8 +255,9 @@ def detect_hardware(run=subprocess.run) -> dict:
                 break
     except Exception:
         pass
+    # `vendor`: "nvidia" | "amd" | None — lets the wizard flag AMD as experimental (ADR-0048).
     return {"vram_mib": vram_total, "vram_free_mib": vram_free,
-            "vram_gb": round(vram_total / 1024, 1), "ram_gb": round(ram_gb, 1)}
+            "vram_gb": round(vram_total / 1024, 1), "ram_gb": round(ram_gb, 1), "vendor": vendor}
 
 
 def bundle_peak_gb(reg: dict, bundle: dict) -> float:

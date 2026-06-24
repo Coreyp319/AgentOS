@@ -174,7 +174,7 @@ pub async fn reclaim_until_fits<R: WarmReclaimer>(
 
 use std::sync::Arc;
 
-use nvml_wrapper::Nvml;
+use crate::gpu::GpuBackend;
 
 const OLLAMA_PS: &str = "http://127.0.0.1:11434/api/ps";
 
@@ -201,12 +201,13 @@ fn mib(bytes: u64) -> u64 {
     bytes / (1024 * 1024)
 }
 
-/// Production [`WarmReclaimer`]: `/api/ps` over loopback HTTP, NVML free via `coord::free_mib`, and
+/// Production [`WarmReclaimer`]: `/api/ps` over loopback HTTP, free VRAM via `coord::free_mib`, and
 /// `ollama stop <model>` as a subprocess (the ADR-0018 lever, matching the lucid beat path). Owns its
-/// own NVML `Arc` (shared with the daemon's). The blocking HTTP read runs on a blocking thread so it
-/// never stalls the tokio reactor (the §5 "async, not blocking the reactor" invariant).
+/// own GPU-backend `Arc` (shared with the daemon's; NVIDIA via NVML, AMD via sysfs — ADR-0048). The
+/// blocking HTTP read runs on a blocking thread so it never stalls the tokio reactor (the §5 "async,
+/// not blocking the reactor" invariant).
 pub struct RealReclaimer {
-    pub nvml: Arc<Nvml>,
+    pub gpu: Arc<GpuBackend>,
 }
 
 impl WarmReclaimer for RealReclaimer {
@@ -237,7 +238,7 @@ impl WarmReclaimer for RealReclaimer {
     }
 
     async fn free_mib(&self) -> Option<u64> {
-        crate::coord::free_mib(&self.nvml).await
+        crate::coord::free_mib(&self.gpu).await
     }
 
     async fn stop(&self, model: &str) -> bool {

@@ -13,6 +13,24 @@ COMFY="${COMFY_ROOT:-$HOME/ComfyUI}"
 SMART_MEM="--disable-smart-memory"
 if [ -n "${COMFY_SMART_MEMORY:-}" ]; then SMART_MEM=""; fi
 
+# AMD (ROCm) tuning (ADR-0048 Phase 2). If the active GPU is AMD, ComfyUI needs the PyTorch SDPA
+# attention backend (flash/xformers aren't reliable on RDNA3) and the expandable-segments HIP
+# allocator to avoid fragmentation OOMs. Gated NVIDIA-first (matching the substrate's GpuBackend
+# precedence): a working nvidia-smi means NVIDIA is the compute target, so these stay off — they
+# only turn on when there's NO usable NVIDIA and an AMD card (PCI vendor 0x1002) is present.
+AMD_FLAGS=""
+if ! { command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; }; then
+  for v in /sys/class/drm/card[0-9]*/device/vendor; do
+    [ -r "$v" ] || continue
+    if [ "$(cat "$v")" = "0x1002" ]; then
+      AMD_FLAGS="--use-pytorch-cross-attention"
+      export PYTORCH_HIP_ALLOC_CONF="${PYTORCH_HIP_ALLOC_CONF:-expandable_segments:True}"
+      echo "start-comfyui: AMD GPU (ROCm) — SDPA attention + expandable-segments on (experimental; video is slower, no fp8 on RDNA3 — ADR-0048)." >&2
+      break
+    fi
+  done
+fi
+
 # Port-race guard (ADR-0015): ComfyUI must be coordinator-owned so its lease is real and a preempt
 # can SIGKILL it. If something ALREADY answers on :8188 (a stray comfyui.service, or a manual run),
 # a second launch would race the port, die, and silently re-introduce the "stale lease + unleased
@@ -27,4 +45,4 @@ if curl -sf -m 2 "http://127.0.0.1:8188/system_stats" >/dev/null 2>&1; then
 fi
 
 exec "$COMFY/.venv/bin/python" "$COMFY/main.py" --listen 127.0.0.1 --port 8188 \
-  --preview-method "${COMFY_PREVIEW:-latent2rgb}" $SMART_MEM "$@"
+  --preview-method "${COMFY_PREVIEW:-latent2rgb}" $SMART_MEM $AMD_FLAGS "$@"

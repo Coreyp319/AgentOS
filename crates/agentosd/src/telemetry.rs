@@ -34,12 +34,12 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use nvml_wrapper::Nvml;
 use serde::{Deserialize, Serialize};
 
 use crate::feed::feed_dir;
+use crate::gpu::{GpuBackend, ProcClass};
 use crate::keyhole::Lease;
-use crate::{mib, proc_name, used_mib};
+use crate::{mib, proc_name};
 
 /// Bump on any breaking shape change to a `telemetry.jsonl` line. Pinned by a test below.
 /// Schema 2 (2026-06-20): `residency[]` rows gained `size_mib` (total model size) so analysis can
@@ -169,26 +169,21 @@ struct PsModel {
 
 /// NVML memory + util/power/temp (own handle). Returns the VRAM block, the GPU block, and the read
 /// latency. A missing driver → all-unknown sentinels but the tick still records residency + lease.
-fn read_gpu(nvml: Option<&Nvml>) -> (Vram, Gpu, Duration) {
+fn read_gpu(gpu: &GpuBackend) -> (Vram, Gpu, Duration) {
     let t = Instant::now();
-    let dev = nvml.and_then(|n| n.device_by_index(0).ok());
-    let vram = match dev.as_ref().and_then(|d| d.memory_info().ok()) {
+    let vram = match gpu.mem() {
         Some(m) => Vram {
-            used_mib: mib(m.used) as i64,
-            free_mib: mib(m.free) as i64,
-            total_mib: mib(m.total) as i64,
+            used_mib: m.used as i64,
+            free_mib: m.free as i64,
+            total_mib: m.total as i64,
         },
         None => Vram { used_mib: UNK, free_mib: UNK, total_mib: UNK },
     };
-    let gpu = Gpu {
-        util_pct: dev.as_ref().and_then(|d| d.utilization_rates().ok()).map(|u| u.gpu),
-        // NVML reports milliwatts; present whole watts.
-        power_w: dev.as_ref().and_then(|d| d.power_usage().ok()).map(|mw| (mw as f64) / 1000.0),
-        temp_c: dev
-            .as_ref()
-            .and_then(|d| d.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu).ok()),
-    };
-    (vram, gpu, t.elapsed())
+    // Util %, power (W), temp (°C) — the backend normalizes vendor units (NVML mW, AMD hwmon µW/m°C)
+    // and leaves any unreadable sensor `None` (never synthesized).
+    let meta = gpu.meta();
+    let gpu_block = Gpu { util_pct: meta.util_pct, power_w: meta.power_w, temp_c: meta.temp_c };
+    (vram, gpu_block, t.elapsed())
 }
 
 /// Per-process VRAM attribution (graphics vs compute), itemised by process name. This is what
@@ -197,8 +192,10 @@ fn read_gpu(nvml: Option<&Nvml>) -> (Vram, Gpu, Duration) {
 /// over ALL procs (and CAN overlap — NVML lists a dual-use process like `code` in both classes, so
 /// they don't sum to `used_mib`; `free_mib` is the ground truth). The itemised list is thresholded
 /// + capped to keep each line bounded. Totals are `-1` when NVML can't attribute per-process.
-fn read_procs(nvml: Option<&Nvml>) -> (i64, i64, Vec<Proc>) {
-    let Some(dev) = nvml.and_then(|n| n.device_by_index(0).ok()) else {
+fn read_procs(gpu: &GpuBackend) -> (i64, i64, Vec<Proc>) {
+    let Some(procs) = gpu.processes() else {
+        // Per-process attribution unavailable (NVML present but no per-proc data, or an AMD/None
+        // backend) — be honest, don't fabricate a 0 (ADR-0012/0048).
         return (UNK, UNK, Vec::new());
     };
     let mut named: Vec<Proc> = Vec::new();
@@ -206,34 +203,27 @@ fn read_procs(nvml: Option<&Nvml>) -> (i64, i64, Vec<Proc>) {
     let mut compute = 0u64;
     let mut other_gfx = 0u64;
     let mut other_compute = 0u64;
-    let mut attributed = false;
-    for p in dev.running_graphics_processes().unwrap_or_default() {
-        if let Some(m) = used_mib(&p.used_gpu_memory) {
-            attributed = true;
-            gfx += m;
-            let name = proc_name(p.pid);
-            if arbitrated(&name) {
-                named.push(Proc { name, mib: m, kind: "gfx" });
-            } else {
-                other_gfx += m; // privacy: don't persist third-party app identities
+    for p in &procs {
+        let name = proc_name(p.pid);
+        match p.class {
+            ProcClass::Graphics => {
+                gfx += p.mib;
+                if arbitrated(&name) {
+                    named.push(Proc { name, mib: p.mib, kind: "gfx" });
+                } else {
+                    other_gfx += p.mib; // privacy: don't persist third-party app identities
+                }
+            }
+            // Compute, plus AMD's unclassified holders (no gfx/compute split on AMD), on compute.
+            ProcClass::Compute | ProcClass::Unknown => {
+                compute += p.mib;
+                if arbitrated(&name) {
+                    named.push(Proc { name, mib: p.mib, kind: "compute" });
+                } else {
+                    other_compute += p.mib;
+                }
             }
         }
-    }
-    for p in dev.running_compute_processes().unwrap_or_default() {
-        if let Some(m) = used_mib(&p.used_gpu_memory) {
-            attributed = true;
-            compute += m;
-            let name = proc_name(p.pid);
-            if arbitrated(&name) {
-                named.push(Proc { name, mib: m, kind: "compute" });
-            } else {
-                other_compute += m;
-            }
-        }
-    }
-    if !attributed {
-        // NVML present but per-process attribution unavailable — be honest, don't fabricate a 0.
-        return (UNK, UNK, named);
     }
     // Itemise only the arbitrated holders: drop noise, biggest first, capped.
     named.retain(|p| p.mib >= MIN_PROC_MIB);
@@ -447,9 +437,9 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         out.display(),
     );
 
-    let nvml = Nvml::init().ok();
-    if nvml.is_none() {
-        eprintln!("agentosd telemetry: NVML unavailable — VRAM/gpu will record unknown (continuing)");
+    let backend = GpuBackend::detect();
+    if backend.is_absent() {
+        eprintln!("agentosd telemetry: no GPU detected (NVML / AMD sysfs) — VRAM/gpu will record unknown (continuing)");
     }
     let http = reqwest::blocking::Client::builder().timeout(Duration::from_secs(2)).build()?;
 
@@ -463,8 +453,8 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let now = Instant::now();
-        let (vram, gpu, nvml_read) = read_gpu(nvml.as_ref());
-        let (gfx_mib, compute_mib, procs) = read_procs(nvml.as_ref());
+        let (vram, gpu, nvml_read) = read_gpu(&backend);
+        let (gfx_mib, compute_mib, procs) = read_procs(&backend);
         let residency = read_residency(&http, &mut first_seen, now);
         let lease = read_lease(&lease_mirror);
 
