@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nvml_wrapper::Nvml;
+use crate::gpu::GpuBackend;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
@@ -298,13 +298,13 @@ fn wallpaper_throttle_eligible(
 /// a transient peak can never over-admit; a too-low read just denies (safe) and the caller's retry
 /// re-admits once UE has settled. Mirrors `reclaim.rs`'s poll-don't-predict discipline. `None` if NVML
 /// stays unreadable (→ the locked `admit` denies — never admit blind).
-async fn poll_free_settled(nvml: &Arc<Nvml>) -> Option<u64> {
+async fn poll_free_settled(gpu: &Arc<GpuBackend>) -> Option<u64> {
     let mut reads: Vec<u64> = Vec::new();
     for i in 0..WALLPAPER_THROTTLE_POLLS {
         if i > 0 {
             tokio::time::sleep(WALLPAPER_THROTTLE_POLL_INTERVAL).await;
         }
-        if let Some(f) = free_mib(nvml).await {
+        if let Some(f) = free_mib(gpu).await {
             reads.push(f);
         }
     }
@@ -886,7 +886,7 @@ async fn release_token(
 
 struct Coordinator {
     inner: Arc<Mutex<Inner>>,
-    nvml: Arc<Nvml>,
+    gpu: Arc<GpuBackend>,
     /// `$XDG_RUNTIME_DIR/nimbus-aurora/lease.json` — the keyhole's arbitration mirror, or None
     /// if the runtime dir is unavailable (the daemon still runs; the keyhole shows no contention).
     mirror: Option<PathBuf>,
@@ -974,7 +974,7 @@ impl Coordinator {
         }
 
         // R2: distinguish "couldn't read VRAM" (None) from "0 free".
-        let mut free_opt = free_mib(&self.nvml).await;
+        let mut free_opt = free_mib(&self.gpu).await;
 
         // ADR-0018 §2 — GRACEFUL RECLAIM BEFORE THE SLEDGEHAMMER. A heavy-lane (batch/best-effort)
         // request that would be VRAM-denied gets ONE off-lock warm-pool reclaim first: `ollama stop`
@@ -999,7 +999,7 @@ impl Coordinator {
                 }
             };
             if go {
-                let r = crate::reclaim::RealReclaimer { nvml: Arc::clone(&self.nvml) };
+                let r = crate::reclaim::RealReclaimer { gpu: Arc::clone(&self.gpu) };
                 let out = crate::reclaim::reclaim_until_fits(
                     &r,
                     est,
@@ -1077,7 +1077,7 @@ impl Coordinator {
                 .unwrap_or(crate::rc_throttle::ThrottleOutcome::Unreachable);
                 let took = outcome.took();
                 // Poll-don't-single-shot: take the conservative settled free, only when the throttle took.
-                let settled = if took { poll_free_settled(&self.nvml).await } else { None };
+                let settled = if took { poll_free_settled(&self.gpu).await } else { None };
                 {
                     let mut g = self.inner.lock().await;
                     g.wallpaper_throttle_inflight = None;
@@ -1417,7 +1417,7 @@ impl Coordinator {
             );
         }
         tokio::time::sleep(Duration::from_millis(150)).await; // brief driver settle
-        if let Some(after) = free_mib(&self.nvml).await {
+        if let Some(after) = free_mib(&self.gpu).await {
             println!(
                 "coordd: post-evict free {after}M (was {before}M; Δ {}M reclaimed)",
                 after.saturating_sub(before)
@@ -1483,7 +1483,7 @@ impl Coordinator {
             tokio::time::sleep(SCOPE_RECLAIM_POLL_INTERVAL).await;
         }
         tokio::time::sleep(Duration::from_millis(150)).await; // brief driver settle
-        if let Some(after) = free_mib(&self.nvml).await {
+        if let Some(after) = free_mib(&self.gpu).await {
             println!(
                 "coordd: post-reclaim free {after}M (was {before_free}M; Δ {}M){}",
                 after.saturating_sub(before_free),
@@ -1691,7 +1691,7 @@ impl Coordinator {
 
     /// `(held, tier, token, free_mib)` — current lease + live free VRAM.
     async fn status(&self) -> (bool, String, u64, u32) {
-        let free = free_mib(&self.nvml).await.unwrap_or(0) as u32;
+        let free = free_mib(&self.gpu).await.unwrap_or(0) as u32;
         let inner = self.inner.lock().await;
         match inner.lease.holder_tier() {
             Some(t) => (true, t.as_str().to_string(), inner.lease.holder_token(), free),
@@ -1865,15 +1865,16 @@ async fn supervise(inner: Arc<Mutex<Inner>>, mirror: Option<PathBuf>, conn: zbus
 }
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    let nvml = Arc::new(
-        Nvml::init().map_err(|e| format!("NVML init failed (is the NVIDIA driver loaded?): {e}"))?,
-    );
+    let gpu = Arc::new(GpuBackend::detect());
+    if gpu.is_absent() {
+        return Err("no GPU detected (no NVIDIA NVML, no AMD sysfs) — the lease coordinator needs GPU sensing".into());
+    }
     let inner = Arc::new(Mutex::new(Inner::new()));
     let mirror = feed_dir().ok().map(|d| d.join("lease.json"));
     // Publish an initial "no contention" so the keyhole has a file to read from the first tick.
     write_lease_mirror(mirror.as_deref(), &Lease::default());
 
-    let obj = Coordinator { inner: Arc::clone(&inner), nvml, mirror: mirror.clone() };
+    let obj = Coordinator { inner: Arc::clone(&inner), gpu, mirror: mirror.clone() };
     let conn = zbus::connection::Builder::session()?
         .name(BUS_NAME)?
         .serve_at(OBJ_PATH, obj)?

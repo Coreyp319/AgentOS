@@ -29,7 +29,7 @@ use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nvml_wrapper::Nvml;
+use crate::gpu::GpuBackend;
 use tokio::process::{Child, Command};
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -348,19 +348,16 @@ pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     rt.block_on(supervise(cfg))
 }
 
-/// Read free VRAM (MiB) off GPU0. NVML is blocking FFI, so it runs on the blocking
-/// pool (ADR-0010 §7) — never on the async executor. `None` on any NVML error.
-/// Shared with the D-Bus lease server (admission control).
-pub(crate) async fn free_mib(nvml: &Arc<Nvml>) -> Option<u64> {
-    let nvml = Arc::clone(nvml);
-    tokio::task::spawn_blocking(move || {
-        let dev = nvml.device_by_index(0).ok()?;
-        let mem = dev.memory_info().ok()?;
-        Some(mem.free / (1024 * 1024))
-    })
-    .await
-    .ok()
-    .flatten()
+/// Read free VRAM (MiB) off GPU0. The backend read is blocking (NVML FFI / sysfs), so it runs on
+/// the blocking pool (ADR-0010 §7) — never on the async executor. `None` on any read error.
+/// Shared with the D-Bus lease server (admission control). Vendor-neutral (ADR-0048): NVIDIA via
+/// NVML, AMD via sysfs `mem_info_vram_*`.
+pub(crate) async fn free_mib(gpu: &Arc<GpuBackend>) -> Option<u64> {
+    let gpu = Arc::clone(gpu);
+    tokio::task::spawn_blocking(move || gpu.mem().map(|m| m.free))
+        .await
+        .ok()
+        .flatten()
 }
 
 fn spawn_child(cfg: &Config) -> std::io::Result<Child> {
@@ -384,12 +381,13 @@ enum Stop {
 }
 
 async fn supervise(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
-    let nvml = Arc::new(
-        Nvml::init().map_err(|e| format!("NVML init failed (is the NVIDIA driver loaded?): {e}"))?,
-    );
+    let gpu = Arc::new(GpuBackend::detect());
+    if gpu.is_absent() {
+        return Err("no GPU detected (no NVIDIA NVML, no AMD sysfs) — the coordinator needs GPU sensing".into());
+    }
 
     // 1. Predict-before-load admission (ADR-0010 §4) — the gate, before any allocation.
-    let free0 = free_mib(&nvml).await.ok_or("NVML: could not read free VRAM")?;
+    let free0 = free_mib(&gpu).await.ok_or("could not read free VRAM")?;
     let admission = admit(free0, cfg.estimate_mib, cfg.headroom_mib);
     println!(
         "agentosd coord — admission: free {free0}M vs est {}M + headroom {}M → {}",
@@ -438,7 +436,7 @@ async fn supervise(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => Stop::WaitErr(e.to_string()),
             },
             _ = tick.tick() => {
-                if let Some(f) = free_mib(&nvml).await {
+                if let Some(f) = free_mib(&gpu).await {
                     println!("[{}] holding {:?} pid {pid} | free {f}M", crate::now_hms(), cfg.tier);
                 }
             }
@@ -467,13 +465,13 @@ async fn supervise(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
             let _ = child.kill().await;
         }
         Stop::Preempt => {
-            let before = free_mib(&nvml).await.unwrap_or(0);
+            let before = free_mib(&gpu).await.unwrap_or(0);
             println!(
                 "coord: PREEMPT → SIGKILL pid {pid} (own-PID evict; `/free` not trusted, ADR-0010 §5)"
             );
             let _ = child.kill().await; // SIGKILL + reap
             tokio::time::sleep(Duration::from_millis(300)).await; // let the driver settle
-            let after = free_mib(&nvml).await.unwrap_or(before);
+            let after = free_mib(&gpu).await.unwrap_or(before);
             println!(
                 "coord: reclaimed {}M ({before}M→{after}M); prior cached output persists; \
                  job requeues next window (ADR-0010 §6)",

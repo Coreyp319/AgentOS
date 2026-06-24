@@ -43,8 +43,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use nvml_wrapper::enums::device::UsedGpuMemory;
-use nvml_wrapper::Nvml;
+use crate::gpu::{GpuBackend, ProcClass};
 use serde::{Deserialize, Serialize};
 
 use crate::feed::{
@@ -241,23 +240,16 @@ struct PsResp {
 }
 
 /// Read NVML VRAM (own handle). `None` → sentinel; never blocks on a missing driver.
-fn read_vram(nvml: Option<&Nvml>) -> Vram {
-    let read = || -> Option<(i64, i64)> {
-        let dev = nvml?.device_by_index(0).ok()?;
-        let m = dev.memory_info().ok()?;
-        let mib = |b: u64| (b / (1024 * 1024)) as i64;
-        Some((mib(m.used), mib(m.total)))
-    };
-    match read() {
-        Some((used, total)) => Vram { used_mib: used, total_mib: total },
+fn read_vram(gpu: &GpuBackend) -> Vram {
+    match gpu.mem() {
+        Some(m) => Vram { used_mib: m.used as i64, total_mib: m.total as i64 },
         None => Vram { used_mib: UNK, total_mib: UNK },
     }
 }
 
-/// Read NVML GPU utilization % (own handle). `None` → unknown, which disables the util gate.
-fn read_gpu_util(nvml: Option<&Nvml>) -> Option<u32> {
-    let dev = nvml?.device_by_index(0).ok()?;
-    dev.utilization_rates().ok().map(|u| u.gpu)
+/// Read GPU utilization % (own backend). `None` → unknown, which disables the util gate.
+fn read_gpu_util(gpu: &GpuBackend) -> Option<u32> {
+    gpu.meta().util_pct
 }
 
 /// GPU work intensity in `0.0..=1.0`, or `0.0` when the GPU isn't doing *real* work. Real work =
@@ -346,21 +338,18 @@ fn choose_workload(mut named: Vec<(String, i64)>, total_mib: i64) -> Workload {
 /// Read NVML's running-compute-process table → the dominant heavy GPU holder. `None`/empty table →
 /// honest-empty (no fabricated workload). This is the schema-3 attribution: it sees ComfyUI and any
 /// other CUDA workload that holds no agentosd lease and is no Ollama model.
-fn read_workload(nvml: Option<&Nvml>, total_mib: i64) -> Workload {
-    let collect = || -> Option<Vec<(String, i64)>> {
-        let dev = nvml?.device_by_index(0).ok()?;
-        let named = dev
-            .running_compute_processes()
-            .ok()?
-            .into_iter()
-            .filter_map(|p| match p.used_gpu_memory {
-                UsedGpuMemory::Used(b) => Some((process_label(p.pid), (b / (1024 * 1024)) as i64)),
-                UsedGpuMemory::Unavailable => None,
-            })
-            .collect();
-        Some(named)
-    };
-    choose_workload(collect().unwrap_or_default(), total_mib)
+fn read_workload(gpu: &GpuBackend, total_mib: i64) -> Workload {
+    // Compute holders (and AMD's unclassified `Unknown`, matching the telemetry/monitor routing) —
+    // the heavy GPU workload (ComfyUI/CUDA), never the graphics baseline. AMD has no per-process
+    // attribution yet (ADR-0048 Phase 3), so this is empty there until that backend lands.
+    let named: Vec<(String, i64)> = gpu
+        .processes()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| matches!(p.class, ProcClass::Compute | ProcClass::Unknown))
+        .map(|p| (process_label(p.pid), p.mib as i64))
+        .collect();
+    choose_workload(named, total_mib)
 }
 
 /// Optional lease mirror (`$XDG_RUNTIME_DIR/nimbus-aurora/lease.json`), pushed off-lock by the
@@ -496,11 +485,11 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
     let queue_mirror = dir.join("queue.json");
     println!("agentosd keyhole → {}", out.display());
 
-    // Own NVML handle (like `monitor`), never the lease daemon's. None → VRAM degrades to
+    // Own GPU backend (like `monitor`), never the lease daemon's. Absent → VRAM degrades to
     // unknown but the rest of the instrument still works (fail-open, ADR-0003).
-    let nvml = Nvml::init().ok();
-    if nvml.is_none() {
-        eprintln!("agentosd keyhole: NVML unavailable — VRAM will read unknown (continuing)");
+    let backend = GpuBackend::detect();
+    if backend.is_absent() {
+        eprintln!("agentosd keyhole: no GPU detected (NVML / AMD sysfs) — VRAM will read unknown (continuing)");
     }
     let http = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -515,12 +504,12 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
         let gw = read_gateway(&gateway);
         let needs_you = read_needs_you(&needs_you_path);
         let t_nvml = Instant::now();
-        let vram = read_vram(nvml.as_ref());
-        let gpu_util = read_gpu_util(nvml.as_ref());
+        let vram = read_vram(&backend);
+        let gpu_util = read_gpu_util(&backend);
         let nvml_read = t_nvml.elapsed();
 
         let residency = read_residency(&http, &mut first_seen, now);
-        let workload = read_workload(nvml.as_ref(), vram.total_mib);
+        let workload = read_workload(&backend, vram.total_mib);
         let lease = read_lease(&lease_mirror);
         let pending_requests = read_pending(&pending_mirror);
         let queue = read_queue(&queue_mirror);

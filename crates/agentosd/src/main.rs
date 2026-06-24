@@ -39,14 +39,13 @@
 
 use std::{fs, thread, time::Duration};
 
-use nvml_wrapper::enums::device::UsedGpuMemory;
-use nvml_wrapper::Nvml;
 use serde::Deserialize;
 
 mod analyze;
 mod coord;
 mod feed;
 mod governor;
+mod gpu;
 mod keyhole;
 mod lease;
 mod mcp;
@@ -99,13 +98,6 @@ pub(crate) fn mib(bytes: u64) -> u64 {
     bytes / (1024 * 1024)
 }
 
-pub(crate) fn used_mib(u: &UsedGpuMemory) -> Option<u64> {
-    match u {
-        UsedGpuMemory::Used(b) => Some(mib(*b)),
-        UsedGpuMemory::Unavailable => None,
-    }
-}
-
 pub(crate) fn proc_name(pid: u32) -> String {
     fs::read_to_string(format!("/proc/{pid}/comm"))
         .map(|s| s.trim().to_string())
@@ -144,17 +136,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// v0 read-only VRAM monitor (ADR-0004) — unchanged from the original `main`.
 fn run_monitor() -> Result<(), Box<dyn std::error::Error>> {
-    let nvml = match Nvml::init() {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("NVML init failed (is the NVIDIA driver loaded?): {e}");
-            std::process::exit(1);
-        }
-    };
-    let device = nvml.device_by_index(0)?;
+    let gpu = gpu::GpuBackend::detect();
+    if gpu.is_absent() {
+        eprintln!("No GPU detected (no NVIDIA NVML, no AMD sysfs) — nothing to monitor.");
+        std::process::exit(1);
+    }
     println!(
-        "agentosd monitor (read-only) — {}",
-        device.name().unwrap_or_else(|_| "GPU0".into())
+        "agentosd monitor (read-only) — {} [{}]",
+        gpu.name().unwrap_or_else(|| "GPU0".into()),
+        gpu.vendor()
     );
 
     let http = reqwest::blocking::Client::builder()
@@ -162,37 +152,42 @@ fn run_monitor() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     loop {
-        let mem = device.memory_info()?;
-        let (total, used, free) = (mib(mem.total), mib(mem.used), mib(mem.free));
+        let Some(mem) = gpu.mem() else {
+            eprintln!("[{}] VRAM read failed (continuing)", now_hms());
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        };
+        let (total, used, free) = (mem.total, mem.used, mem.free);
 
-        // --- per-process attribution (the real fix vs `used - model_vram`) ---
-        let gfx = device.running_graphics_processes().unwrap_or_default();
-        let comp = device.running_compute_processes().unwrap_or_default();
+        // --- per-process attribution (the real fix vs `used - model_vram`). `None` == the backend
+        //     can't attribute per-process (an AMD/None backend, or NVML without per-proc data) → we
+        //     fall back to the non-Ollama-remainder estimate below. ---
+        let procs = gpu.processes();
+        let attributed = procs.is_some();
+        let procs = procs.unwrap_or_default();
 
         let mut gfx_mib = 0u64;
         let mut gfx_list: Vec<String> = Vec::new();
         let mut rt_running = false; // is the nimbus-flux RT wallpaper actually up?
-        for p in &gfx {
-            if let Some(m) = used_mib(&p.used_gpu_memory) {
-                let name = proc_name(p.pid);
-                if name.contains("nimbus") {
-                    rt_running = true;
-                }
-                gfx_mib += m;
-                gfx_list.push(format!("{name}:{m}M"));
-            }
-        }
         let mut comp_mib = 0u64;
         let mut comp_list: Vec<String> = Vec::new();
-        for p in &comp {
-            if let Some(m) = used_mib(&p.used_gpu_memory) {
-                comp_mib += m;
-                comp_list.push(format!("{}:{}M", proc_name(p.pid), m));
+        for p in &procs {
+            let name = proc_name(p.pid);
+            match p.class {
+                gpu::ProcClass::Graphics => {
+                    if name.contains("nimbus") {
+                        rt_running = true;
+                    }
+                    gfx_mib += p.mib;
+                    gfx_list.push(format!("{name}:{}M", p.mib));
+                }
+                // Compute, plus AMD's unclassified holders, count toward the compute side.
+                gpu::ProcClass::Compute | gpu::ProcClass::Unknown => {
+                    comp_mib += p.mib;
+                    comp_list.push(format!("{name}:{}M", p.mib));
+                }
             }
         }
-        // Fallback if NVML won't attribute per-process: estimate graphics as the
-        // non-Ollama remainder using /api/ps.
-        let attributed = !gfx_list.is_empty() || !comp_list.is_empty();
 
         // --- Ollama: loaded model + local model sizes ---
         let loaded: Vec<(String, u64)> = http
