@@ -6,7 +6,9 @@ distro, or orchestrator. The orchestrator already exists: **Hermes Agent** at
 `~/.hermes` (Nous Research, MIT — gateway, kanban task engine, delegation, cron,
 skills, memory, Ollama as default model). **Do NOT build another orchestrator.** The
 desktop is CachyOS + the Nimbus pack (`~/whitesur-cachyos-pack`). AgentOS is the floor
-under both.
+under both. The pack is a **separate repo** and the precursor to this one; which pack
+modules this repo re-expresses/supersedes/leaves alone is mapped in
+`docs/PRECURSOR-PACK.md` (we vendor no pack files).
 
 ## The rule that keeps mattering: don't reinvent
 A research pass (ADR-0002) established: Ollama already does residency/concurrency/
