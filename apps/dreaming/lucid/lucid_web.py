@@ -46,6 +46,7 @@ import lucid_hub as H      # noqa: E402  (ADR-0019: the held/needs-review board 
 import lucid_stash as SH   # noqa: E402  (ADR-0028: the encrypted, passphrase-locked private stash)
 import lucid_stitch as STCH  # noqa: E402  (download the whole dream as one stitched MP4)
 import lucid_priv_drain as PD  # noqa: E402  (ADR-0019 §5 / ADR-0036 D9: in-session drainer for the EPHEMERAL private queue)
+import lucid_notify as NOTIFY  # noqa: E402  (ADR-0047: content-free "your dream grew" push on the done edge; dormant until configured)
 
 HOST = os.environ.get("LUCID_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LUCID_WEB_PORT", "8765"))
@@ -226,6 +227,10 @@ def _run_turn(prompt, label, epoch=None, length=None, parent_id=None, session=No
             node = L.step(session, prompt, label, external_lease=True, is_current=is_current,
                           length=length, parent_id=parent_id, raise_errors=True, fused_edited=fused_edited)
             phase, err = ("done" if node else "skipped"), None
+            if node:
+                # ADR-0047: a new beat landed — fire the content-free "your dream grew" push.
+                # on_done() resolves privacy fail-safe, gates private/mature, and never raises.
+                NOTIFY.on_done(session, node)
     except SystemExit as e:        # red-line gate refused the prompt (B3)
         phase, err = "refused", str(e)
     except L.GenerationError as e:  # a SUBSTANTIVE ComfyUI failure (OOM/backend-down/bad-graph/timeout) —

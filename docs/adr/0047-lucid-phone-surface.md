@@ -76,11 +76,16 @@ on-device-LLM narrative + streamed video · **C** fully on-device degraded (no v
    crypto/native-shell tax.
 6. **The async notify leg (the one net-new thing) is Telegram-first.** A render takes
    minutes and the phone is backgrounded/asleep; the loop closes only by reaching a
-   non-foreground phone. **v1 = Telegram-via-Hermes** (already live, reaches a closed
-   app, zero new dependency, creds stay on the box). **v2 = web push** only behind an
-   explicit decision to adopt the project's first crypto dependency
-   (`cryptography`/`pywebpush` for RFC 8291 + VAPID) and ship a service worker. See
-   the spike.
+   non-foreground phone. **v1 = Telegram** (reaches a closed app, zero new
+   dependency), configured via an **explicit, user-owned notify config**
+   (`~/.config/agentos/notify.json` or env) — **Lucid never reads Hermes' secrets**
+   (a credential-isolation boundary, confirmed by the auto-mode guardrail when an
+   earlier draft tried to resolve the Hermes bot token). Dormant until configured;
+   dry-run until `send:true` (the first real message is an explicit opt-in). **v2 =
+   web push** only behind an explicit decision to adopt the project's first crypto
+   dependency (`cryptography`/`pywebpush` for RFC 8291 + VAPID) and ship a service
+   worker. Productionized as `lucid_notify.py` and wired into the `_run_turn`
+   done-edge (heroes don't grow the tree, so they don't push); 21/21 tests.
 7. **The Mature tier selects the architecture: PWA-over-your-own-tailnet only, no
    app-store binary, ever.** A native/store build silently forfeits the Mature tier
    (and re-acquires the store policy war). Recorded as an invariant, not a footnote.
