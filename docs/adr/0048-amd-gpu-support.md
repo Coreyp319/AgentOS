@@ -1,7 +1,10 @@
 # ADR-0048 — AMD GPU support: a sysfs sensing backend + a ROCm install lane
 
-Status: Proposed — decisions locked with the user 2026-06-24; Phase 0 (installer detection +
-honesty) in progress. Supersedes nothing; additive to the NVIDIA path, which stays the default.
+Status: Accepted — decisions locked with the user 2026-06-24. **Phases 0–3 BUILT + COMMITTED** on
+`feat/amd-support` (4 commits); two-lens review (resource-safety + rust-performance) = SHIP; the
+NVIDIA path is behavior-preserving (229 crate + 95 setup tests green, clippy clean, validated live on
+the 4090). The **one item the 4090 can't cover — running the AMD path on a real Radeon — is owed**.
+Additive to the NVIDIA path, which stays the default. Supersedes nothing.
 Date: 2026-06-24
 Feeds from: [docs/research/0014-amd-gpu-support.md](../research/0014-amd-gpu-support.md) (the
 four-lane sourced study this records the decisions of).
@@ -49,6 +52,13 @@ existing missing-NVML posture. We do **not** take an `amdsmi`/ROCm FFI dependenc
 and we do **not** adopt the heavier vendor-neutral `all-smi` crate. The abstraction is a small
 `GpuBackend { Nvml | AmdSysfs | None }` enum threaded where `&Nvml` flows today.
 
+> **Phase-3 refinement (as built):** per-process was implemented by parsing `/proc/<pid>/fdinfo`
+> DRM-client accounting **directly** — *no* `libamdgpu_top`/libdrm crate at all (it merely wraps the
+> same fdinfo), so the daemon's dependency tree stays exactly as the NVIDIA build's. VRAM is summed
+> per-PID across unique `drm-client-id`s on the GPU's PCI address; class is always `Unknown` (no AMD
+> gfx/compute split); fail-open to `None` when `/proc` or another user's PID is unreadable (the latter
+> needs the daemon in `render`/`video` or `CAP_PERFMON`).
+
 ### 2. The gfx/compute class split: derive from the `ARBITRATED` allowlist, residual UNKNOWN
 AMD has **no** compute-vs-graphics process classification (NVML's two lists have no analogue). We
 reconstruct the class from the allowlist `telemetry.rs` already keeps
@@ -86,7 +96,15 @@ of scope.
 | **0 — Detection & honesty** | `detect_hardware()` + `models_panel.py` gain an AMD branch (amd-smi/rocm-smi/sysfs VRAM, same dict shape); README/wizard say "AMD = experimental (RDNA3/4)"; a `root: sudo` `amd-rocm-runtime` component prints the `pacman -S rocm-hip-runtime rocm-opencl-runtime` + `usermod` steps | low |
 | **1 — Substrate backend** | `GpuBackend` trait + `AmdSysfs` (VRAM/util/power/temp/name); free-VRAM via sysfs; class via allowlist/UNKNOWN | low (seam exists) |
 | **2 — Runtime stack** | vendor-conditional `TORCH_INDEX` (rocm); ComfyUI ROCm launch flags (`--use-pytorch-cross-attention`, `expandable_segments`); GGUF-Q8 (non-K) default + "no-fp8" note in `local-video-gen` | med (perf tax, version pins) |
-| **3 — Per-process (optional)** | `libamdgpu_top`/fdinfo backend for keyhole attribution | low |
+| **3 — Per-process (optional)** | `/proc` fdinfo backend for keyhole/telemetry attribution | low |
+
+**Build status (2026-06-24):** all four phases are **built + committed** on `feat/amd-support`
+(`docs(adr)` → `feat(agentosd)` Phase 1 → `feat(setup)` Phase 0+2 → `feat(agentosd)` Phase 3). The
+ComfyUI AMD launch flags (`start-comfyui.sh`) and the `local-video-gen` AMD recipe note live in the
+working tree, riding with the in-flight `spikes→apps` migration. **Remaining = hardware validation
+on a Radeon** (RDNA3/RDNA4): confirm the sysfs VRAM read, the fdinfo per-process parse against real
+`drm-*-vram` keys, the ROCm torch-index version, and the derived-free admission headroom (the
+Phase-2 must-do above).
 
 ## Non-goals
 - **NVIDIA is not changed.** No regression to the default CUDA path; AMD is purely additive.
