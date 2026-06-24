@@ -1,4 +1,4 @@
-# spikes/dreaming — local video generation backend
+# apps/dreaming — local video generation backend
 
 > **Spike / pre-shippable.** The *generation* backend works (all five paths validated
 > 2026-06-16, below), but the feature is gated on the unbuilt VRAM coordinator and the

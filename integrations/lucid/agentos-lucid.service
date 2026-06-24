@@ -7,11 +7,11 @@ After=graphical-session.target
 Type=simple
 # The dedicated lucid page the status panel (:9123) links to. Loopback-only, stdlib-only.
 # Backed by the SAFE MVP path (lucid_linear): gated prompts, coordinator lease, fail-open.
-ExecStart=/usr/bin/python3 %h/Documents/AgentOS/spikes/dreaming/lucid/lucid_web.py
+ExecStart=/usr/bin/python3 %h/Documents/AgentOS/apps/dreaming/lucid/lucid_web.py
 # On stop (logout/restart) burn the session IFF it is private — so "wiped when you log out" is
 # TRUE for the sealed on-disk seed/anchor frames, not just the tmpfs half (ADR-0016). Guarded:
 # a normal persistent dream is never destroyed. Runs before SIGTERM, inside TimeoutStopSec.
-ExecStop=/usr/bin/python3 %h/Documents/AgentOS/spikes/dreaming/lucid/lucid_web.py --burn-private
+ExecStop=/usr/bin/python3 %h/Documents/AgentOS/apps/dreaming/lucid/lucid_web.py --burn-private
 Environment="LUCID_WEB_HOST=127.0.0.1"
 Environment="LUCID_WEB_PORT=8765"
 Restart=on-failure

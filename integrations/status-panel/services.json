@@ -1,5 +1,5 @@
 {
-  "groups": ["AI core", "AgentOS substrate", "Ambient desktop", "Notifications", "Desktop QoL", "Dreaming"],
+  "groups": ["AI core", "AgentOS substrate", "Ambient desktop", "Desktop QoL", "Dreaming"],
   "services": [
     { "id": "hermes-gateway",   "name": "Hermes agent",            "group": "AI core",            "scope": "user",   "unit": "hermes-gateway.service",                                  "desc": "Gateway daemon — kanban, cron, delegation, messaging" },
     { "id": "hermes-dashboard", "name": "Hermes web UI",           "group": "AI core",            "scope": "user",   "unit": "hermes-dashboard.service",   "url": "http://127.0.0.1:9119",   "health": "http://127.0.0.1:9119/",            "auto_recover": true, "desc": "Config, sessions, kanban board" },
@@ -14,9 +14,6 @@
     { "id": "wallpaper",        "name": "Reactive wallpaper",      "group": "Ambient desktop",    "scope": "user",   "kind": "task",  "match": "app-*hexen*wallpaper*@autostart.service",                 "desc": "Ray-traced Hexen wallpaper (launched at login)" },
     { "id": "aurora-audio",     "name": "Music reactivity",        "group": "Ambient desktop",    "scope": "user",   "unit": "nimbus-aurora-audio.service",                              "auto_recover": true, "desc": "Audio monitor → FFT → state file" },
     { "id": "aurora-bridge",    "name": "Window reactivity",       "group": "Ambient desktop",    "scope": "user",   "unit": "nimbus-aurora-bridge.service",                             "auto_recover": true, "desc": "Window-state reactivity bridge" },
-
-    { "id": "swaync",           "name": "Notifications",           "group": "Notifications",      "scope": "user",   "unit": "swaync.service",                                           "auto_recover": true, "desc": "swaync — the desktop's nervous system" },
-    { "id": "swaync-scheme",    "name": "Notif. theme sync",       "group": "Notifications",      "scope": "user",   "kind": "watch", "unit": "swaync-apply-scheme.path",                                 "desc": "Re-theme swaync on colour-scheme change" },
 
     { "id": "appunify",         "name": "App-scheme unify",        "group": "Desktop QoL",        "scope": "user",   "kind": "watch", "unit": "nimbus-appunify-scheme.path",                              "desc": "Unify app colour scheme on change" },
     { "id": "quicklook",        "name": "Quick Look",              "group": "Desktop QoL",        "scope": "user",   "kind": "task",  "unit": "nimbus-quicklook-ensure.service",                          "desc": "Dolphin Quick Look integration" },

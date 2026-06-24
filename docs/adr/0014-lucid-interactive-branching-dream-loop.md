@@ -10,7 +10,7 @@
   do **not** build a story engine), ADR-0005 (apply/rollback — the tree is reversible; "set as
   wallpaper" routes through the tx), ADR-0006/0010/0013 (VRAM coordinator: lease lifecycle + IPC
   trust — the loop's heartbeat), ADR-0012 (keyhole: a dream-in-flight is a visible job).
-- Evidence (spike): [`spikes/dreaming/lucid`](../../spikes/dreaming/lucid/README.md) — the thin
+- Evidence (spike): [`apps/dreaming/lucid`](../../apps/dreaming/lucid/README.md) — the thin
   "click → the story continues" slice (throwaway, runs generation directly, **no lease yet**).
 - Reviewed: [`docs/research/0008-lucid-review-scorecard.md`](../research/0008-lucid-review-scorecard.md)
   — 8-dimension design council (2026-06-16). **Verdict: HOLD as ship design / ITERATE as spike**;
@@ -101,7 +101,7 @@ generic feature:
 - **The red-line guard now has two enforcement points** (LLM beat-gen + video prompt) → owed to
   `responsible-ai-privacy-skeptic` + `security-reviewer`. The LLM must never be the *only* gate.
 - **`[SUBSTRATE-BLOCKED]`.** The shipped loop is gated on the coordinator (ADR-0006/0010/0013) for
-  the GPU dance and on the ADR-0005 tx for the wallpaper apply. The `spikes/dreaming/lucid` slice
+  the GPU dance and on the ADR-0005 tx for the wallpaper apply. The `apps/dreaming/lucid` slice
   is **throwaway evidence** that runs generation directly without a lease — explicitly outside the
   ship gate, to prove the interaction is worth building.
 - **Inherited debts from ADR-0009 still open**: KRunner `Run()` is unauthenticated

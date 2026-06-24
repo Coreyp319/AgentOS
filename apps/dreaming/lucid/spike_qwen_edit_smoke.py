@@ -15,7 +15,7 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))   # spikes/dreaming (comfy_client)
+sys.path.insert(0, os.path.dirname(HERE))   # apps/dreaming (comfy_client)
 sys.path.insert(0, HERE)
 import comfy_client as cc   # noqa: E402
 import lucid_engine as E    # noqa: E402

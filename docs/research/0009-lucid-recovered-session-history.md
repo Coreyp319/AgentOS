@@ -11,9 +11,9 @@
 
 | session | file |
 |---|---|
-| `8b7d80d7` | `docs/adr/0014-…md`, `spikes/dreaming/lucid/{lucid_engine,lucid_panel}.py`, `README.md` |
+| `8b7d80d7` | `docs/adr/0014-…md`, `apps/dreaming/lucid/{lucid_engine,lucid_panel}.py`, `README.md` |
 | `a2e2c45b` | `spikes/keyhole/contents/ui/{main,CompactRepresentation}.qml` |
-| `99c3e4e0` | `spikes/dreaming/lucid/lucid_engine.py` (the debug pass) |
+| `99c3e4e0` | `apps/dreaming/lucid/lucid_engine.py` (the debug pass) |
 
 ## Session A — `8b7d80d7` (~10:09) — authored ADR-0014 + the whole spike
 Created, in one save point, all four lucid artifacts byte-identical to today's tree (except the
@@ -33,7 +33,7 @@ activation click.
 
 ## Session C — `99c3e4e0` (~10:52–11:05) — the real lucid-engine debug
 Opened `lucid_engine.py` at Session A's state and made the two fixes that are today's uncommitted
-`M spikes/dreaming/lucid/lucid_engine.py` (now committed alongside this note):
+`M apps/dreaming/lucid/lucid_engine.py` (now committed alongside this note):
 1. **`DEFAULT_LEN` 49 → 33** — align the engine default with the length baked into the ComfyUI
    workflow; "~2s portrait @16fps, under the VRAM-thrash line."
 2. **`VHS_VideoCombine` `filename_prefix` fix** — ComfyUI expands `%date%` tokens only in its UI

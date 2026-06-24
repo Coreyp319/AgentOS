@@ -8,15 +8,15 @@ description: Playbook for local open-source video generation on AgentOS (ComfyUI
 The strategic bet: open-weights local video is **poor-when-fast, good-when-slow** today.
 The job is to be ready for the inflection when **fast gets good enough** to ship ambiently.
 See [REFERENCE.md](REFERENCE.md) §Watch-list. Decisions: `docs/adr/0008`→`0009`; research:
-`docs/research/0001-0003`. Backend code: **`spikes/dreaming/`** (gated on the substrate).
+`docs/research/0001-0003`. Backend code: **`apps/dreaming/`** (gated on the substrate).
 
 ## Quick start
 ```sh
 # 1. ComfyUI lives at ~/ComfyUI (uv-managed Python 3.12 venv, torch 2.6.0+cu124).
-~/Documents/AgentOS/spikes/dreaming/start-comfyui.sh        # UI + HTTP API on :8188
+~/Documents/AgentOS/apps/dreaming/start-comfyui.sh        # UI + HTTP API on :8188
 
 # 2. Generate from a shipped ComfyUI template (mp4 -> ~/ComfyUI/output):
-cd ~/Documents/AgentOS/spikes/dreaming
+cd ~/Documents/AgentOS/apps/dreaming
 python3 comfy_client.py run-template <template.json> --prompt "..." --length 49
 
 # 3. Release VRAM so Ollama/desktop can reclaim the GPU:

@@ -88,7 +88,7 @@ Built in `crates/agentosd/src/lease.rs` (47 tests, clippy clean; live-proven via
   vanishes. *Proven*: a cooperative `interactive` holder whose caller exits is auto-released within a
   tick; an **owned** (`Spawn`) job is **not** (its lifecycle is the child, not the caller's
   connection — so `busctl`-per-call clients like `dream.sh` keep working across `Spawn`→`Release`).
-- The dreaming client (`spikes/dreaming/dream.sh`) now calls `Spawn` with `profile=comfyui`; the
+- The dreaming client (`apps/dreaming/dream.sh`) now calls `Spawn` with `profile=comfyui`; the
   `comfyui` profile points at `start-comfyui.sh` (which now defaults `--preview-method latent2rgb`).
 
 - **B5 — lease TTL + `Renew` heartbeat.** A holder past `lease_ttl()` (default 90 min; env

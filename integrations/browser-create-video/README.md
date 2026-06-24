@@ -3,7 +3,7 @@
 Right-click any image **on a web page** → **Create Video from Image** / **(Private)** → a local
 image-to-video clip. This is the browser twin of the Dolphin ServiceMenu in
 `integrations/create-video/`; both are thin entries on the *same* already-written governed
-launcher (`spikes/dreaming/lucid/create_from_image.py`). This kit wires only the
+launcher (`apps/dreaming/lucid/create_from_image.py`). This kit wires only the
 browser→launcher bridge and its reversible install — **it never generates or decides anything.**
 
 Two moving parts:

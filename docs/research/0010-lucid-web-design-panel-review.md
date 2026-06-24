@@ -2,9 +2,9 @@
 
 - Status: Review complete + **fixes applied** (2026-06-16). **Verdict: was 4/10 (correct spine,
   unbuilt interaction layer) → fixes landed for every blocker; re-rate owed after a live dream run.**
-- Subject: the shipped interactive dream-loop page `spikes/dreaming/lucid/lucid_web.py` (served at
+- Subject: the shipped interactive dream-loop page `apps/dreaming/lucid/lucid_web.py` (served at
   `127.0.0.1:8765`, opened from the status hub `:9123`), its systemd unit
-  `integrations/lucid/agentos-lucid.service`, and the storage layer `spikes/dreaming/lucid/lucid_store.py`.
+  `integrations/lucid/agentos-lucid.service`, and the storage layer `apps/dreaming/lucid/lucid_store.py`.
 - Distinct from [0008](0008-lucid-review-scorecard.md): that scored ADR-0014 + the throwaway
   `lucid_panel.py`; this scores the *shipped web surface* (`lucid_web.py` over the `lucid_linear`
   MVP, ADR-0015/0016) as built, end to end.

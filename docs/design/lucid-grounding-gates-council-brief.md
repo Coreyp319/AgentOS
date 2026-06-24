@@ -2,7 +2,7 @@
 
 - Status: **Decided (design DIRECTION ship: write ADR-0037 + this brief) — v1 scoped to L0 canon
   ledger + L2 palette flag; deferred layers gated on measurement spikes and two absent reviewer
-  voices. All seams are in `spikes/dreaming/lucid/` (throwaway, excluded from the Cargo workspace),
+  voices. All seams are in `apps/dreaming/lucid/` (throwaway, excluded from the Cargo workspace),
   so this is proposal-of-a-proposal: the ledger and the flag are DESIGNED-not-built.**
 - Date: 2026-06-21
 - Facilitator: design-discourse-mediator (neutral; reconciles + decides, does not generate design)

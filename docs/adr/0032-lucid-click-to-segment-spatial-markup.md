@@ -48,7 +48,7 @@
   [ADR-0023](0023-creative-environment-pipeline.md) (the `10eros`/LTX lane the guide conditioning rides;
   the still-open graphics-yield-not-in-lease gap it names is why a live desktop can degrade a tag to the
   disc — see §5).
-- Evidence (the seam this lands on, all live): `spikes/dreaming/lucid/lucid_engine.py`
+- Evidence (the seam this lands on, all live): `apps/dreaming/lucid/lucid_engine.py`
   (`_inject_ltx_guides` ~576–700 already wires an **arbitrary-shape** `LoadImageMask` PNG as the
   `attention_mask`, sized to the **seed** at render time, `lucid_engine.py:628`; `_ltx_softdisc_mask` ~140
   is the generator being demoted; `extract_frame_at` screenshots the clip frame),
@@ -291,7 +291,7 @@ back (§4); the kill-switch ignores a present mask.
   `sam2.1_hiera_small`, POST a `load → <seg-node>(hardcoded point) → MaskToImage → SaveImage` graph through
   the net-new image path, and **paste back into this ADR** the exact node class names + every required input
   socket/type, the coordinate JSON shape, the **measured peak VRAM** at lucid's real extracted-frame
-  resolution. **This is automated:** `spikes/dreaming/lucid/spike_sam2_segment.py` self-discovers the node
+  resolution. **This is automated:** `apps/dreaming/lucid/spike_sam2_segment.py` self-discovers the node
   schema from `/object_info` (it does not trust the web-research names), runs the graph, measures peak VRAM
   with `nvidia-smi`, and prints a paste-ready `§S CAPTURE` block; `spike_sam2_segment_SPEC.md` is the
   run-and-capture checklist. **DONE 2026-06-21:** node installed (`kijai/ComfyUI-segment-anything-2`,

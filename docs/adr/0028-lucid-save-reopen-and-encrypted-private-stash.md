@@ -17,7 +17,7 @@
   ADR-0017 + the red-line gate (B2/B3 still gate every seed/prompt; reopening a dream replays kept
   gated content, it does not re-open the gate), ADR-0019 (the durable held queue is orthogonal — it
   defers *creation requests*; this persists *finished dreams*).
-- Evidence: `spikes/dreaming/lucid/` — new `lucid_crypto.py` (stdlib authenticated encryption),
+- Evidence: `apps/dreaming/lucid/` — new `lucid_crypto.py` (stdlib authenticated encryption),
   `lucid_stash.py` (the encrypted stash), additions to `lucid_store.py` (`list_persistent`,
   `new_session_id`) and `lucid_linear.py` (`start(name=…)`, chain `name`/`created`), the multi-session
   refactor of `lucid_web.py` (mutable current session + `/api/library`, `/api/open`, `/api/rename`,

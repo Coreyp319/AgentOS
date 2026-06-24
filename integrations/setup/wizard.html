@@ -274,9 +274,12 @@
   .handoff .k{font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
   .handoff .prompt{margin:6px 0 0;font-size:1.05rem;line-height:1.45;color:var(--text)}
   .handoff .pcap{font-size:.74rem;color:var(--muted);margin-top:5px}
-  .handoff .right{flex:0 0 auto;display:flex;flex-direction:column;gap:9px;align-items:stretch;min-width:188px}
-  .handoff .right .btn{text-align:center;padding:11px 20px}
-  .handoff .cap{font-size:.74rem;color:var(--muted);text-align:center;line-height:1.45}
+  .handoff .flow{font-size:.78rem;color:var(--muted);margin-top:10px;line-height:1.5}
+  .handoff .doors{flex:0 0 auto;display:flex;flex-direction:column;gap:11px;min-width:250px}
+  .door{display:flex;flex-direction:column;gap:6px;padding:13px 15px;border:1px solid var(--line);border-radius:var(--radius);background:color-mix(in srgb,var(--bg-1) 70%,transparent)}
+  .door .dh{font-size:.92rem;font-weight:560;color:var(--text)}
+  .door .dd{font-size:.76rem;color:var(--muted);line-height:1.45}
+  .door .btn{text-align:center;padding:10px 18px;margin-top:3px}
 
   .foot{color:var(--faint);font-size:.74rem;margin-top:30px;line-height:1.8}
   .foot .stored{color:var(--muted)} .foot .lnk{font-size:.72rem}
@@ -349,7 +352,6 @@
   <section class="card" aria-labelledby="h-machine">
     <div class="shead"><span class="no">01</span><h2 id="h-machine">Your machine</h2><span class="aside" id="gpuName">checking…</span></div>
     <div id="fit"><div class="nogpu">Reading your hardware…</div></div>
-    <div id="runtimeSub"></div>
   </section>
 
   <!-- 02 — the GPU keyhole (dedicated, optional instrument) -->
@@ -370,7 +372,7 @@
   <!-- 03 — what to make -->
   <section class="card" aria-labelledby="h-make">
     <div class="shead"><span class="no">03</span><h2 id="h-make">What do you want to make?</h2><span class="aside" id="laneCount"></span></div>
-    <p class="lede" style="margin-top:0">Start with text — it's quick and writes your prompts. Image &amp; video need the ComfyUI runtime (step 01).</p>
+    <p class="lede" style="margin-top:0">Start with text — it's quick and writes your prompts. Image &amp; video need the ComfyUI runtime — set it up under <b>Advanced setup</b> below.</p>
     <div id="bundles"><div class="brow"><div class="meta"><div class="dsc">checking what's installed…</div></div></div></div>
     <div id="progress" role="status" aria-live="polite" aria-atomic="false"></div>
     <div class="matoggle"><button id="matBtn" type="button" aria-expanded="false">Show the 18+ video lanes <span aria-hidden="true">›</span></button></div>
@@ -380,12 +382,16 @@
   <details id="extras-sec" class="optsec">
     <summary>
       <span class="osi" aria-hidden="true"><svg class="gi"><use href="#i-key"/></svg></span>
-      <span class="ost"><span class="t">04 · Extras</span><span class="d">Accounts, desktop components &amp; remote access — all optional</span></span>
+      <span class="ost"><span class="t">04 · Advanced setup</span><span class="d">Engine, models, accounts, desktop &amp; remote access — all optional</span></span>
       <span class="chev" id="echev" aria-hidden="true">show ▾</span>
     </summary>
     <div class="optbody">
 
-      <div class="ssub">Accounts</div>
+      <h3 class="ssub">Engine &amp; models</h3>
+      <p class="dsc" style="color:var(--muted);font-size:.8rem;margin:2px 0 0">The ComfyUI engine that runs image &amp; video, and an agent that web-searches the best models for your GPU.</p>
+      <div id="runtimeSub"></div>
+
+      <h3 class="ssub">Accounts</h3>
       <div class="creds">
         <div class="dsc" style="color:var(--muted);font-size:.82rem;line-height:1.5">A free <a href="https://civitai.com/user/account" target="_blank" rel="noopener">Civitai</a> token unlocks the Wan mature checkpoints. A <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">HuggingFace</a> token is only needed for gated models. Tokens go to your OS keyring — never a file, never sent anywhere but the download.</div>
         <div class="row">
@@ -398,11 +404,11 @@
         <div id="credMsg" role="status" aria-live="polite"></div>
       </div>
 
-      <div class="ssub">Desktop components</div>
+      <h3 class="ssub">Desktop components</h3>
       <p class="dsc" style="color:var(--muted);font-size:.8rem;margin:2px 0 0">Adopt the AgentOS look, ambient instruments &amp; agent wiring — including the GPU keyhole — into your desktop session.</p>
       <div id="desktop"><div class="dsc" style="color:var(--muted);margin-top:10px">checking what's installed…</div></div>
 
-      <div class="ssub">Remote access</div>
+      <h3 class="ssub">Remote access</h3>
       <p class="dsc" style="color:var(--muted);font-size:.8rem;margin:2px 0 8px">Reach these UIs from your phone over Tailscale — the wizard never runs anything here.</p>
       <div class="twarn">
         <div class="th"><span class="ic" aria-hidden="true">⚠</span><span>Remote access exposes <u>unauthenticated</u> desktop UIs to your whole tailnet. Read this before you copy anything.</span></div>
@@ -438,17 +444,25 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     </div>
   </details>
 
-  <!-- 05 — handoff -->
+  <!-- 05 — the Lucid section: where you make a dream, and where it lives -->
   <section class="card handoff" aria-labelledby="h-ready">
     <div class="left">
       <div class="shead" style="margin-bottom:6px"><span class="no">05</span><h2 id="h-ready">When you're ready</h2></div>
       <p class="prompt" id="handoffPrompt">Your first dream is yours to write.</p>
       <div class="pcap" id="handoffCap"></div>
+      <p class="flow">Make it in <b>Lucid</b> — it lands in your <b>Atrium</b>, where you can revisit and download it later.</p>
     </div>
-    <div class="right">
-      <a class="btn warm" id="openLucid" href="http://127.0.0.1:8765" target="_blank" rel="noopener">Open Lucid →</a>
-      <a class="btn ghost" id="openAtrium" href="http://127.0.0.1:9123/atrium" target="_blank" rel="noopener">Open the Atrium →</a>
-      <div class="cap">Lucid to make one · the Atrium for your library &amp; instruments</div>
+    <div class="doors">
+      <div class="door" role="group" aria-labelledby="door-lucid">
+        <div class="dh" id="door-lucid">Lucid</div>
+        <div class="dd">Where you make one: write a prompt, generate a video, and branch it into a dream.</div>
+        <a class="btn warm" id="openLucid" href="http://127.0.0.1:8765" target="_blank" rel="noopener">Open Lucid →</a>
+      </div>
+      <div class="door" role="group" aria-labelledby="door-atrium">
+        <div class="dh" id="door-atrium">The Atrium</div>
+        <div class="dd">Your library of dreams, plus system status and instruments.</div>
+        <a class="btn ghost" id="openAtrium" href="http://127.0.0.1:9123/atrium" target="_blank" rel="noopener">Open the Atrium →</a>
+      </div>
     </div>
   </section>
 
@@ -632,7 +646,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
       const url=LUCID+(suggested[b.id]?`?prompt=${encodeURIComponent(suggested[b.id])}`:"");
       act=`<span class="installed"><span class="dot" aria-hidden="true">●</span>Installed</span><a class="btn warm" href="${esc(url)}" target="_blank" rel="noopener">Make one →</a>`;
     }
-    else if(blocked) act=`<span class="size">needs ComfyUI ↑</span><button class="btn" disabled>Get</button>`;
+    else if(blocked) act=`<button class="btn ghost comfy-jump" type="button">Set up ComfyUI ↓</button>`;
     else{
       act=`<span class="size">${esc(b.approx_gb)} GB</span>`+(mature
         ? `<button class="btn" data-mature="${esc(b.id)}">Get · ${esc(b.approx_gb)} GB</button>`
@@ -735,6 +749,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     const cb=e.target.closest("button.affirm-cancel");
     if(cb){ closeAffirm(cb.dataset.bid); return; }
     if(e.target.closest("button.acct-open")){ openExtras(); return; }
+    if(e.target.closest("button.comfy-jump")){ openExtras(); return; }
   });
   // the 18+ reveal toggle — keeps the explicit affirmation when fetching; revealing just shows the lanes
   document.getElementById("matBtn").addEventListener("click",()=>{ showMature=!showMature; renderBundles(); });
@@ -801,17 +816,17 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     ["agents","Agents","Wire Hermes to the GPU lease so live AI work yields the dream — and the desktop can fix a down service."],
     ["integrations","Integrations","Right-click niceties and notification plumbing."],
   ];
-  const DIMG={"reactive-wallpaper":"wallpaper-dream.webp","window-drag-wind":"wallpaper-wind.webp","keyhole":"keyhole.webp"};
+  const DIMG={"reactive-wallpaper":"wallpaper-dream.webp","keyhole":"keyhole.webp"};
   const DEFFECT={
     "aurora-theme":"Restyles your whole session — takes effect at next login.",
     "aurora-panel":"Re-accents the Plasma panel & tray — takes effect at next login.",
-    "swaync-aurora":"Restyles notifications — takes effect at next login.",
+    "aurora-notifications":"Restyles native notification popups — takes effect at next login.",
     "reactive-wallpaper":"Replaces your current wallpaper with the shader mood — Remove restores it.",
     "gpu-coordinator":"Restarts the Hermes gateway.",
     "hermes-plugins":"Restarts the Hermes gateway.",
   };
-  const LOOKIDS=new Set(["aurora-theme","aurora-panel","swaync-aurora"]);
-  const DGLYPH={"swaync-race":"i-bell","dolphin-create":"i-cursor","browser-host":"i-globe","hermes-plugins":"i-plug","gpu-coordinator":"i-bolt"};
+  const LOOKIDS=new Set(["aurora-theme","aurora-panel","aurora-notifications"]);
+  const DGLYPH={"dolphin-create":"i-cursor","browser-host":"i-globe","hermes-plugins":"i-plug","gpu-coordinator":"i-bolt"};
   const GGLYPH={ambient:"i-ambient",look:"i-look",agents:"i-plug",integrations:"i-runtime"};
   let DESKTOP={reachable:false}, CJOBS={}, dbusy={};
 
@@ -835,7 +850,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     const post = (adopted && c.post_adopt) ? `<div class="post">One more step: ${esc(c.post_adopt)}</div>` : "";
     const failed = (job && job.status==="failed") ? `<div class="err">${esc(job.outcome||"that step didn't finish — see the status panel")}</div>` : "";
     return `<div class="drow" data-drow="${esc(id)}">${dthumb(c)}
-      <div class="meta"><div class="nm">${esc(id)}</div><div class="dsc">${esc(c.desc||"")}</div>${eff}${post}${failed}</div>${right}</div>`;
+      <div class="meta"><div class="nm">${esc(c.name||id)}</div><div class="dsc">${esc(c.desc||"")}</div>${eff}${post}${failed}</div>${right}</div>`;
   }
   function renderDesktop(){
     const el=document.getElementById("desktop"); if(!el) return;

@@ -312,7 +312,7 @@ construction.
   file and cannot diverge.
 
 ### G3 — the drainer loop (slogan → testable spec)
-`spikes/dreaming/lucid/lucid_drain.py` (new) + `lucid_jobs.py` promotion + `dist/lucid-drain.{service,timer}`.
+`apps/dreaming/lucid/lucid_drain.py` (new) + `lucid_jobs.py` promotion + `dist/lucid-drain.{service,timer}`.
 
 - **Source-of-truth inversion:** the spool FILE is authoritative, the detached PID is not. State is
   encoded in the **filename suffix** (`.held.json` / `.running.json`), so the atomic `os.rename` in

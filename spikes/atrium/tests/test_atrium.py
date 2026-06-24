@@ -100,8 +100,8 @@ class BuildLaunch(unittest.TestCase):
             {"id": "lucid", "name": "Lucid", "group": "AI core", "url": "http://127.0.0.1:8765",
              "tailnet": True, "status": "up", "state": "running", "kind": "daemon",
              "scope": "user", "unit": "agentos-lucid.service"},
-            {"id": "swaync", "name": "Notifications", "group": "AI core", "status": "failed",
-             "state": "failed", "kind": "daemon", "scope": "user", "unit": "swaync.service"},
+            {"id": "aurora-agent", "name": "Fleet → wallpaper feed", "group": "AI core", "status": "failed",
+             "state": "failed", "kind": "daemon", "scope": "user", "unit": "nimbus-aurora-agent.service"},
         ],
         "summary": {"total": 2, "healthy": 1, "attention": 1},
         "generated_at": 123.0,
@@ -110,9 +110,9 @@ class BuildLaunch(unittest.TestCase):
     def test_local_origin_emits_fix_for_attention_row(self):
         local = a.classify_origin("127.0.0.1", {})
         p = a.build_launch(self.STATUS, local)
-        sw = next(s for s in p["services"] if s["id"] == "swaync")
-        self.assertIn("fix", sw)
-        self.assertIn("systemctl --user reset-failed swaync.service", sw["fix"])
+        svc = next(s for s in p["services"] if s["id"] == "aurora-agent")
+        self.assertIn("fix", svc)
+        self.assertIn("systemctl --user reset-failed nimbus-aurora-agent.service", svc["fix"])
         self.assertTrue(p["origin"]["can_copy_fix"])
 
     def test_remote_origin_never_emits_a_shell_command(self):

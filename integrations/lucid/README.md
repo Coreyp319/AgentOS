@@ -23,7 +23,7 @@ Then add it to the status panel by appending this to `integrations/status-panel/
 ```
 
 ## How it works
-- `spikes/dreaming/lucid/lucid_web.py` — a tiny stdlib HTTP surface, loopback-only, in the shared
+- `apps/dreaming/lucid/lucid_web.py` — a tiny stdlib HTTP surface, loopback-only, in the shared
   instrument "glass" register (`integrations/design/instrument-tokens.md`). It serves the page,
   a `/healthz` the status panel probes, `/api/state` (readiness + chain + validated beats), and a
   same-origin-guarded `POST /api/dream`.
@@ -53,7 +53,7 @@ hand and let it race the service — that's the EADDRINUSE crash-loop. `lucid_we
 
 ## Still owed (ADR-0015)
 Seed-image upload + the face/likeness guard (B2 — currently start a session via the CLI:
-`spikes/dreaming/lucid/lucid_linear.py start web --image <opening.png>`), ComfyUI warm-keep, the
+`apps/dreaming/lucid/lucid_linear.py start web --image <opening.png>`), ComfyUI warm-keep, the
 kill/keep metric, and the richer authoring surface (branching/scrub). This is the spike-grade
 front-door access, not the shipped product.
 

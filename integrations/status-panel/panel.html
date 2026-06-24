@@ -482,7 +482,7 @@
         action = `<button class="fbtn" data-copy="${esc(c.manual_cmd)}">Copy command</button>`;
     }
     return `<div class="feat"><div class="fmeta">` +
-      `<div class="fname">${esc(c.id)}<span class="ftier">${esc(TIER_LABEL[c.tier] || c.tier)}</span></div>` +
+      `<div class="fname">${esc(c.name || c.id)}<span class="ftier">${esc(TIER_LABEL[c.tier] || c.tier)}</span></div>` +
       `<div class="fdesc">${esc(c.desc)}</div></div>${stateHTML}${action}</div>`;
   }
 

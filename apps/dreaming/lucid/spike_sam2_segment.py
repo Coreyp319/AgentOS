@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 
-# the app's validated ComfyUI client lives one dir up (spikes/dreaming/comfy_client.py)
+# the app's validated ComfyUI client lives one dir up (apps/dreaming/comfy_client.py)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import comfy_client as cc  # noqa: E402
 

@@ -14,7 +14,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # spikes/dreaming (comfy_client)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # apps/dreaming (comfy_client)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lucid_engine as E   # noqa: E402
 import lucid_linear as L   # noqa: E402

@@ -4,7 +4,7 @@
 # This is the cheapest de-risking of the whole creative-app bet: it proves that a LEASED headless
 # Blender render coexists with the rest of the GPU world (ComfyUI / inference) in the heavy lane, and
 # that its frame lands at the lucid anchor seam — using only machinery that exists today. It is the
-# Blender analog of spikes/dreaming/dream.sh and a D-Bus *client* of the agentosd coordinator (NOT the
+# Blender analog of apps/dreaming/dream.sh and a D-Bus *client* of the agentosd coordinator (NOT the
 # daemon). Phase 0 is the GATE on Phase 1 (building the actual MCP bridge).
 #
 # Flow:
@@ -97,5 +97,5 @@ tmp="$CACHE_DIR/.blender-$$.tmp.png"
 cp -f "$FRAME" "$tmp" && mv -f "$tmp" "$dest"
 log "published frame → $dest"
 log "feed it into the dreaming pipeline as an anchor frame, e.g.:"
-log "  python3 spikes/dreaming/lucid/lucid_engine.py start phase0 --image \"$dest\""
+log "  python3 apps/dreaming/lucid/lucid_engine.py start phase0 --image \"$dest\""
 log "done — leased render ↔ heavy-lane coexistence + anchor-seam drop PROVEN"

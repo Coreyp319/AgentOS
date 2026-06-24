@@ -8,7 +8,7 @@ Type=simple
 # Self-contained stdlib+PIL hub (ADR-0027). Loopback-only; tailscale serve fronts it (tailnet-only).
 # Routes a shared photo to Lucid (proxies :8765 /api/start with X-Share-Key), Hermes-chat (proxies
 # :8642 with the on-box key), Hermes-task (Phase 2 — honest "not yet"), or Claude (INERT proposal).
-ExecStart=/usr/bin/python3 %h/Documents/AgentOS/spikes/dreaming/lucid/lucid_share.py
+ExecStart=/usr/bin/python3 %h/Documents/AgentOS/apps/dreaming/lucid/lucid_share.py
 Environment="LUCID_SHARE_HOST=127.0.0.1"
 Environment="LUCID_SHARE_PORT=8770"
 Environment="LUCID_BASE=http://127.0.0.1:8765"

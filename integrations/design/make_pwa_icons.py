@@ -254,14 +254,14 @@ def main():
     atrium = REPO / "integrations/status-panel/icons"
     write_png_set(atrium, "atrium")
 
-    lucid_pub = REPO / "spikes/dreaming/lucid/web/public"
-    lucid_dist = REPO / "spikes/dreaming/lucid/web/dist"
+    lucid_pub = REPO / "apps/dreaming/lucid/web/public"
+    lucid_dist = REPO / "apps/dreaming/lucid/web/dist"
     for d in (lucid_pub, lucid_dist):
         if d.parent.exists():
             write_png_set(d, "lucid")
             (d / "favicon.svg").write_text(svg_favicon("lucid"))
 
-    share = REPO / "spikes/dreaming/lucid/share_assets"
+    share = REPO / "apps/dreaming/lucid/share_assets"
     write_png_set(share, "share", apple=False, main_maskable=True)  # share manifest = "any maskable"
 
     contact_sheet(Path("/tmp/icon_family.png"))

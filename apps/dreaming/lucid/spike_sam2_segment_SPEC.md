@@ -25,7 +25,7 @@ systemctl --user restart comfyui     # or however ComfyUI is launched
 
 ## 2. Discover (safe — read-only schema dump)
 ```
-cd ~/Documents/AgentOS/spikes/dreaming/lucid
+cd ~/Documents/AgentOS/apps/dreaming/lucid
 ./spike_sam2_segment.py discover
 ```
 Confirms the real **segmentation node class**, its **loader** companion, and every **input socket name +

@@ -1,6 +1,6 @@
 # ADR-0037: Lucid — grounding gates (keeping the unfolding dream consistent with itself)
 
-- Status: **Proposed** — DESIGNED-not-built. All seams live in `spikes/dreaming/lucid/` (throwaway,
+- Status: **Proposed** — DESIGNED-not-built. All seams live in `apps/dreaming/lucid/` (throwaway,
   excluded from the Cargo workspace), so this is proposal-of-a-proposal. **v1 scope = L0 canon
   ledger + L2 palette flag only.** The palette threshold is **unmeasured**; it ships **flag-only**
   (never rejecting) until a GPU/fixture sanity pass calibrates it — mirroring ADR-0033's honesty

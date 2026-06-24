@@ -10,7 +10,7 @@
 # warm-keep lease and exits cleanly first), then serves from here. Ctrl-C to stop; `dev.sh restart`
 # to hand the port back to the service.
 set -euo pipefail
-WEB="$HOME/Documents/AgentOS/spikes/dreaming/lucid/lucid_web.py"
+WEB="$HOME/Documents/AgentOS/apps/dreaming/lucid/lucid_web.py"
 UNIT="agentos-lucid.service"
 case "${1:-restart}" in
   run)

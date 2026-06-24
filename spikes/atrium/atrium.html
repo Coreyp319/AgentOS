@@ -215,12 +215,9 @@
       mk("status-panel","Status panel","AgentOS substrate","Boot-health front door","up","daemon","http://127.0.0.1:9123"),
       mk("lucid","Lucid (dream loop)","Dreaming","Watch a clip, choose what happens next","up","daemon","http://127.0.0.1:8765"),
       mk("share-hub","AgentOS Share","Dreaming","Phone → box photo ingest — share a photo to start a dream","up","daemon","http://127.0.0.1:8770"),
-      mk("swaync","Notifications","Notifications","swaync — the desktop's nervous system","failed","daemon",""),
     ];
-    const fail = services.find(s=>s.status==="failed");
-    if (fail && !remote) fail.fix = "systemctl --user reset-failed swaync.service && systemctl --user restart swaync.service";
-    return { groups:["AI core","AgentOS substrate","Dreaming","Notifications"], services,
-             summary:{ total:services.length, healthy:5, attention:1 },
+    return { groups:["AI core","AgentOS substrate","Dreaming"], services,
+             summary:{ total:services.length, healthy:5, attention:0 },
              generated_at: Date.now()/1000, origin:{ remote, can_copy_fix:!remote, host: remote?host:null } };
   }
 

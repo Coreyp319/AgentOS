@@ -207,8 +207,8 @@ _PANEL = f"http://127.0.0.1:{_PANEL_PORT}"
 # truth for WHAT is adoptable + its live state; this only GROUPS + annotates what it returns, so the
 # pipe-delimited catalog format never has to change. Rows not listed fall to "integrations".
 _DESKTOP_GROUPS = {
-    "keyhole": "ambient", "window-drag-wind": "ambient", "reactive-wallpaper": "ambient",
-    "aurora-theme": "look", "aurora-panel": "look", "swaync-aurora": "look",
+    "keyhole": "ambient", "reactive-wallpaper": "ambient",
+    "aurora-theme": "look", "aurora-panel": "look", "aurora-notifications": "look",
     "hermes-plugins": "agents", "gpu-coordinator": "agents",
 }
 # Rows whose apply.sh ends in a manual desktop step the proxy can't perform — surfaced AFTER a
@@ -291,7 +291,8 @@ def _desktop_state(timeout: float = 1.5) -> dict:
     for c in obj.get("components", []):
         if c.get("root") != "no" or c.get("tier") not in ("desktop", "hermes"):
             continue
-        row = {"id": c.get("id"), "tier": c.get("tier"), "desc": c.get("desc", ""),
+        row = {"id": c.get("id"), "name": c.get("name") or c.get("id"),
+               "tier": c.get("tier"), "desc": c.get("desc", ""),
                "state": c.get("state"), "adoptable": bool(c.get("adoptable")),
                "removable": bool(c.get("removable")),
                "group": _DESKTOP_GROUPS.get(c.get("id"), "integrations")}

@@ -12,7 +12,7 @@ command -v python3 >/dev/null || { echo "✗ python3 not found" >&2; exit 1; }
 
 # The React bundle (web/dist) is gitignored, so a fresh clone has none — lucid_web.py then serves a
 # degraded inline page instead of the full UI. Best-effort build it; print the command if npm is absent.
-WEB="$(cd "$HERE/../.." && pwd)/spikes/dreaming/lucid/web"
+WEB="$(cd "$HERE/../.." && pwd)/apps/dreaming/lucid/web"
 if [ ! -d "$WEB/dist" ]; then
   if command -v npm >/dev/null 2>&1 && [ -f "$WEB/package.json" ]; then
     echo "building the Lucid web bundle (web/dist)…"

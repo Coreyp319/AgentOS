@@ -17,7 +17,7 @@ One turn of the loop:
 State is a branching tree on disk (clips + tree.json). Each node:
     {id, parent, label, prompt, seed, clip, out_frame, caption}
 
-Reuses spikes/dreaming/comfy_client.py for ComfyUI; reuses the Remix-i2v
+Reuses apps/dreaming/comfy_client.py for ComfyUI; reuses the Remix-i2v
 workflow we built. Honors ADR-0009/0014 defaults: SFW unless told otherwise, and
 a fail-closed red-line (no minors, no real identifiable people) in the LLM
 contract. NOT consent-gated / NOT lease-arbitrated — that lands when it leaves
@@ -89,7 +89,7 @@ BEAT_TEMP = float(os.environ.get("LUCID_BEAT_TEMP", "0.78"))
 # alt model may not be vision-capable) and works from the caption ground_frame already put in the context.
 # Shipped ON: the registry sets narrator-beats=MN-12B-Mag-Mell-R1 (Q5_K_M ~8.7GB), the mature-lane fix for
 # "the choices are too conservative" — A/B-verified explicit + JSON-reliable + two-dial-faithful where the
-# old hermes3:3b stayed euphemistic (spikes/dreaming/lucid/ab_mature_narrator.py). ~8.7GB still evicts in a
+# old hermes3:3b stayed euphemistic (apps/dreaming/lucid/ab_mature_narrator.py). ~8.7GB still evicts in a
 # few seconds via force_evict before the i2v lease (ADR-0015 §3). The mature HEAT is steered by
 # _RATING_CLAUSE['mature'] below and stays rating-gated. Set narrator-beats=hermes3:3b for the cheap-evict
 # fallback, =Rocinante-12B for hotter, or LUCID_NARRATOR_MODEL=qwen2.5vl:3b to fold beat-gen back onto the

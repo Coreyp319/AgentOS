@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Install the Lucid drain timer (ADR-0019 §5): a monotonic poll that re-runs ONE deferred
 # "Create Video from Image" request per fire under a BestEffort lease. The .service/.timer live in
-# spikes/dreaming/lucid/dist/ but nothing installed them — so deferred requests never drained.
+# apps/dreaming/lucid/dist/ but nothing installed them — so deferred requests never drained.
 # Reversible via restore.sh.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC="$(cd "$HERE/../../spikes/dreaming/lucid/dist" && pwd)"
+SRC="$(cd "$HERE/../../apps/dreaming/lucid/dist" && pwd)"
 UNIT_DIR="$HOME/.config/systemd/user"
-DRAINER="$(cd "$HERE/../../spikes/dreaming/lucid" && pwd)/lucid_drain.py"
+DRAINER="$(cd "$HERE/../../apps/dreaming/lucid" && pwd)/lucid_drain.py"
 
 command -v python3 >/dev/null || { echo "✗ python3 not found" >&2; exit 1; }
 [ -f "$SRC/lucid-drain.service" ] || { echo "✗ missing $SRC/lucid-drain.service" >&2; exit 1; }

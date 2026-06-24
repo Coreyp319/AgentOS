@@ -5,7 +5,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # Resolve the launcher's absolute dir from the repo layout (never hard-code /home/corey).
-LUCID_DIR="$(cd "$HERE/../../spikes/dreaming/lucid" && pwd)"
+LUCID_DIR="$(cd "$HERE/../../apps/dreaming/lucid" && pwd)"
 TEMPLATE="$LUCID_DIR/dist/agentos-create-video.desktop.in"
 
 MENU_DIR="$HOME/.local/share/kio/servicemenus"   # kservices5/ServiceMenus is DEAD on Plasma 6.

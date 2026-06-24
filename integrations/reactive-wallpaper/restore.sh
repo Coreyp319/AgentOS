@@ -23,6 +23,14 @@ PREV="$STATE_DIR/prev-wallpaper.json"
 ok(){   printf '  \033[32m✓\033[0m %s\n' "$1"; }
 warn(){ printf '  \033[33m!\033[0m %s\n' "$1"; }
 
+# window-drag → wind is folded into this one toggle, so reverse it too — FIRST, before the
+# wallpaper logic's early-exit paths, so the KWin producer is always removed. Fail-soft.
+WIND_RESTORE="$(cd "$(dirname "$0")" && pwd)/../window-drag-wind/restore.sh"
+if [ -x "$WIND_RESTORE" ]; then
+  echo "• window-drag wind:"
+  "$WIND_RESTORE" 2>&1 | sed 's/^/  /' || warn "window-drag wind removal hit an issue"
+fi
+
 QDBUS=""
 for c in qdbus6 qdbus; do command -v "$c" >/dev/null 2>&1 && { QDBUS="$c"; break; }; done
 if [ -z "$QDBUS" ]; then

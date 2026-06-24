@@ -107,7 +107,7 @@ tailnet name explicitly allowed, or their POST actions fail under a different ho
   ```
 
   then `systemctl --user daemon-reload && systemctl --user restart agentos-lucid.service`.
-  (Backed by `LUCID_EXTRA_ORIGINS` in `spikes/dreaming/lucid/lucid_web.py`.)
+  (Backed by `LUCID_EXTRA_ORIGINS` in `apps/dreaming/lucid/lucid_web.py`.)
 
 - **Hermes board (9119)** has a DNS-rebinding guard that rejects any non-loopback `Host` (400);
   `--insecure` does NOT relax it. Its intended remote mode is a non-loopback bind + OAuth auth
