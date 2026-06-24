@@ -178,26 +178,56 @@ def _collection_param(mat, mpc, param_name, x, y):
     Returns the expression (its default output is the scalar)."""
     node = MEL.create_material_expression(
         mat, unreal.MaterialExpressionCollectionParameter, x, y)
-    _try_set(node, "collection", mpc)
-    _try_set(node, "parameter_name", unreal.Name(param_name))
+    ok_c = _try_set(node, "collection", mpc)
+    ok_p = _try_set(node, "parameter_name", unreal.Name(param_name))
+    log("collection-param {}: collection_set={} name_set={}".format(param_name, ok_c, ok_p))
     return node
 
 
-def wire_slab_desat(mpc):
-    """Tap Desat into the slab/post path as a gentle dim — calm, never red (the
-    snag design law, aurora.frag:714-718). On the SLAB material we only have
-    albedo/emissive; the real luma-desaturate belongs in a POST material, so here
-    we just DIM the emissive whisper by (1 - 0.5*Desat) so a snag reads as the
-    room going quieter, with Desat=0 leaving the emissive untouched (idle-identical).
+def _connect(a, a_out, b, b_in):
+    """connect_material_expressions, but CHECK the return — a silent False here leaves the
+    downstream input at 0, which is exactly the 'tap authored but no reaction' failure. Tries the
+    empty default output first, then a couple of common scalar output names if that fails."""
+    if MEL.connect_material_expressions(a, a_out, b, b_in):
+        return True
+    # CollectionParameter / some nodes expose the scalar under a named output, not "".
+    for alt in ("", "Out", "Result", a_out):
+        if alt != a_out and MEL.connect_material_expressions(a, alt, b, b_in):
+            log("connect used alt output '{}' → {}.{}".format(alt, b.get_class().get_name(), b_in))
+            return True
+    msg = "CONNECT FAILED: {}.'{}' -> {}.{}".format(a.get_class().get_name(), a_out, b.get_class().get_name(), b_in)
+    log(msg)
+    _FAIL.append(msg)
+    return False
 
-    NOTE: this is the minimal, safe stand-in that PRESERVES idle-parameter-identical.
-    The fuller snag haze is the `Fog` MPC scalar (a MULTIPLIER the fog/inscatter
-    material reads) — pushed by `agentosd rc` exactly like every other axis, NOT a
-    cvar and NOT the throttle channel (mood must never ride the safety channel,
-    ADR-0030 D3). `Desat` and `Fog` are two DIFFERENT disposed axes both raised by a
-    snag upstream; this tap is the `Desat` half. (Earlier drafts wrongly routed fog
-    density via a cvar — corrected: fog density is reached through the fog material
-    reading the `Fog` MPC scalar, the one-grammar all-MPC path.)"""
+
+# The slab's authored emissive whisper — MUST stay in sync with indigo_channel_setup.py
+# `SLAB_EMIS` (the indigo whisper-lift on the blades). The reactive emissive chain rebuilds
+# from this exact value so idle (Warm=0, Desat=0) is byte-identical to the static scene.
+SLAB_EMIS = unreal.LinearColor(0.008, 0.010, 0.022, 1.0)
+
+# The needs-you dawn tint (ADR-0030 D8 — warm reserved for needs_you), PRE-SCALED to a calm
+# ceiling so `Warm=1` lifts the blades a perceptible-but-not-flaring amount under the −3 exposure
+# (≈ 0.10 × the #E8B27A dawn hue). Tunable; the art-director owns the final magnitude [VERIFY-LIVE].
+WARM_TINT = unreal.LinearColor(0.091, 0.070, 0.048, 1.0)
+
+
+def wire_slab_reactive_emissive(mpc):
+    """Tap BOTH `Desat` (a calm dim) and `Warm` (the needs-you dawn) into the slab/blade
+    emissive — the prominent dark silhouettes — and ACTUALLY CONNECT them to MP_EMISSIVE_COLOR.
+
+        emissive = (SLAB_EMIS + Warm * WARM_TINT) * (1 - 0.5*Desat)
+
+    Idle (`Warm=0, Desat=0`) ⇒ emissive = SLAB_EMIS ⇒ byte-identical to the static scene
+    (ADR-0030 D4). A `needs_you` warms the blades; a snag dims them — both calm, never red.
+
+    The graph is REBUILT and the Emissive Color input is RE-CONNECTED to the new chain (rather
+    than the fragile "find the existing node and splice" surgery the earlier draft deferred): a
+    material property has ONE input, so connecting the new chain replaces the static constant.
+
+    `Desat` is the snag/desaturate half; `Fog` (the other snag-raised axis) is a SEPARATE MPC
+    scalar a fog material reads — both pushed by `agentosd rc`, never a cvar/throttle (ADR-0030 D3).
+    The `Backlight` (rake brightness) is a Light Function Material on the light, authored separately."""
     mat_path = MAT_DIR + "/M_AgentOS_Slab"
     if not unreal.EditorAssetLibrary.does_asset_exist(mat_path):
         log("slab material absent ({}); run indigo_channel_setup.py first".format(mat_path))
@@ -208,28 +238,168 @@ def wire_slab_desat(mpc):
         _FAIL.append("could not load slab material for tapping")
         return
 
-    # Existing emissive constant is SLAB_EMIS. We multiply it by (1 - 0.5*Desat).
-    # Desat default 0 -> factor 1 -> emissive UNCHANGED -> idle parameter-identical.
-    desat = _collection_param(mat, mpc, "Desat", -700, 320)
-    half = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant, -700, 420)
+    # --- dim = 1 - 0.5*Desat  (Desat=0 -> 1.0, unchanged) ---
+    desat = _collection_param(mat, mpc, "Desat", -760, 360)
+    half = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant, -760, 460)
     _try_set(half, "r", 0.5)
-    scaled = MEL.create_material_expression(mat, unreal.MaterialExpressionMultiply, -560, 360)
-    MEL.connect_material_expressions(desat, "", scaled, "A")
-    MEL.connect_material_expressions(half, "", scaled, "B")
-    one = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant, -560, 460)
+    scaled = MEL.create_material_expression(mat, unreal.MaterialExpressionMultiply, -600, 400)
+    _connect(desat, "", scaled, "A")
+    _connect(half, "", scaled, "B")
+    one = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant, -600, 500)
     _try_set(one, "r", 1.0)
-    dim = MEL.create_material_expression(mat, unreal.MaterialExpressionSubtract, -420, 380)
-    MEL.connect_material_expressions(one, "", dim, "A")
-    MEL.connect_material_expressions(scaled, "", dim, "B")
-    # NB: wiring `dim` into the emissive multiply requires re-routing the existing
-    # emissive constant3vector through a Multiply(emis, dim). That graph surgery is
-    # done live (it needs the existing node handles); the structure above is the
-    # additive shape. Marked VERIFY-LIVE: confirm the emissive re-route preserves
-    # the idle frame with a fixed-iTime PNG diff vs the static capture.
-    log("slab desat tap authored (dim emissive by 0.5*Desat; Desat=0 -> unchanged)")
+    dim = MEL.create_material_expression(mat, unreal.MaterialExpressionSubtract, -440, 440)
+    _connect(one, "", dim, "A")
+    _connect(scaled, "", dim, "B")
 
+    # --- warm_add = Warm * WARM_TINT  (Warm=0 -> 0, no add) ---
+    warm = _collection_param(mat, mpc, "Warm", -760, 0)
+    tint = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant3Vector, -760, 100)
+    _try_set(tint, "constant", WARM_TINT)
+    warm_add = MEL.create_material_expression(mat, unreal.MaterialExpressionMultiply, -600, 40)
+    _connect(warm, "", warm_add, "A")
+    _connect(tint, "", warm_add, "B")
+
+    # --- emis_warmed = SLAB_EMIS + warm_add ---
+    base = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant3Vector, -600, 160)
+    _try_set(base, "constant", SLAB_EMIS)
+    warmed = MEL.create_material_expression(mat, unreal.MaterialExpressionAdd, -440, 100)
+    _connect(base, "", warmed, "A")
+    _connect(warm_add, "", warmed, "B")
+
+    # --- emis_out = emis_warmed * dim  -> Emissive Color (REPLACES the static constant) ---
+    emis_out = MEL.create_material_expression(mat, unreal.MaterialExpressionMultiply, -260, 240)
+    _connect(warmed, "", emis_out, "A")
+    _connect(dim, "", emis_out, "B")
+    if not MEL.connect_material_property(emis_out, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR):
+        _FAIL.append("could not re-connect slab emissive to the reactive chain")
+        return
+    log("slab reactive emissive authored: (SLAB_EMIS + Warm*tint)*(1-0.5*Desat); idle == SLAB_EMIS")
+
+    MEL.layout_material_expressions(mat)
     MEL.recompile_material(mat)
     unreal.EditorAssetLibrary.save_asset(mat_path)
+
+
+# ---------------------------------------------------------------------------
+# 3. Post-process GRADE — the VISIBLE reactive lever in a fog-dominated scene.
+#    A surface tap on the dark blades is occluded by the volumetric fog (the blades are
+#    occluders INSIDE the cyan fog; their warm surface is washed by inscatter in front). A
+#    full-screen post grade tints the FINAL image (fog + rake included) — unmistakably visible,
+#    still MPC-driven (§B SetScalarParameterValue), idle == identity.
+# ---------------------------------------------------------------------------
+GRADE_NAME = "M_AgentOS_ReactiveGrade"
+GRADE_PATH = MAT_DIR + "/" + GRADE_NAME
+
+
+def wire_post_grade(mpc):
+    """Author M_AgentOS_ReactiveGrade (MD_PostProcess): out = SceneColor * lerp(white, warmMul, Warm)
+    → Emissive. Warm=0 ⇒ ×white ⇒ scene unchanged (idle-identical); Warm=1 ⇒ ×(1.6,1.0,0.55) ⇒ the
+    whole image warms and the cyan is pulled down. Then attach it as a PostProcessVolume blendable."""
+    if unreal.EditorAssetLibrary.does_asset_exist(GRADE_PATH):
+        unreal.EditorAssetLibrary.delete_asset(GRADE_PATH)
+    mat = _assets.create_asset(GRADE_NAME, MAT_DIR, unreal.Material, unreal.MaterialFactoryNew())
+    if mat is None:
+        _FAIL.append("could not create post-grade material")
+        return
+    if not _try_set(mat, "material_domain", unreal.MaterialDomain.MD_POST_PROCESS):
+        _FAIL.append("could not set MD_POST_PROCESS on the grade material")
+
+    scene = MEL.create_material_expression(mat, unreal.MaterialExpressionSceneTexture, -800, 0)
+    _try_set(scene, "scene_texture_id", unreal.SceneTextureId.PPI_POST_PROCESS_INPUT0)
+
+    # ---- the reactive chain — ALL the visible levers, idle-identical at the MPC defaults ----
+    # graded = ((SceneColor × Backlight) + (Fog-1)·coolHaze) × lerp(white, warm, Warm) + Air·airStir
+    #   Backlight (×, default 1) = busy lift;  Fog (×→ -1, default 1 ⇒ +0) = snag cool haze;
+    #   Warm (+, default 0) = needs-you dawn;  Air (+, default 0) = the WINDOW-DRAG breath.
+    # At defaults (Backlight=1, Fog=1, Warm=0, Air=0) ⇒ graded == SceneColor (ADR-0030 D4 idle-identical).
+    bl = _collection_param(mat, mpc, "Backlight", -800, 200)
+    lit = MEL.create_material_expression(mat, unreal.MaterialExpressionMultiply, -560, 40)
+    _connect(scene, "Color", lit, "A")
+    _connect(bl, "", lit, "B")
+
+    fog = _collection_param(mat, mpc, "Fog", -800, 320)
+    one_f = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant, -800, 420)
+    _try_set(one_f, "r", 1.0)
+    fog_m1 = MEL.create_material_expression(mat, unreal.MaterialExpressionSubtract, -640, 340)
+    _connect(fog, "", fog_m1, "A")
+    _connect(one_f, "", fog_m1, "B")
+    haze_tint = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant3Vector, -800, 500)
+    _try_set(haze_tint, "constant", unreal.LinearColor(0.05, 0.07, 0.11, 1.0))  # cool snag haze lift
+    haze = MEL.create_material_expression(mat, unreal.MaterialExpressionMultiply, -480, 400)
+    _connect(fog_m1, "", haze, "A")
+    _connect(haze_tint, "", haze, "B")
+    hazed = MEL.create_material_expression(mat, unreal.MaterialExpressionAdd, -320, 120)
+    _connect(lit, "", hazed, "A")
+    _connect(haze, "", hazed, "B")
+
+    warm = _collection_param(mat, mpc, "Warm", -800, 620)
+    white = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant3Vector, -800, 680)
+    _try_set(white, "constant", unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
+    warm_mul = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant3Vector, -800, 760)
+    _try_set(warm_mul, "constant", unreal.LinearColor(1.6, 1.0, 0.55, 1.0))  # warm shift (cuts cyan)
+    tint = MEL.create_material_expression(mat, unreal.MaterialExpressionLinearInterpolate, -560, 680)
+    _connect(white, "", tint, "A")
+    _connect(warm_mul, "", tint, "B")
+    _connect(warm, "", tint, "Alpha")
+    warmed = MEL.create_material_expression(mat, unreal.MaterialExpressionMultiply, -120, 240)
+    _connect(hazed, "", warmed, "A")
+    _connect(tint, "", warmed, "B")
+
+    air = _collection_param(mat, mpc, "Air", -800, 880)
+    air_tint = MEL.create_material_expression(mat, unreal.MaterialExpressionConstant3Vector, -800, 960)
+    _try_set(air_tint, "constant", unreal.LinearColor(0.04, 0.08, 0.12, 1.0))  # cool window-drag breath
+    air_add = MEL.create_material_expression(mat, unreal.MaterialExpressionMultiply, -560, 920)
+    _connect(air, "", air_add, "A")
+    _connect(air_tint, "", air_add, "B")
+    graded = MEL.create_material_expression(mat, unreal.MaterialExpressionAdd, 120, 320)
+    _connect(warmed, "", graded, "A")
+    _connect(air_add, "", graded, "B")
+    if not MEL.connect_material_property(graded, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR):
+        _FAIL.append("could not connect post-grade to emissive")
+        return
+    MEL.recompile_material(mat)
+    unreal.EditorAssetLibrary.save_asset(GRADE_PATH)
+    log("post-grade material authored: SceneColor * lerp(white, warm, Warm)")
+
+    # --- attach as a PostProcessVolume blendable in the open level, then save the level ---
+    try:
+        eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        actors = eas.get_all_level_actors()
+    except Exception:  # noqa: BLE001
+        actors = unreal.EditorLevelLibrary.get_all_level_actors()
+    ppv = next((a for a in actors if isinstance(a, unreal.PostProcessVolume)), None)
+    if ppv is None:
+        # No PPV in the level → spawn an unbound one. A missing PPV makes the whole grade invisible —
+        # the likely cause of the prior silent no-reaction. Tolerant across the editor-actor API.
+        try:
+            ppv = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).spawn_actor_from_class(
+                unreal.PostProcessVolume, unreal.Vector(0, 0, 0))
+        except Exception:  # noqa: BLE001
+            try:
+                ppv = unreal.EditorLevelLibrary.spawn_actor_from_class(
+                    unreal.PostProcessVolume, unreal.Vector(0, 0, 0))
+            except Exception:  # noqa: BLE001
+                ppv = None
+        if ppv is None:
+            _FAIL.append("no PostProcessVolume and could not spawn one for the grade")
+            return
+        _try_set(ppv, "actor_label", "AgentOS_ReactivePPV")
+        log("spawned an unbound PostProcessVolume for the reactive grade")
+    _try_set(ppv, "unbound", True)  # apply everywhere, not just inside the volume
+    settings = ppv.get_editor_property("settings")
+    wb = unreal.WeightedBlendable()
+    wb.set_editor_property("weight", 1.0)
+    wb.set_editor_property("object", mat)
+    blendables = unreal.WeightedBlendables()
+    blendables.set_editor_property("array", [wb])
+    settings.set_editor_property("weighted_blendables", blendables)
+    ppv.set_editor_property("settings", settings)
+    log("post-grade attached to PostProcessVolume '{}' (unbound)".format(ppv.get_actor_label()))
+    try:
+        unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).save_current_level()
+    except Exception:  # noqa: BLE001
+        unreal.EditorLevelLibrary.save_current_level()
+    log("level saved with the reactive grade")
 
 
 # ---------------------------------------------------------------------------
@@ -245,10 +415,18 @@ def main():
     # additive and gated so a tap failure is logged but the MPC still lands
     # (the MPC alone is useful — light/fog levers are pushed as cvars, SPEC §3).
     try:
-        wire_slab_desat(mpc)
+        wire_slab_reactive_emissive(mpc)
     except Exception as exc:  # noqa: BLE001
         import traceback
         unreal.log_warning("[AgentOS indigo_reactive] slab tap skipped: {}".format(exc))
+        for line in traceback.format_exc().splitlines():
+            unreal.log_warning("[AgentOS indigo_reactive] " + line)
+
+    try:
+        wire_post_grade(mpc)
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        unreal.log_warning("[AgentOS indigo_reactive] post-grade skipped: {}".format(exc))
         for line in traceback.format_exc().splitlines():
             unreal.log_warning("[AgentOS indigo_reactive] " + line)
 
