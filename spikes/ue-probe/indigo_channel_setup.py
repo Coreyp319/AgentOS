@@ -439,6 +439,10 @@ def build_camera():
     cc = cam.get_component_by_class(unreal.CameraComponent)
     if cc:
         _try_set(cc, "field_of_view", FOV)
+        # FILL the wallpaper window (e.g. 21:9 ultrawide) — a constrained camera
+        # pillarboxes to AspectRatio with black bars in a -game run. Disable the
+        # constraint so the render fills whatever backbuffer aspect it gets.
+        _try_set(cc, "constrain_aspect_ratio", False)
     # Auto-activate as Player0 so a -game/packaged run renders from THIS camera.
     _try_set(cam, "auto_activate_for_player", unreal.AutoReceiveInput.PLAYER0)
     _label(cam, "Camera")
