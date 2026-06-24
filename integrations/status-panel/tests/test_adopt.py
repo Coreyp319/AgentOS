@@ -367,7 +367,7 @@ class AdoptRoutes(LedgerBase):
 
     def test_components_json_remote_not_adoptable(self):
         # A remote (tailnet) origin sees the catalog read-only — no one-click button.
-        st, body = self._req("GET", "/components.json", None, {"X-Forwarded-For": "100.64.0.9"})
+        st, body = self._req("GET", "/components.json", None, {"X-Forwarded-For": "100.64.0.100"})
         d = json.loads(body)
         self.assertTrue(all(c["adoptable"] is False for c in d["components"]))
 
@@ -385,7 +385,7 @@ class AdoptRoutes(LedgerBase):
     def test_post_remote_origin_refused_local_only(self):
         # The adoption-specific gate: a remote/phone origin can NEVER adopt (installs software).
         st, body = self._post({"id": "lucid", "action": "adopt"}, token=A.TOKEN,
-                              extra={"X-Forwarded-For": "100.64.0.9"})
+                              extra={"X-Forwarded-For": "100.64.0.100"})
         self.assertEqual(st, 403)
         self.assertIn("desktop", json.loads(body)["error"])
 

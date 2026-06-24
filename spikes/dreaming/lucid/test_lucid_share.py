@@ -217,8 +217,8 @@ def test_receipt_no_token_resurrection():
 def test_dream_origin_builds_and_rejects():
     # the no-JS fallback source: real host[:port] → dream origin on LUCID_PORT (8799 in this env);
     # implausible/crafted hosts → None so the link safely falls back to '#' (client JS still refines).
-    assert S._dream_origin("4090.tail096c29.ts.net", "https") == "https://4090.tail096c29.ts.net:8799/"
-    assert S._dream_origin("4090.tail096c29.ts.net:8770", "https") == "https://4090.tail096c29.ts.net:8799/", \
+    assert S._dream_origin("4090.tailnet.ts.net", "https") == "https://4090.tailnet.ts.net:8799/"
+    assert S._dream_origin("4090.tailnet.ts.net:8770", "https") == "https://4090.tailnet.ts.net:8799/", \
         "the inbound :8770 must be replaced by the dream's LUCID_PORT, not preserved"
     assert S._dream_origin("box, evil.example", "https") == "https://box:8799/", "only the first proxy hop is used"
     assert S._dream_origin("box", "") == "https://box:8799/", "missing proto defaults to https (tailnet is TLS)"
@@ -230,8 +230,8 @@ def test_dream_origin_builds_and_rejects():
 def test_receipt_nojs_link_has_real_href():
     # MUST work with JS off: given the request host, the lucid open/delete links carry a real href
     # (not href=\"#\"); without a known host they fall back to '#' for the client JS to rewrite.
-    page = S._render_receipt({"dest": "lucid", "message": "x"}, "https://4090.tail096c29.ts.net:8799/")
-    assert page.count('href="https://4090.tail096c29.ts.net:8799/"') == 2, \
+    page = S._render_receipt({"dest": "lucid", "message": "x"}, "https://4090.tailnet.ts.net:8799/")
+    assert page.count('href="https://4090.tailnet.ts.net:8799/"') == 2, \
         "both lucid links (open + delete) must carry the real server-authored href for no-JS"
     assert 'href="#"' not in page, "no dead href=# should remain once the host is known"
     nohost = S._render_receipt({"dest": "lucid", "message": "x"})
@@ -315,9 +315,9 @@ def test_live_receipt_nojs_href_from_forwarded_host(base):
     j = _post_share(base, "lucid", "")
     assert j.get("ok") and j.get("receipt"), j
     code, body, _ = _get(base + "/r/" + j["receipt"],
-                         {"X-Forwarded-Host": "4090.tail096c29.ts.net:8770", "X-Forwarded-Proto": "https"})
+                         {"X-Forwarded-Host": "4090.tailnet.ts.net:8770", "X-Forwarded-Proto": "https"})
     assert code == 200, code
-    assert 'href="https://4090.tail096c29.ts.net:8799/"' in body, "no-JS link must point at the dream origin"
+    assert 'href="https://4090.tailnet.ts.net:8799/"' in body, "no-JS link must point at the dream origin"
     assert 'href="#"' not in body, "no dead href=# once the forwarded host is known"
     print("ok  receipt(live): X-Forwarded-Host yields a real no-JS dream link (port→LUCID_PORT)")
 

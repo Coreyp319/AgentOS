@@ -353,7 +353,7 @@ class DispatchRoutes(LedgerBase):
         e, _ = D.try_create_incident(_svc("swaync"), "claude")
         D.update_incident(e["id"], status="needs-approval", proposal="systemctl --user restart foo",
                           diagnosis="crashed")
-        st, body = self._req("GET", "/dispatch.json", None, {"X-Forwarded-For": "100.64.0.9"})
+        st, body = self._req("GET", "/dispatch.json", None, {"X-Forwarded-For": "100.64.0.100"})
         inc = json.loads(body)["incidents"][0]
         self.assertNotIn("proposal", inc)
         self.assertEqual(inc["diagnosis"], "crashed")
@@ -366,7 +366,7 @@ class DispatchRoutes(LedgerBase):
         logp.mkdir(parents=True, exist_ok=True)
         (logp / "x.log").write_text("diagnostic transcript")
         D.update_incident(e["id"], log=str(logp / "x.log"))
-        st, _ = self._req("GET", f"/dispatch/log?id={e['id']}", None, {"X-Forwarded-For": "100.64.0.9"})
+        st, _ = self._req("GET", f"/dispatch/log?id={e['id']}", None, {"X-Forwarded-For": "100.64.0.100"})
         self.assertEqual(st, 403)
         st2, body = self._req("GET", f"/dispatch/log?id={e['id']}")
         self.assertEqual(st2, 200)

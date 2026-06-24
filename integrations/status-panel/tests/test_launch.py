@@ -39,7 +39,7 @@ class ClassifyOrigin(unittest.TestCase):
 
     def test_x_real_ip_or_via_marks_remote(self):
         # A non-Tailscale proxy (nginx sets X-Real-IP; some set Via) must still read as relayed.
-        for hdr in ({"X-Real-IP": "100.64.0.9"}, {"Via": "1.1 nginx"}):
+        for hdr in ({"X-Real-IP": "100.64.0.100"}, {"Via": "1.1 nginx"}):
             o = sp.classify_origin("127.0.0.1", {**hdr, "Host": "127.0.0.1:9123"})
             self.assertTrue(o["remote"], hdr)
             self.assertFalse(o["can_copy_fix"], hdr)
@@ -47,7 +47,7 @@ class ClassifyOrigin(unittest.TestCase):
     def test_remote_without_xfh_falls_back_to_host_for_door(self):
         # A proxy that forwards but omits X-Forwarded-Host must NOT blank every door — the rewrite
         # host falls back to the Host the phone connected to (channels review finding).
-        o = sp.classify_origin("127.0.0.1", {"X-Forwarded-For": "100.64.0.9",
+        o = sp.classify_origin("127.0.0.1", {"X-Forwarded-For": "100.64.0.100",
                                              "Host": "4090.tailnet.ts.net:9123"})
         self.assertTrue(o["remote"])
         self.assertFalse(o["can_copy_fix"])
@@ -56,7 +56,7 @@ class ClassifyOrigin(unittest.TestCase):
         self.assertEqual(d, {"state": "open", "href": "https://4090.tailnet.ts.net:8765/"})
 
     def test_tailscale_serve_forwarded_is_remote_no_shell(self):
-        o = sp.classify_origin("127.0.0.1", {"X-Forwarded-For": "100.64.0.9",
+        o = sp.classify_origin("127.0.0.1", {"X-Forwarded-For": "100.64.0.100",
                                              "X-Forwarded-Host": "4090.tailnet.ts.net:9123",
                                              "X-Forwarded-Proto": "https"})
         self.assertTrue(o["remote"])
@@ -187,7 +187,7 @@ class BuildLaunch(unittest.TestCase):
 
     def test_remote_origin_never_emits_a_shell_command(self):
         remote = sp.classify_origin("127.0.0.1", {"X-Forwarded-Host": "4090.tailnet.ts.net:9123",
-                                                  "X-Forwarded-For": "100.64.0.9"})
+                                                  "X-Forwarded-For": "100.64.0.100"})
         p = sp.build_launch(self.STATUS, remote)
         for s in p["services"]:
             self.assertNotIn("fix", s, f"{s['id']} leaked a shell command to a remote client")

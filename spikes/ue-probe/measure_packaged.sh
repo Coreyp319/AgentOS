@@ -24,7 +24,7 @@ RUNG="${2:?need cvar rung string}"
 
 STAGE="$HOME/UnrealProjects/AgentOSBlank/Saved/StagedBuilds/Linux"
 WRAPPER="$STAGE/AgentOSBlank.sh"
-PROBE="/home/corey/Documents/AgentOS/spikes/ue-probe"
+PROBE="$HOME/Documents/AgentOS/spikes/ue-probe"
 LOG="$PROBE/ue_measure_${LABEL}.log"
 CSV="$PROBE/vram_${LABEL}.csv"
 MIN_FREE="${MIN_FREE:-16000}"

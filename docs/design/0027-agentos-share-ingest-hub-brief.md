@@ -183,13 +183,13 @@ The three destinations are **NOT peers**. They are three trust classes and ship 
 - **security-reviewer** — the new exposed behavior, the shared-secret, and the execution path.
 
 ## Relevant paths
-- `/home/corey/Documents/AgentOS/spikes/dreaming/lucid/lucid_web.py` (hub host: CSRF :63, Origin
+- `~/Documents/AgentOS/spikes/dreaming/lucid/lucid_web.py` (hub host: CSRF :63, Origin
   allowlist :52, `_MIME` :56-60, `MAX_BODY`/bomb guards :67-69)
-- `/home/corey/Documents/AgentOS/spikes/dreaming/lucid/web/src/Start.tsx` (consent-card + B2_NOTE)
-- `/home/corey/Documents/AgentOS/spikes/dreaming/lucid/web/src/theme.css` (the register to inherit)
-- `/home/corey/Documents/AgentOS/integrations/design/instrument-tokens.md` (canonical tokens)
-- `/home/corey/Documents/AgentOS/crates/agentosd/src/feed.rs:124-145` (read-only kanban + schema
+- `~/Documents/AgentOS/spikes/dreaming/lucid/web/src/Start.tsx` (consent-card + B2_NOTE)
+- `~/Documents/AgentOS/spikes/dreaming/lucid/web/src/theme.css` (the register to inherit)
+- `~/Documents/AgentOS/integrations/design/instrument-tokens.md` (canonical tokens)
+- `~/Documents/AgentOS/crates/agentosd/src/feed.rs:124-145` (read-only kanban + schema
   probe — the bridge precedent)
-- `/home/corey/Documents/AgentOS/integrations/agentosd-remote.sh:16,49` (PORTS; 8642 excluded)
-- `/home/corey/Documents/AgentOS/docs/REMOTE-ACCESS.md:141-168` (tailnet-as-auth, ACL)
-- `/home/corey/Documents/AgentOS/docs/adr/0019-reviewable-request-queue.md` (held/human-disposes)
+- `~/Documents/AgentOS/integrations/agentosd-remote.sh:16,49` (PORTS; 8642 excluded)
+- `~/Documents/AgentOS/docs/REMOTE-ACCESS.md:141-168` (tailnet-as-auth, ACL)
+- `~/Documents/AgentOS/docs/adr/0019-reviewable-request-queue.md` (held/human-disposes)

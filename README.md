@@ -61,9 +61,10 @@ see what you're getting**. It reuses the same adopt engine as the status panel's
 UIs over Tailscale — ample warnings, copy-don't-execute (the installer runs nothing there, and is
 itself loopback-only — never put on your tailnet — because it holds your tokens).
 
-Text and image need **no account**. The 18+ video lane is opt-in and uses a free
-[Civitai](https://civitai.com) token kept in your OS keyring. Details:
-[integrations/setup/README.md](integrations/setup/README.md).
+Text and image need **no account**. Some optional model lanes need a free
+[Civitai](https://civitai.com) token, kept in your OS keyring and never sent anywhere
+else. Details — including the opt-in, off-by-default content settings —
+in [integrations/setup/README.md](integrations/setup/README.md).
 
 **3 — Make your first thing:**
 

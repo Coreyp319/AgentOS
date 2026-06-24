@@ -19,7 +19,7 @@
 #   A) At editor launch, headless (this is how the main agent drives it):
 #        UnrealEditor <uproject> -RenderOffscreen -unattended -stdout \
 #          -FullStdOutLogOutput \
-#          -ExecCmds=py /home/corey/Documents/AgentOS/spikes/ue-probe/scene_setup.py
+#          -ExecCmds=py ~/Documents/AgentOS/spikes/ue-probe/scene_setup.py
 #      *** DO NOT add inner quotes around the path. *** UE re-quotes the whole
 #      -ExecCmds VALUE itself; inner quotes collide with that and FParse ends up
 #      reading just `py ` (path lost) — the log shows `Cmd: py ` empty and the
@@ -29,7 +29,7 @@
 #
 #   B) From the in-editor Python console (Window > Output Log, switch the dropdown
 #      to "Python"), or Tools > Execute Python Script:
-#        exec(open("/home/corey/Documents/AgentOS/spikes/ue-probe/scene_setup.py").read())
+#        exec(open("~/Documents/AgentOS/spikes/ue-probe/scene_setup.py").read())
 #
 #   After it runs it saves the level to LEVEL_PATH (default /Game/AgentOS/CalmWallpaper).
 #   To launch *into* that map for a measurement run, pass it as the map arg:

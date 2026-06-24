@@ -5,7 +5,7 @@ iPhone is an **iOS Shortcut** that appears in the system Share sheet and POSTs t
 box's share hub (`:8770`). This is the "great" path: long-press any photo → Share → *Share to box*
 → pick a door → done.
 
-There's also a no-build path: the **PWA** (open `https://4090.tail096c29.ts.net:8770/` in Safari →
+There's also a no-build path: the **PWA** (open `https://4090.tailnet.ts.net:8770/` in Safari →
 Share → **Add to Home Screen**). That gives an installable app icon with its own photo/camera
 picker and the same four doors. Use the PWA for "open the app and send"; use the Shortcut for
 "share straight from Photos / Safari / anywhere."
@@ -54,7 +54,7 @@ Add these actions in order:
    Set Variable `caption`. *(Skip-friendly — a blank caption is fine.)*
 
 6. **Get Contents of URL**:
-   - **URL:** `https://4090.tail096c29.ts.net:8770/share`
+   - **URL:** `https://4090.tailnet.ts.net:8770/share`
    - **Method:** `POST`
    - **Headers:** add `X-Share-Key` = Variable `key`
    - **Request Body:** **JSON**, three fields:
@@ -77,7 +77,7 @@ Add these actions in order:
 8. *(Optional — watch it develop.)* The response also carries a `receipt` id. To land on the **same
    "your box understood this" receipt the PWA shows** — the slow "develop" of the dream's colour out of
    the dark — add inside the `ok`-true branch: **Get Dictionary Value** `receipt` → **Text**
-   `https://4090.tail096c29.ts.net:8770/r/` immediately followed by that value → **Open URLs**.
+   `https://4090.tailnet.ts.net:8770/r/` immediately followed by that value → **Open URLs**.
    Leave this out for the calm, silent-fire feel (the step-7 notification is already a complete, honest
    acknowledgement); add it when you want the visible payoff. *(The receipt self-expires after a short
    while — it's a moment, not an archive; there's deliberately no "save" button.)*

@@ -29,7 +29,7 @@ class ClassifyOrigin(unittest.TestCase):
 
     def test_tailscale_serve_forwarded_is_remote_no_shell(self):
         # tailscale serve proxies from loopback BUT adds X-Forwarded-* → must read as remote.
-        o = a.classify_origin("127.0.0.1", {"X-Forwarded-For": "100.64.0.9",
+        o = a.classify_origin("127.0.0.1", {"X-Forwarded-For": "100.64.0.100",
                                             "X-Forwarded-Host": "4090.tailnet.ts.net:9123",
                                             "X-Forwarded-Proto": "https"})
         self.assertTrue(o["remote"])
@@ -117,7 +117,7 @@ class BuildLaunch(unittest.TestCase):
 
     def test_remote_origin_never_emits_a_shell_command(self):
         remote = a.classify_origin("127.0.0.1", {"X-Forwarded-Host": "4090.tailnet.ts.net:9123",
-                                                 "X-Forwarded-For": "100.64.0.9"})
+                                                 "X-Forwarded-For": "100.64.0.100"})
         p = a.build_launch(self.STATUS, remote)
         for s in p["services"]:
             self.assertNotIn("fix", s, f"{s['id']} leaked a shell command to a remote client")

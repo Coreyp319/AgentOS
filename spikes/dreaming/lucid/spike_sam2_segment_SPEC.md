@@ -14,10 +14,10 @@ peak VRAM with `nvidia-smi`, so the ADR gets ground truth, not a guess.
 
 ## 1. Install (you decide — this clones a third-party node + fetches weights; confirm the license)
 ```
-cd /home/corey/ComfyUI/custom_nodes
+cd ~/ComfyUI/custom_nodes
 git clone https://github.com/kijai/ComfyUI-segment-anything-2
 pip install -r ComfyUI-segment-anything-2/requirements.txt
-mkdir -p /home/corey/ComfyUI/models/sam2
+mkdir -p ~/ComfyUI/models/sam2
 # the loader node can auto-download, OR fetch sam2.1_hiera_small.safetensors into models/sam2/
 # >>> CAPTURE the checkpoint LICENSE (expect Apache-2.0) + sha256 of the SMALL variant <<<
 systemctl --user restart comfyui     # or however ComfyUI is launched
@@ -25,7 +25,7 @@ systemctl --user restart comfyui     # or however ComfyUI is launched
 
 ## 2. Discover (safe — read-only schema dump)
 ```
-cd /home/corey/Documents/AgentOS/spikes/dreaming/lucid
+cd ~/Documents/AgentOS/spikes/dreaming/lucid
 ./spike_sam2_segment.py discover
 ```
 Confirms the real **segmentation node class**, its **loader** companion, and every **input socket name +

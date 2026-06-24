@@ -85,16 +85,17 @@ const OBJ_PATH: &str = "/org/agentos/Coordinator1";
 /// the daemon owns the command vector, so a D-Bus caller can't make agentosd run arbitrary
 /// commands. This closes the unauthenticated-RCE Critical (review finding S1): `Spawn(argv)` is
 /// gone. `params` are appended as LITERAL argv (execv, no shell) → no injection. A new owned job
-/// is a new entry here (a config file is the later step). Profile programs must be absolute so
-/// the `looks_executable` pre-flight (H3) actually checks them.
+/// is a new entry here (a config file is the later step). Profile programs must resolve to an
+/// absolute path so the `looks_executable` pre-flight (H3) actually checks them — repo-relative
+/// entries are joined onto `repo_root()` at resolve time; a leading `/` is kept verbatim.
 const PROFILES: &[(&str, &[&str])] = &[
     // The dreaming/overnight ComfyUI the daemon owns + can SIGKILL (ADR-0009/0010 §5).
-    ("comfyui", &["/home/corey/Documents/AgentOS/spikes/dreaming/start-comfyui.sh"]),
+    ("comfyui", &["spikes/dreaming/start-comfyui.sh"]),
     // A headless Blender Cycles render the daemon owns + can SIGKILL (ADR-0022 §3, Phase 0). The
     // wrapper execs `blender -b … --python render.py` (a FIXED, repo-owned script — never an agent
     // param) and caps Cycles' own VRAM so a heavy scene fails its frame, not the driver. The owned
     // PID is blender → SIGKILL frees the CUDA context. `params` carry only validated scalars.
-    ("blender-render", &["/home/corey/Documents/AgentOS/integrations/blender/render-wrapper.sh"]),
+    ("blender-render", &["integrations/blender/render-wrapper.sh"]),
     // A headless EEVEE render the daemon owns + can SIGKILL (ADR-0023 P1). DISTINCT from
     // `blender-render` purely so the daemon (and the operator) treat it as a LIGHT lane: EEVEE is a
     // rasteriser (no BVH/OptiX), so a render can actually be ADMITTED beside a warm model, whereas the
@@ -103,17 +104,37 @@ const PROFILES: &[(&str, &[&str])] = &[
     // entry point — engine selection is a render.py/wrapper concern, deferred per integrations/blender/
     // README §6); the difference that matters at the lease layer is the conservative default footprint
     // `EEVEE_RENDER_EST_MIB`, advertised in the CLI hint below.
-    ("eevee-render", &["/home/corey/Documents/AgentOS/integrations/blender/render-wrapper.sh"]),
+    ("eevee-render", &["integrations/blender/render-wrapper.sh"]),
     // A harmless stand-in for smoke-testing the lease plumbing (params e.g. ["600"]).
     ("sleep", &["/usr/bin/sleep"]),
 ];
 
-/// Resolve a profile name to its daemon-owned base argv, or `None` if not allowlisted.
+/// Repo root the daemon-owned launch profiles (start-comfyui.sh / render-wrapper.sh) live under.
+/// `AGENTOSD_REPO_ROOT` overrides; otherwise `$HOME/Documents/AgentOS`. Absolute by construction so
+/// the `looks_executable` pre-flight (H3) checks a real path — a wrong root just fails the pre-flight
+/// and DENIES the spawn (fail-safe per ADR-0003); it can never widen the allowlist.
+fn repo_root() -> String {
+    std::env::var("AGENTOSD_REPO_ROOT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/Documents/AgentOS")))
+        .unwrap_or_else(|| "/nonexistent/AgentOS".to_string())
+}
+
+/// Resolve a profile name to its daemon-owned base argv, or `None` if not allowlisted. A
+/// repo-relative program (no leading `/`) is joined onto `repo_root()`; an absolute one is kept.
 fn resolve_profile(name: &str) -> Option<Vec<String>> {
-    PROFILES
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, argv)| argv.iter().map(|s| s.to_string()).collect())
+    PROFILES.iter().find(|(n, _)| *n == name).map(|(_, argv)| {
+        argv.iter()
+            .map(|s| {
+                if s.starts_with('/') {
+                    s.to_string()
+                } else {
+                    format!("{}/{}", repo_root(), s)
+                }
+            })
+            .collect()
+    })
 }
 
 fn profile_names() -> String {
@@ -1944,12 +1965,12 @@ mod tests {
         // The comfyui launch profile maps to a friendly holder so the tray reads "batch (comfyui)"
         // (matches the keyhole WORKLOAD label) rather than the raw launcher basename.
         assert_eq!(
-            short_label("/home/corey/Documents/AgentOS/spikes/dreaming/start-comfyui.sh"),
+            short_label("/srv/agentos/spikes/dreaming/start-comfyui.sh"),
             "comfyui"
         );
         // The Blender render profile (ADR-0022) maps the same way → tray reads "batch (blender-render)".
         assert_eq!(
-            short_label("/home/corey/Documents/AgentOS/integrations/blender/render-wrapper.sh"),
+            short_label("/srv/agentos/integrations/blender/render-wrapper.sh"),
             "blender-render"
         );
         // An adopted lane's label IS its scope unit → collapses to a stable tray name (ADR-0022 Phase 1),

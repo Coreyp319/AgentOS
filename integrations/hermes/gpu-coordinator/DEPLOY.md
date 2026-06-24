@@ -41,7 +41,7 @@ verified.
   deps). The venv has no `pip`, so install with `uv`:
 
   ```bash
-  uv pip install --python /home/corey/.hermes/hermes-agent/venv/bin/python jeepney
+  uv pip install --python ~/.hermes/hermes-agent/venv/bin/python jeepney
   ```
 
   If jeepney is absent the plugin **falls back to the `busctl` transport** — still
@@ -103,10 +103,10 @@ touches no NVML/D-Bus/network itself). Register the server with Hermes:
 ```bash
 # add the stdio server (discovery-first: probes it, lists the 3 tools).
 # answer Y at the "Enable all 3 tools?" prompt.
-hermes mcp add agentos --command /home/corey/.local/bin/agentosd --args mcp
+hermes mcp add agentos --command ~/.local/bin/agentosd --args mcp
 # (or, against the venv directly:)
 #   ~/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main mcp add agentos \
-#     --command /home/corey/.local/bin/agentosd --args mcp
+#     --command ~/.local/bin/agentosd --args mcp
 ```
 
 Persists to `~/.hermes/config.yaml` under `agentos:` (`command`/`args`/`enabled`).

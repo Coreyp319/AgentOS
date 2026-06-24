@@ -12,7 +12,7 @@ set -uo pipefail
 
 STAGE="$HOME/UnrealProjects/AgentOSBlank/Saved/StagedBuilds/Linux"
 WRAPPER="$STAGE/AgentOSBlank.sh"
-PROBE="/home/corey/Documents/AgentOS/spikes/ue-probe"
+PROBE="$HOME/Documents/AgentOS/spikes/ue-probe"
 LOG="$PROBE/ue_coexist.log"
 OLLAMA="${OLLAMA_HOST:-127.0.0.1:11434}"
 MODEL="${MODEL:-moondream:latest}"

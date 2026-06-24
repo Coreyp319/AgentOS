@@ -197,7 +197,7 @@ and the `/free` lever each appeared under several personas and are merged here).
    Owner: **design-technologist**. Lifts: **Craft**; closes the rater-craft headline delta.
 
 8. **Make paths configurable; replace the `sed`-scrape result parse with structured output.**
-   `comfy_client.py:34` + `krunner_video_runner.py:41` (hardcoded `/home/corey`);
+   `comfy_client.py:34` + `krunner_video_runner.py:41` (hardcoded home path);
    `krunner_video_runner.py:63` (`sed -n` scrape of stdout — fragile, and the same seam that lets
    the wrong/poisoned path through).
    Owner: **design-technologist**. Lifts: **Craft, Feasibility**.
@@ -222,7 +222,7 @@ and the `/free` lever each appeared under several personas and are merged here).
 
 - **rater-craft's "committed `__pycache__/*.pyc` + no `.gitignore`" is WRONG on both counts.**
   A root `.gitignore` exists and explicitly ignores `__pycache__/` and `*.pyc`
-  (`/home/corey/Documents/AgentOS/.gitignore:9-12`). The
+  (`.gitignore:9-12`). The
   `dreaming/__pycache__/comfy_client.cpython-314.pyc` on disk is therefore **not tracked** — it's
   a stray local build artifact git already ignores. Drop this from the craft delta; it does not
   lower the score. (Craft 6.5 otherwise stands.)

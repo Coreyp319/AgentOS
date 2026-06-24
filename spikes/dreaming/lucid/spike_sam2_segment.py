@@ -17,7 +17,7 @@ USAGE (on the box, with ComfyUI running):
   ./spike_sam2_segment.py                          # discover, then run with a generated test frame
 
 If the node/weights are missing, `discover` prints the exact install + weight-fetch commands and exits.
-Env: COMFY_HOST (default 127.0.0.1:8188), COMFY_ROOT (default /home/corey/ComfyUI).
+Env: COMFY_HOST (default 127.0.0.1:8188), COMFY_ROOT (default ~/ComfyUI).
 """
 import argparse
 import json

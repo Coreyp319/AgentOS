@@ -7,11 +7,17 @@ the loopback multicast route present (`sudo ip route add 239.0.0.1 dev lo`).
 
   echo 'import unreal; print(unreal.SystemLibrary.get_engine_version())' | re_exec.py
 """
+import os
 import sys
 import time
 
 sys.path.append(
-    "/home/corey/UnrealEngine/Engine/Plugins/Experimental/PythonScriptPlugin/Content/Python"
+    os.environ.get(
+        "UE_PYTHON_REMOTE",
+        os.path.expanduser(
+            "~/UnrealEngine/Engine/Plugins/Experimental/PythonScriptPlugin/Content/Python"
+        ),
+    )
 )
 import remote_execution as re  # noqa: E402
 

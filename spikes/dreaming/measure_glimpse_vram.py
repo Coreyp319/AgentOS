@@ -32,7 +32,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMFY_HOST = os.environ.get("COMFY_HOST", "127.0.0.1:8188")
-COMFY_ROOT = os.environ.get("COMFY_ROOT", "/home/corey/ComfyUI")
+COMFY_ROOT = os.environ.get("COMFY_ROOT", os.path.expanduser("~/ComfyUI"))
 COMFY_INPUT = os.path.join(COMFY_ROOT, "input")
 # the verified non-distilled Wan 2.2 i2v graph lucid_engine uses by default (LUCID_WORKFLOW override honored)
 WORKFLOW = os.environ.get("LUCID_WORKFLOW",

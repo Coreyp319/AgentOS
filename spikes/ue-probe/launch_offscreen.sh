@@ -16,7 +16,7 @@
 #
 # Examples:
 #   # Build the scene once (runs scene_setup.py, saves the level, then idles):
-#   ./launch_offscreen.sh --exec 'py "/home/corey/Documents/AgentOS/spikes/ue-probe/scene_setup.py"'
+#   ./launch_offscreen.sh --exec 'py "$HOME/Documents/AgentOS/spikes/ue-probe/scene_setup.py"'
 #
 #   # Measure the FLOOR rung against the saved calm scene:
 #   ./launch_offscreen.sh --map /Game/AgentOS/CalmWallpaper \

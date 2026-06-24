@@ -14,7 +14,8 @@ Environment="LUCID_SHARE_PORT=8770"
 Environment="LUCID_BASE=http://127.0.0.1:8765"
 Environment="HERMES_BASE=http://127.0.0.1:8642"
 # The tailnet HTTPS origin the PWA is served from, so the browser PWA's CSRF/Origin check passes.
-Environment="SHARE_EXTRA_ORIGINS=https://4090.tail096c29.ts.net:8770"
+# Placeholder — set YOUR tailnet host here or (preferably) in ~/.config/agentos/share.env below.
+Environment="SHARE_EXTRA_ORIGINS=https://4090.tailnet.ts.net:8770"
 # Optional overrides + the on-box Hermes key live here (chmod 600). '-' = fine if the file is absent.
 EnvironmentFile=-%h/.config/agentos/share.env
 Restart=on-failure

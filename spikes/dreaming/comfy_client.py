@@ -32,7 +32,7 @@ import urllib.request
 
 HOST = os.environ.get("COMFY_HOST", "127.0.0.1:8188")
 BASE = f"http://{HOST}"
-COMFY_ROOT = os.environ.get("COMFY_ROOT", "/home/corey/ComfyUI")
+COMFY_ROOT = os.environ.get("COMFY_ROOT", os.path.expanduser("~/ComfyUI"))
 OUTPUT_DIR = os.path.join(COMFY_ROOT, "output")
 
 CONTROL_VALS = {"randomize", "fixed", "increment", "decrement"}

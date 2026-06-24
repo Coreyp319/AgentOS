@@ -177,7 +177,7 @@ class Routes(unittest.TestCase):
 
     def test_fetch_remote_origin_403(self):
         st, _ = self._post("/api/fetch", {"bundle": "image"}, token=sw.TOKEN,
-                           extra={"X-Forwarded-For": "100.64.0.9"})
+                           extra={"X-Forwarded-For": "100.64.0.100"})
         self.assertEqual(st, 403)
 
     def test_fetch_cross_site_403(self):

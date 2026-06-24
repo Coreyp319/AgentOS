@@ -54,7 +54,7 @@ systemctl --user restart agentos-lucid.service
 ## Use it from the iPhone
 Two paths — see **`ios-shortcut.md`**:
 - **Shortcut** (Photos → Share → *Share to box* → pick a door) — the real Share-sheet experience.
-- **PWA** (`https://4090.tail096c29.ts.net:8770/` → Add to Home Screen) — an installable app with
+- **PWA** (`https://4090.tailnet.ts.net:8770/` → Add to Home Screen) — an installable app with
   its own photo/camera picker and the four doors.
 
 ## Phase status

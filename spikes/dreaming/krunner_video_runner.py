@@ -38,8 +38,10 @@ CLIENT = os.path.join(HERE, "comfy_client.py")
 # Default backend config (kept aligned with the Wan 2.2 test path for now).
 TEMPLATE = os.environ.get(
     "AGENTOS_VIDEO_TEMPLATE",
-    "/home/corey/ComfyUI/.venv/lib/python3.12/site-packages/"
-    "comfyui_workflow_templates_media_video/templates/video_wan2_2_5B_ti2v.json",
+    os.path.expanduser(
+        "~/ComfyUI/.venv/lib/python3.12/site-packages/"
+        "comfyui_workflow_templates_media_video/templates/video_wan2_2_5B_ti2v.json"
+    ),
 )
 PYTHON = os.environ.get("AGENTOS_VIDEO_PYTHON", "python3")
 
