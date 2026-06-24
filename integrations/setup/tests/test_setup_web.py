@@ -362,6 +362,65 @@ class DesktopSection(unittest.TestCase):
         self.assertEqual(self._req("GET", "/img/nope.webp")[0], 404)
 
 
+class LucidKeyholeCallout(unittest.TestCase):
+    """The "Smoother local models" callout promotes the keyhole as an OPTIONAL companion that makes
+    the shared-GPU coordination (lease + demand queue) legible. It must reuse the EXISTING adopt path
+    + the real component id + the existing preview — never a new install mechanism — and must stay
+    honest: the keyhole is a READ-ONLY window (it does not itself speed anything up), and optional."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = (Path(sw.__file__).resolve().parent / "wizard.html").read_text()
+
+    def test_targets_real_keyhole_component_id_via_existing_proxy(self):
+        # adopts via the SAME /api/component proxy with the real id "keyhole" (no invented mechanism)
+        self.assertIn('"/api/component",{id:"keyhole",action:"adopt"}', self.html)
+        # the keyhole IS the panel's component id this proxy validates against (defense-in-depth)
+        self.assertEqual(sw._DESKTOP_GROUPS.get("keyhole"), "ambient")
+
+    def test_reuses_existing_keyhole_preview_asset(self):
+        self.assertIn("/img/keyhole.webp", self.html)            # the thumbnail that already exists
+        self.assertTrue((Path(sw.__file__).resolve().parent / "assets" / "keyhole.webp").exists())
+
+    def test_reflects_adoption_state_from_desktop_proxy(self):
+        # already-adopted shows the calm "in your tray" state, not a redundant Add button
+        self.assertIn("Already in your tray", self.html)
+        self.assertIn("Add to tray", self.html)
+        self.assertIn('fetch("/api/desktop"', self.html)        # state comes from the existing route
+
+    def test_fails_open_when_panel_unreachable(self):
+        # panel down (or keyhole not surfaced) → a calm pointer into the full catalog, never a dead button
+        self.assertIn("khJump", self.html)
+        self.assertIn("openDesktop", self.html)
+
+    def test_local_model_performance_framing(self):
+        # the benefit is local-model performance via shared-GPU coordination, made concrete by naming
+        # the models that share the GPU — NOT abstract "Lucid legibility"
+        low = self.html.lower()
+        self.assertIn("share this one gpu", low)
+        self.assertIn("narrator", low)            # the LLM
+        self.assertIn("image generation", low)    # image gen
+        self.assertIn("take turns", low)          # the coordination mechanism (lease + queue)
+        # the keyhole's own role stays read-only: a WINDOW into the coordination you can SEE working
+        self.assertIn("window into that coordination", low)
+
+    def test_reads_as_optional(self):
+        # optionality is EXPLICIT (a tag), not merely implied
+        self.assertIn('class="opt">optional', self.html)
+
+    def test_honest_keyhole_does_not_claim_to_speed_things_up(self):
+        # honesty non-negotiable: the SUBSTRATE smooths; the keyhole only lets you SEE it. The copy must
+        # never claim adopting the keyhole itself improves/speeds performance, nor that it's required.
+        low = self.html.lower()
+        forbidden = (
+            "makes your models faster", "make your models faster", "makes generation faster",
+            "speeds up", "speed up your", "the keyhole improves", "keyhole makes it faster",
+            "required for lucid", "keyhole is required", "mandatory", "you must install the keyhole",
+        )
+        for f in forbidden:
+            self.assertNotIn(f, low, f"dishonest/over-claim copy present: {f!r}")
+
+
 class NoTailscaleExposure(unittest.TestCase):
     """ADR-0044: the wizard holds credentials, RUNS NOTHING that exposes the box, and is itself never
     put on the tailnet. The Remote-access card is copy-don't-execute (security must-fix #9)."""

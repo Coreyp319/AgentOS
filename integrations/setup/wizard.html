@@ -115,6 +115,31 @@
   a{color:var(--blue)} .foot{color:var(--faint);font-size:.74rem;margin-top:30px;line-height:1.8}
   .foot .stored{color:var(--muted)} .foot button{font:inherit;font-size:.72rem;color:var(--blue);background:none;border:0;cursor:pointer;padding:0;text-decoration:underline}
   code{background:rgba(255,255,255,.06);padding:1px 6px;border-radius:5px;color:var(--muted)}
+  /* ── "Make Lucid feel smooth" callout — a slim companion card tied to the video/Lucid lanes.
+       Strongly RECOMMENDED, never a gate: the keyhole makes the shared-GPU queue legible so a
+       waiting dream never reads as a freeze. Cool violet throughout — no --warm here (the keyhole
+       is a calm instrument, not a "done" beat); the one allowed glow is the violet preview frame. ── */
+  .khc{display:flex;gap:15px;align-items:flex-start;margin-top:12px;padding:15px 17px;border-radius:var(--radius);
+    background:var(--glass);border:1px solid var(--blue-line);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+  .khc .shot{width:104px;height:60px;flex:none;border-radius:var(--radius-sm);object-fit:cover;display:block;
+    background:var(--bg-2);border:1px solid var(--blue-line);
+    box-shadow:0 0 0 1px color-mix(in srgb,var(--blue) 18%,transparent),0 6px 18px rgba(0,0,0,.28)}
+  .khc .body{flex:1;min-width:0}
+  .khc .eyb{font-family:var(--mono);font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:var(--blue);opacity:.9}
+  /* "optional" tag — a calm, neutral outline chip (NOT amber/18+, NOT warm): makes optionality explicit */
+  .khc .eyb .opt{font-size:.9em;font-weight:600;letter-spacing:.08em;color:var(--faint);
+    border:1px solid var(--line-hi);border-radius:4px;padding:0 6px;margin-left:8px;vertical-align:1px}
+  .khc .ttl{font-size:.95rem;font-weight:600;margin-top:3px}
+  .khc .why{color:var(--muted);font-size:.81rem;margin-top:4px;line-height:1.5;max-width:54ch}
+  /* the live arbitration line the keyhole shows — set in the data register so it reads as a real instrument */
+  .khc .qline{font-family:var(--mono);font-size:.73rem;color:var(--faint);letter-spacing:-.1px;margin-top:7px}
+  .khc .post{color:var(--amber);font-size:.76rem;margin-top:7px;line-height:1.45}   /* honest residual manual step */
+  .khc .act{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:6px;white-space:nowrap}
+  .khc .act .don{color:var(--up);font-size:.78rem;font-weight:640}
+  .khc .act .state.busy{color:var(--blue);font-size:.78rem;font-weight:640}
+  /* non-colour status glyph (◐) so "waiting" never depends on hue */
+  .khc .qline .gly{font-style:normal;color:var(--blue);margin-right:5px}
+  @media (max-width:560px){ .khc{flex-wrap:wrap} .khc .shot{width:100%;height:120px} .khc .act{flex:1 1 100%;align-items:flex-start} }
   /* ── Optional setup — one quiet, clearly-secondary region below the make-flow (no extra glass) ── */
   .opthead{margin:46px 0 14px;padding-top:28px;border-top:1px solid var(--line)}
   .opthead .opth2{font-size:.96rem;font-weight:640;color:var(--text);letter-spacing:.2px;margin:0;text-transform:none}
@@ -238,6 +263,10 @@
   <div id="bundles" class="card"><div class="feat"><div class="meta"><div class="dsc">checking what's installed…</div></div></div></div>
 
   <div id="progress" role="status" aria-live="polite" aria-atomic="false"></div>
+
+  <!-- "Make Lucid feel smooth": appears alongside the video/Lucid lanes; the keyhole makes the
+       shared-GPU queue legible so a waiting dream never reads as a freeze. Recommended, not required. -->
+  <div id="lucidkey" role="status" aria-live="polite"></div>
 
   <div class="opthead">
     <h2 class="opth2">Optional setup</h2>
@@ -392,10 +421,77 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     else el.hidden=true;
   }
 
+  // ── "Smoother local models" callout ─────────────────────────────────────────────────────────
+  // The honest pitch: your local models — the dream/video model, the narrator LLM, image gen — all
+  // share ONE GPU. AgentOS coordinates them (the VRAM lease + demand queue) so they take turns
+  // instead of thrashing / OOMing each other — THAT coordination is what keeps generation smooth.
+  // The Keyhole is a READ-ONLY window into it (who holds the GPU, VRAM pressure, what's waiting): it
+  // lets you SEE and trust the coordination working. It does NOT itself speed anything up or actuate
+  // anything — the substrate does the smoothing; the keyhole shows it. Optional; never a gate.
+  let KH=null, khProbed=false, _khHTML="";   // KH = the keyhole's adopt row from /api/desktop; _khHTML dedupes re-renders
+
+  async function probeKeyhole(){
+    // Reflect the keyhole's live adoption state even while the full Desktop section is collapsed
+    // (that section only polls when open — idle is sacred — so the callout needs its own light read).
+    try{
+      const d=await (await fetch("/api/desktop",{cache:"no-store"})).json();
+      khProbed=true;
+      if(!d.reachable){ KH={reachable:false,why:d.why}; }
+      else KH={reachable:true, row:(d.components||[]).find(c=>c.id==="keyhole")||null};
+    }catch(_){ khProbed=true; KH={reachable:false,why:"error"}; }
+    renderLucidKey();
+  }
+
+  function renderLucidKey(){
+    const el=document.getElementById("lucidkey"); if(!el) return;
+    // Tie the promotion to the Lucid lanes specifically: only surface it once a VIDEO bundle exists
+    // in the registry. (Image gen also leases the GPU, but the user framed the keyhole as a Lucid
+    // pre-req, so we keep it video/Lucid-focused rather than a generic desktop tweak.)
+    const vids=(STATE.bundles||[]).filter(b=>b.modality==="video");
+    if(!vids.length){ if(_khHTML!==""){ _khHTML=""; el.innerHTML=""; } return; }
+
+    const adopted = !!(KH && KH.reachable && KH.row && KH.row.state==="adopted");
+    const busyNow = dbusy["keyhole"]==="adopt";
+    const reachable = !KH || KH.reachable;        // unknown (not yet probed) reads as reachable/calm
+
+    // the live arbitration line the keyhole renders — honest about what you'd SEE in the tray
+    const qline = `<div class="qline"><i class="gly" aria-hidden="true">◐</i>In the tray you'd see: who holds the GPU · VRAM pressure · <b>what's waiting its turn</b>.</div>`;
+    // local-model-performance framing. AgentOS does the smoothing (lease + queue); the keyhole only
+    // LETS YOU SEE it — never "adopt this and your models get faster" (honesty non-negotiable).
+    const why = `<div class="why">Your local models — the dream/video model, the narrator that writes your scenes, image generation — all share this one GPU. AgentOS coordinates them so they take turns instead of fighting over memory, which is what keeps generation smooth. The Keyhole is a calm tray window into that coordination: it shows you the live GPU lease, memory pressure, and what's waiting — so you can <i>see</i> it working and trust it, rather than guess.</div>`;
+
+    let act;
+    if(busyNow) act=`<span class="state busy">adding…</span>`;
+    else if(adopted) act=`<span class="don">Already in your tray ✓</span>`;
+    else if(reachable && KH && KH.row && KH.row.adoptable)
+      act=`<button class="btn" id="khAdd">Add to tray</button>`;
+    else if(reachable && KH && KH.row)                       // present but not one-click here
+      act=`<button class="btn ghost" id="khJump" type="button">Set up in Customize ↓</button>`;
+    else
+      // FAIL-OPEN: panel unreachable (or keyhole not surfaced) → a calm pointer, never a dead button.
+      act=`<button class="btn ghost" id="khJump" type="button">Set up later ↓</button>`;
+
+    // the honest residual manual step, only once it's actually adopted (mirrors the Desktop section)
+    const post = adopted
+      ? `<div class="post">One more step: add the Keyhole widget to your tray — right-click the system tray → Configure System Tray → Entries.</div>`
+      : "";
+
+    const html = `<div class="khc">
+      <img class="shot" src="/img/keyhole.webp" alt="Preview of the Keyhole tray instrument" loading="lazy">
+      <div class="body">
+        <div class="eyb">Smoother local models <span class="opt">optional</span></div>
+        <div class="ttl">The Keyhole · see your models share the GPU</div>
+        ${why}${qline}${post}
+      </div>
+      <div class="act">${act}</div>
+    </div>`;
+    if(html!==_khHTML){ _khHTML=html; el.innerHTML=html; }   // dedupe → aria-live announces only real changes
+  }
+
   async function refreshState(){
     try{
       const s=await (await fetch("/api/state",{cache:"no-store"})).json();
-      STATE=s; renderRuntime(s); renderLedger(s);
+      STATE=s; renderRuntime(s); renderLedger(s); renderLucidKey();
       document.getElementById("bundles").innerHTML=(s.bundles||[]).map(bundleRow).join("")
         || `<div class="feat"><div class="meta"><div class="dsc">no bundles in the registry.</div></div></div>`;
       // the one warm beat + the suggested prompt, only when a bundle newly becomes ready
@@ -610,7 +706,9 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
         // "unknown" on an under-provisioned host — else the row would spin forever). adopt.py TERMINAL.
         if(reached || (job && (job.status==="adopted"||job.status==="available"||job.status==="failed"))) delete dbusy[id];
       }
-      renderDesktop();
+      // keep the Lucid callout coherent with the full catalog while the section is open (same source)
+      khProbed=true; KH={reachable:true, row:(d.components||[]).find(c=>c.id==="keyhole")||null};
+      renderDesktop(); renderLucidKey();
     }catch(_){}
   }
   document.getElementById("desktop").addEventListener("click",async e=>{
@@ -626,6 +724,27 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     }
     refreshDesktop();
   });
+
+  // ── "Make Lucid feel smooth" callout: one-click adopt the keyhole via the SAME hardened
+  //    /api/component proxy (real id "keyhole"), or — fail-open — jump to the full Customize section.
+  document.getElementById("lucidkey").addEventListener("click",async e=>{
+    if(e.target.id==="khJump"){ openDesktop(); return; }
+    if(e.target.id!=="khAdd") return;
+    dbusy["keyhole"]="adopt"; renderLucidKey();            // optimistic ack — a benign 409 must read calm
+    const r=await post("/api/component",{id:"keyhole",action:"adopt"});
+    if(r && r.error && !/already|queued|working|just ran|give it a moment/i.test(r.error)){
+      delete dbusy["keyhole"]; renderLucidKey();
+      const body=document.querySelector("#lucidkey .body");
+      if(body){ const er=document.createElement("div"); er.className="err"; er.textContent=r.error; body.appendChild(er); setTimeout(()=>er.remove(),5000); }
+    }
+    probeKeyhole();                                        // reflect the new adoption state (collapsed-section safe)
+  });
+  function openDesktop(){
+    const s=document.getElementById("desktop-sec"); if(!s) return;
+    s.open=true;                                           // fires toggle → chevron syncs + section polls
+    const rm=matchMedia("(prefers-reduced-motion: reduce)").matches;
+    s.scrollIntoView({behavior:rm?"auto":"smooth",block:"start"});
+  }
   // ── Optional-setup disclosure rows: swap the chevron text; the desktop section also (and only)
   //    polls while open (idle is sacred). One helper keeps the three in sync. ──
   function wireOpt(secId,chevId,onOpen){
@@ -642,10 +761,13 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
 
   document.body.classList.add("first");
   setTimeout(()=>document.body.classList.remove("first"),700);
-  refreshState(); refreshJobs();
+  refreshState(); refreshJobs(); probeKeyhole();
   setInterval(refreshJobs,2500);
   setInterval(refreshState,8000);
   setInterval(refreshDesktop,5000);
+  // a slow, calm read of the keyhole's adoption state for the Lucid callout (idle is sacred — the
+  // full Desktop section refreshes faster only while open; this light probe keeps the callout honest)
+  setInterval(()=>{ if(!document.getElementById("desktop-sec").open) probeKeyhole(); },20000);
 </script>
 </body>
 </html>
