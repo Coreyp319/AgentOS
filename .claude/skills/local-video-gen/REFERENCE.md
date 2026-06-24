@@ -1,7 +1,7 @@
 # Local video generation — reference
 
 Companion to [SKILL.md](SKILL.md). Hardware baseline: **RTX 4090, 24 GB**, CachyOS.
-Backend at `~/ComfyUI`; repo glue at `spikes/dreaming/`. Dated facts are mid-2026.
+Backend at `~/ComfyUI`; repo glue at `apps/dreaming/`. Dated facts are mid-2026.
 
 ---
 
@@ -69,7 +69,7 @@ errors **accumulate** (colour/detail/anatomy drift by ~segment 6) — fewer, lar
 segments drift less, and a **clean `--seed-image`** (not the T2V lottery) is the biggest
 anatomy win.
 
-**Tool: `spikes/dreaming/chain_video.py`** (built + smoke-verified 2026-06-17). Wraps
+**Tool: `apps/dreaming/chain_video.py`** (built + smoke-verified 2026-06-17). Wraps
 `comfy_client.py`; per segment it injects the prior last frame into `LoadImage`, sets
 `WanImageToVideo` w/h/length + prompt (re-injected each segment to fight drift), runs the
 Remix NSFW I2V workflow, then `ffmpeg` pulls the last frame and finally concats — **dropping
@@ -114,7 +114,7 @@ box's installed LTX-2 stack (`comfyui-vrgamedevgirl` + `ComfyUI-GGUF` + KJNodes)
 `10Eros_v1-Q4_K_M.gguf` (14.3 GB → `models/unet`); `DualCLIPLoaderGGUF` ← [gemma-3-12b TE (12.8 GB →
 `models/text_encoders`), `ltx-2.3_text_projection_bf16.safetensors` (2.3 GB), type **`ltxv`**];
 `VAELoaderKJ` ×2 ← `LTX23_video_vae_bf16` / `LTX23_audio_vae_bf16` (from `Kijai/LTX2.3_comfy`, ~1.8 GB).
-Build with `spikes/dreaming/build_10eros_i2v.py`: it clones ComfyUI's own `video_ltx2_i2v_distilled`
+Build with `apps/dreaming/build_10eros_i2v.py`: it clones ComfyUI's own `video_ltx2_i2v_distilled`
 template, swaps those loaders in, **prunes the 2nd-stage spatial-upscale refine** (halves VRAM, no
 upscaler download) and **bypasses the V3 `ResizeImageMaskNode`** (`scale_method` enum drift). Key
 gotchas: (1) the flattened template wires `EmptyLTXVLatentVideo.length` → `GetImageSize.width`, so it
@@ -159,7 +159,7 @@ and non-consensual real-person likenesses; recommended models carry anti-minor/a
 
 ---
 
-## The ComfyUI client/converter (`spikes/dreaming/comfy_client.py`)
+## The ComfyUI client/converter (`apps/dreaming/comfy_client.py`)
 
 Pure-stdlib client + a UI-workflow→`/prompt` API converter. The converter is the load-bearing,
 hard-won piece — it handles every gotcha discovered shipping the test matrix:

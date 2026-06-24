@@ -3,7 +3,7 @@
 Status: **PROPOSAL (design-only).** ADR-0027 is a verified stub — none of the surfaces
 (hub, `/api/share`, Shortcut, PWA receipt, kanban bridge, Claude inbox) exist in the repo
 yet. The only built, exposed photo-from-phone surface is the Lucid spike
-(`spikes/dreaming/lucid/lucid_web.py`). "SHIP" in this document can only ever mean
+(`apps/dreaming/lucid/lucid_web.py`). "SHIP" in this document can only ever mean
 "ship the design," never "the code exists." Code disposes on the human's timeline.
 
 Mediator: design-discourse-mediator · Date: 2026-06-19 · Verdict: **ITERATE (7.55/10, target 9).**

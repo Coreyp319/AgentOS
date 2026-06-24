@@ -33,10 +33,10 @@
 set -euo pipefail
 
 PLUGIN_ID="com.nimbus.aurora"
-# 1 = Hills (Style < 9 ⇒ no external engine). Force an integer (it is written raw into plasma JS):
+# 7 = Prism (Style < 9 ⇒ no external engine). Force an integer (it is written raw into plasma JS):
 # clamp to [0,8] so a stray env value can neither break the JS nor select an engine style (≥9).
-STYLE_DEFAULT="$(printf '%d' "${REACTIVE_WALLPAPER_STYLE:-1}" 2>/dev/null || echo 1)"
-{ [ "$STYLE_DEFAULT" -ge 0 ] && [ "$STYLE_DEFAULT" -le 8 ]; } 2>/dev/null || STYLE_DEFAULT=1
+STYLE_DEFAULT="$(printf '%d' "${REACTIVE_WALLPAPER_STYLE:-7}" 2>/dev/null || echo 7)"
+{ [ "$STYLE_DEFAULT" -ge 0 ] && [ "$STYLE_DEFAULT" -le 8 ]; } 2>/dev/null || STYLE_DEFAULT=7
 
 # Prev-state lives under XDG_STATE_HOME (durable reversibility state, not volatile cache).
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agentos/reactive-wallpaper"
@@ -157,7 +157,7 @@ PY
   fi
 fi
 
-# --- 3. switch every desktop to the aurora shader at Style $STYLE_DEFAULT (Hills) -----------
+# --- 3. switch every desktop to the aurora shader at Style $STYLE_DEFAULT (Prism) -----------
 # Set both: the plugin id (so the shader plugin renders) and the Style key in its General group.
 # Style < 9 guarantees no external engine launches. We do NOT touch reduceMotion / animation
 # factors — those are honored live by main.qml, never written here.
@@ -171,7 +171,7 @@ if plasma_eval "
   }
   print('ok');
 " >/dev/null 2>&1; then
-  ok "reactive shader wallpaper set ($PLUGIN_ID, Style $STYLE_DEFAULT / Hills) on all desktops"
+  ok "reactive shader wallpaper set ($PLUGIN_ID, Style $STYLE_DEFAULT / Prism) on all desktops"
 else
   warn "could not switch the wallpaper live — set com.nimbus.aurora (Style $STYLE_DEFAULT) in System Settings → Wallpaper"
 fi
@@ -201,4 +201,16 @@ else
   warn "wallpaper reflects MOOD but won't visibly flag a stalled feed. Activate it with a Nimbus pack"
   warn "re-install:  ~/whitesur-cachyos-pack/9-gpu-effects/install.sh   (then re-login)."
 fi
+# --- 6. window-drag → wind (folded into this ONE toggle) -------------------------------------
+# The window-drag gust is part of the single reactive-wallpaper experience now — no separate
+# component. Install its KWin producer too (it ripples THIS wallpaper). Fail-soft: a host without
+# KWin tooling still gets the wallpaper, and the wind half just skips. restore.sh reverses both.
+WIND_APPLY="$(cd "$(dirname "$0")" && pwd)/../window-drag-wind/apply.sh"
+if [ -x "$WIND_APPLY" ]; then
+  echo "  • window-drag wind:"
+  "$WIND_APPLY" 2>&1 | sed 's/^/    /' || warn "window-drag wind setup hit an issue (the wallpaper is still set)"
+else
+  warn "window-drag wind helper not found at $WIND_APPLY — wallpaper set without the drag ripple"
+fi
+
 echo "  • Revert: $(cd "$(dirname "$0")" && pwd)/restore.sh"

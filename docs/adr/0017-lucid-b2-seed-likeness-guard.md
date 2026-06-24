@@ -42,7 +42,7 @@ Surfaces:
   `LUCID_ALLOW_UNVETTED_SEED=1` (a **test-only** escape for CI without a vision model).
 - A **server-generated** abstract opening (no upload) is trusted — there's no real person to vet.
 - **Right-click "Create Video from Image"** (added 2026-06-16) — two new public entry surfaces onto
-  the i2v path, both routed through one governed launcher (`spikes/dreaming/lucid/create_from_image.py`):
+  the i2v path, both routed through one governed launcher (`apps/dreaming/lucid/create_from_image.py`):
   the **Dolphin ServiceMenu** (right-click an image file → *Create* submenu) and a **browser
   WebExtension** (right-click an image on a web page → native-messaging host). Each is the seed-from-a-
   user-image case B2 exists for — a right-click consents to *trying*, not to who is depicted — so the

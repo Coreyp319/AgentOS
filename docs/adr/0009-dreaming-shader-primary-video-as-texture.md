@@ -16,7 +16,7 @@
   [design synthesis](../research/0003-dreaming-design-synthesis.md)
 - Evidence (spikes): [`spikes/video-wallpaper`](../../spikes/video-wallpaper/README.md),
   [`spikes/dream-as-texture`](../../spikes/dream-as-texture/README.md),
-  [`spikes/dreaming`](../../spikes/dreaming/README.md)
+  [`apps/dreaming`](../../apps/dreaming/README.md)
 
 ## Context
 
@@ -64,7 +64,7 @@ seam** (a ~10-minute on-session eyeball).
    (3, `feed.rs`); a future `acting` look waits on the computer-use backend producing it, behind the
    same seam.
 
-2. **Two surfaces, two distinct media** (one backend, `spikes/dreaming/comfy_client.py`):
+2. **Two surfaces, two distinct media** (one backend, `apps/dreaming/comfy_client.py`):
    - **Surface A — ambient "dreaming."** Video, *if present*, enters as a **texture input** the
      procedural shader warps (dream-as-texture); the floats stay continuous uniforms. Renderer is
      **software-decode + `ShaderEffect` grade** (per `spikes/video-wallpaper`). **SFW-only**, with
@@ -73,7 +73,7 @@ seam** (a ~10-minute on-session eyeball).
      `warm`/`snag` are the *same* parametric grade on both the shader and the video path — never a
      prompt word. At idle the layer resolves to the shader (or a still), never a playing loop.
    - **Surface B — on-demand "generate."** The user explicitly asks for a clip
-     (`spikes/dreaming/krunner_video_runner.py`). Completion is **notification-as-control**
+     (`apps/dreaming/krunner_video_runner.py`). Completion is **notification-as-control**
      (Preview / Set-as-wallpaper / Discard) — **no auto-`xdg-open`**. Consent is a first-run gate
      plus a KRunner *action*, **opt-in** (`EnabledByDefault=false`). NSFW is **imperative-only**,
      behind a **fail-closed** red-line guard (no minors, no non-consensual real-person likeness).
@@ -107,7 +107,7 @@ seam** (a ~10-minute on-session eyeball).
   by decision 2 (notification-as-control + opt-in); the `/free` eviction failure by decision 3
   (own-PID + admission-control + SIGKILL). Both remain open until the coordinator and the Surface-B
   UX land.
-- **Backend is real; the layer around it is not.** `spikes/dreaming` validated all five generation
+- **Backend is real; the layer around it is not.** `apps/dreaming` validated all five generation
   paths (Wan 5B SFW/NSFW, Wan 14B SFW, Hunyuan SFW/NSFW) on 2026-06-16 — generation works. What is
   missing is coordination (decision 3), consent/UX (decision 2), the post-grade + NSFW wall
   (decision 2), and the dream-as-texture wallpaper consumer (decision 2 / `spikes/dream-as-texture`).

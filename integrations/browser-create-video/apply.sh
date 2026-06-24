@@ -7,7 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HOST_REPO="$(cd "$HERE/host" && pwd)/agentos_create_video_host.py"
 # Resolve the launcher's absolute path from the repo layout (never hard-code /home/corey).
-LAUNCHER="$(cd "$HERE/../../spikes/dreaming/lucid" && pwd)/create_from_image.py"
+LAUNCHER="$(cd "$HERE/../../apps/dreaming/lucid" && pwd)/create_from_image.py"
 # The INSTALLED host lives in $HOME, never the repo — so installing never dirties the tracked
 # source (which keeps its @LAUNCHER@ placeholder). restore.sh just rm's this copy.
 HOST_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agentos"

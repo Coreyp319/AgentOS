@@ -1,6 +1,6 @@
 # design-sync notes — AgentOS Lucid
 
-This package (`spikes/dreaming/lucid/web`) is an **application, not a packaged component
+This package (`apps/dreaming/lucid/web`) is an **application, not a packaged component
 library** — there is no library build, no shipped `.d.ts`. The sync runs the package shape
 in a deliberately-shaped way; the bullets below are why.
 

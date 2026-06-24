@@ -1,7 +1,7 @@
 # Design 0023 — creative-environment pipeline · design-council scorecard
 
 Full design-council pass (2026-06-18) over ADR-0023 + design-0023 (pipeline) + design-0023 (window-drag
-producer) + three verified spikes (`spikes/creative-env/`, `spikes/windable-grass/`, `spikes/window-drag-wind/`).
+producer) + three verified spikes (`spikes/creative-env/`, `spikes/windable-grass/` — since removed, ADR-0046, `spikes/window-drag-wind/`).
 Run as a fan-out of 11 read-only rater/reviewer agents (the Workflow tool is unreliable in this env), then
 synthesized here. Target: 9/10.
 

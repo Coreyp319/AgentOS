@@ -228,12 +228,12 @@ No contract, safety semantic, or behavior changes — this is a visual + interac
 explicitly out of scope: if the consent-ground ever *reacts* to readiness/fleet state (a closed loop, not
 decoration), that is a behavior change and earns its own ADR. Flagged so it cannot slip in silently.
 
-**Files of record:** `spikes/dreaming/lucid/web/src/Start.tsx` · `spikes/dreaming/lucid/web/src/theme.css`
+**Files of record:** `apps/dreaming/lucid/web/src/Start.tsx` · `apps/dreaming/lucid/web/src/theme.css`
 (reuse `.disc` 55-65, `.future-go`/compose-card, `.aurora`/`develop` 136/324, `.consent`/`.beat warm`
 113-117, `.tag-mature` 276, `.sc-reset-echo`/`sc-settle` 532-537, `.beat-q` 161, `.lenbtn` 107-112;
 replace the `.block`/`.check`/`.note` form grammar + the `.beat` CTA; fix `.aurora` reduced-motion 328) ·
-`spikes/dreaming/lucid/web/src/App.tsx` (`data-view-heading` focus, `ReadyChip` 101 — keep calm, no second
-badge) · `spikes/dreaming/lucid/web/src/components.tsx` (`.disc` precedent `EngineToggle`, `LibraryCard`
+`apps/dreaming/lucid/web/src/App.tsx` (`data-view-heading` focus, `ReadyChip` 101 — keep calm, no second
+badge) · `apps/dreaming/lucid/web/src/components.tsx` (`.disc` precedent `EngineToggle`, `LibraryCard`
 rename).
 
 ---

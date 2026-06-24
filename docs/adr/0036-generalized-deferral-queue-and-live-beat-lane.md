@@ -331,4 +331,4 @@ human-review surface). This converts the named-but-ungated reviews into a bindin
 - OQ2 — Should the in-session retry budget *adapt* to a user whose UE wallpaper sits permanently at
   the VRAM knife-edge? (personalization-loop.)
 - OQ3 — Phase 1's library extraction: same-process import vs a tiny shared package under
-  `spikes/dreaming/lucid/` first, promoted later — sequencing only, not architecture.
+  `apps/dreaming/lucid/` first, promoted later — sequencing only, not architecture.

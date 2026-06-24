@@ -14,7 +14,7 @@ StartLimitBurst=4
 [Service]
 Type=simple
 WorkingDirectory=%h/ComfyUI
-# Mirrors spikes/dreaming/start-comfyui.sh, but self-contained (no dependency on spikes/).
+# Mirrors apps/dreaming/start-comfyui.sh, but self-contained (no dependency on spikes/).
 # --listen 127.0.0.1: API + UI loopback-only (the dreaming client uses COMFY_HOST=127.0.0.1:8188).
 # --preview-method latent2rgb: near-free live denoise preview; no extra model/VRAM.
 # --disable-smart-memory: fully unload models after use (esp. the 10.8 GiB umt5 text encoder) so the

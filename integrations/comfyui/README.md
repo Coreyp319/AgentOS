@@ -5,7 +5,7 @@ run as an always-on boot service** — the agentosd VRAM coordinator owns its li
 
 ## Who starts ComfyUI?
 The dreaming path (`lucid_web` / `create_from_image`, via `lucid_linear.lease_spawn`) asks the
-coordinator to **Spawn a coordinator-owned ComfyUI under a batch lease** (`spikes/dreaming/
+coordinator to **Spawn a coordinator-owned ComfyUI under a batch lease** (`apps/dreaming/
 start-comfyui.sh`), so a preemption can SIGKILL it and reclaim VRAM (ADR-0006/0010/0015). ComfyUI
 comes up on demand when a dream needs it and is released (killed) when idle or preempted.
 
@@ -41,4 +41,4 @@ agentosd lease (ADR-0006/0010), which evicts this batch lane when interactive wo
 - `--listen 127.0.0.1`: loopback only (matches `COMFY_HOST=127.0.0.1:8188`).
 - `--preview-method latent2rgb`: near-free live denoise preview; no extra model/VRAM.
 - This unit is intentionally self-contained (no dependency on throwaway `spikes/`); it mirrors
-  `spikes/dreaming/start-comfyui.sh` (the launcher the coordinator actually Spawns).
+  `apps/dreaming/start-comfyui.sh` (the launcher the coordinator actually Spawns).

@@ -356,7 +356,7 @@ motion in build. This proves **UE-runs-live-on-Wayland** — but not the wallpap
   first try WITHOUT killing the wallpaper; only a heavy shortfall (>throttle gain) falls through to
   `KillToShaderFloor`. Until the throttle ships, two interim mitigations landed (they MASK the symptom,
   they do not free VRAM — the throttle remains the structural fix):
-  - **L1 — bounded retry before fail-open** (`spikes/dreaming/lucid/lucid_web.py`, `ADMIT_RETRIES`/
+  - **L1 — bounded retry before fail-open** (`apps/dreaming/lucid/lucid_web.py`, `ADMIT_RETRIES`/
     `ADMIT_BACKOFF` in `_ensure_lease`): a transient admission refusal is retried (abortable on
     supersession) so the knife-edge flap self-heals on the first user action instead of surfacing a
     bare `skipped`. Regression test `test_transient_refusal_retried_then_granted`.

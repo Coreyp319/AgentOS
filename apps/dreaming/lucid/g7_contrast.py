@@ -18,7 +18,7 @@
 #   - docs/design/reviewable-request-queue.md  (the G7 section: measured ratios + fixes)
 #   - integrations/design/instrument-tokens.md  (the canonical instrument tokens)
 #   - spikes/keyhole/contents/ui/InstrumentPalette.qml  (tray warm/text/blue tokens)
-#   - spikes/dreaming/lucid/lucid_web.py  &  web/src/theme.css  (web panel --inst-* block)
+#   - apps/dreaming/lucid/lucid_web.py  &  web/src/theme.css  (web panel --inst-* block)
 #   - spikes/hills-reactive/aurora.frag  (the Hills/Flow warm-bloom compositing, lines
 #       709-713 Hills, 956-960 Flow — vec3(1.00,0.60,0.34) bloom riding the bright field)
 #

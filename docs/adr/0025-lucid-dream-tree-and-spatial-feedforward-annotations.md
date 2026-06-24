@@ -19,7 +19,7 @@
   red-line gate B3 (annotation **free text feeds the model, so it is gated like any prompt**),
   [ADR-0023](0023-creative-environment-pipeline.md) (the `wan`/`10eros` engine toggle — the LTX lane
   this guide-conditioning rides on).
-- Evidence: `spikes/dreaming/lucid/` — backend `lucid_linear.py` (tree fork + per-node menu + note
+- Evidence: `apps/dreaming/lucid/` — backend `lucid_linear.py` (tree fork + per-node menu + note
   persistence + step feed-forward), `lucid_engine.py` (`extract_frame_at`, `decompose_notes`,
   `_inject_ltx_guides`), `lucid_web.py` (`/api/note`, `?node=`, `parent`); frontend
   `web/src/Chain.tsx` (the git-graph dream-tree + tag-a-moment UI) + `api.ts`; tests
@@ -146,7 +146,7 @@ ComfyUI core's seed-keyframe accounting (`comfy/ldm/lightricks/model.py`:
 4090 — with the wallpaper yielded (a manual `systemctl --user stop` of the Hexen wallpaper unit; see the
 gap below) — a guided 10Eros beat carrying attention entries rendered end-to-end through the lease and the
 invariant **holds** with the seed + guides in one chain. Spike:
-`spikes/dreaming/lucid/spike_ltx_attention.py` (`--dry-run`/`--run`/`--ab`).
+`apps/dreaming/lucid/spike_ltx_attention.py` (`--dry-run`/`--run`/`--ab`).
 
 **2. Annotations gain a real *where*.** ADR-0025 shipped "spatial" feed-forward that was really *temporal*
 (which moment) + semantic (which tag); a note carried `{t, tag, text}`, no point. The amendment adds an

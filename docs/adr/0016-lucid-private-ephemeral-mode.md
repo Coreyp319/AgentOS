@@ -61,7 +61,7 @@ Offer a **per-dream Private (ephemeral) toggle** — incognito. The default stay
 
 ## Consequences
 
-- Evidence: `spikes/dreaming/lucid/lucid_store.py` (+ 41 tests in `test_lucid_store.py`), with
+- Evidence: `apps/dreaming/lucid/lucid_store.py` (+ 41 tests in `test_lucid_store.py`), with
   `lucid_linear` threading `--private`/`burn` and `lucid_web` exposing the burn. An adversarial
   responsible-ai + security pass (verdict: initially *leaky*) drove the fixes now in place:
   - the **entire** private output dir — clip **and its prompt-bearing metadata PNG** — is drained

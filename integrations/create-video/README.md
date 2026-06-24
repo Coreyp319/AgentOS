@@ -7,7 +7,7 @@ Right-click any image in the file manager → **Create** → two image-to-video 
   the status hub, no wallpaper, auto-burned on logout).
 
 Both are thin entries on **one already-written governed launcher**
-(`spikes/dreaming/lucid/create_from_image.py`). This integration only wires the menu and its
+(`apps/dreaming/lucid/create_from_image.py`). This integration only wires the menu and its
 reversible install; it never generates anything itself. Every clip still goes through the same
 governed path as Lucid: the **VRAM lease** (Spawn → confirm-evict → Release), the **deterministic
 red-line prompt gate**, and the **B2 seed-likeness guard** (ADR-0015/0016/0017).
@@ -23,7 +23,7 @@ Dolphin auto-rereads servicemenus; if the entry doesn't appear, restart Dolphin 
 each (`%f`, single local path).
 
 ## How it works
-- The `.desktop.in` template (`spikes/dreaming/lucid/dist/agentos-create-video.desktop.in`) carries
+- The `.desktop.in` template (`apps/dreaming/lucid/dist/agentos-create-video.desktop.in`) carries
   one `@LUCID_DIR@` token; `apply.sh` resolves the launcher's absolute dir from the repo layout
   (never hard-coded) and `sed`s it in. On Plasma 6 the install dir is
   `~/.local/share/kio/servicemenus/` — the old `kservices5/ServiceMenus` is dead — and the file

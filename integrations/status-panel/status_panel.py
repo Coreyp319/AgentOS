@@ -502,8 +502,9 @@ def why(svc_id: str, run=_run) -> dict:
 
 
 def _toast(svc: dict) -> None:
-    """Fire one calm swaync notification for a service that fell over. swaync owns the
-    interrupt (surface-labor contract); the panel only proposes the recovery."""
+    """Fire one calm desktop notification for a service that fell over. The desktop's
+    notification server owns the interrupt (surface-labor contract); the panel only
+    proposes the recovery."""
     name, state = svc.get("name", svc.get("id", "A service")), svc.get("state", "failed")
     try:
         subprocess.run(
@@ -517,7 +518,7 @@ def _toast(svc: dict) -> None:
 
 
 def _notify_loop(interval: float = 15.0) -> None:
-    """Edge-detect *new* post-boot failures and route one debounced swaync toast each.
+    """Edge-detect *new* post-boot failures and route one debounced desktop toast each.
     Silent during the boot window and silent on recovery — only an earned interruption.
     Disable with AGENTOS_STATUS_NOTIFY=0."""
     if os.environ.get("AGENTOS_STATUS_NOTIFY", "1") == "0" or not shutil.which("notify-send"):

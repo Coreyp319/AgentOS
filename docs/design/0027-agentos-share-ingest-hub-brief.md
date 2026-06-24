@@ -2,7 +2,7 @@
 
 Status: proposal-of-a-proposal. The hub, the `/api/share` endpoint, the iOS Shortcut, the
 Hermes-task bridge, and the Claude inbox **do not exist in the repo yet**. The only built,
-exposed, photo-from-phone surface today is the Lucid spike (`spikes/dreaming/lucid/lucid_web.py`,
+exposed, photo-from-phone surface today is the Lucid spike (`apps/dreaming/lucid/lucid_web.py`,
 stdlib `http.server` on `127.0.0.1:8765` behind `tailscale serve --https=8765`). This brief is
 decision-ready toward ADR-0027; code disposes on the human's timeline.
 
@@ -183,10 +183,10 @@ The three destinations are **NOT peers**. They are three trust classes and ship 
 - **security-reviewer** — the new exposed behavior, the shared-secret, and the execution path.
 
 ## Relevant paths
-- `~/Documents/AgentOS/spikes/dreaming/lucid/lucid_web.py` (hub host: CSRF :63, Origin
+- `~/Documents/AgentOS/apps/dreaming/lucid/lucid_web.py` (hub host: CSRF :63, Origin
   allowlist :52, `_MIME` :56-60, `MAX_BODY`/bomb guards :67-69)
-- `~/Documents/AgentOS/spikes/dreaming/lucid/web/src/Start.tsx` (consent-card + B2_NOTE)
-- `~/Documents/AgentOS/spikes/dreaming/lucid/web/src/theme.css` (the register to inherit)
+- `~/Documents/AgentOS/apps/dreaming/lucid/web/src/Start.tsx` (consent-card + B2_NOTE)
+- `~/Documents/AgentOS/apps/dreaming/lucid/web/src/theme.css` (the register to inherit)
 - `~/Documents/AgentOS/integrations/design/instrument-tokens.md` (canonical tokens)
 - `~/Documents/AgentOS/crates/agentosd/src/feed.rs:124-145` (read-only kanban + schema
   probe — the bridge precedent)

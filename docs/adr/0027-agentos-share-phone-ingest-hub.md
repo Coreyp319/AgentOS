@@ -7,7 +7,7 @@ Supersedes nothing; net-new. Companion design artifacts: the discourse brief
 `docs/design/0027-agentos-share-ingest-hub-brief.md` and the council final (10/10 gap plan + market
 position) `docs/design/0027-agentos-share-council-final.md`.
 
-Maturity: Phase 0/1 shipped. The hub is a dedicated `spikes/dreaming/lucid/lucid_share.py` (stdlib +
+Maturity: Phase 0/1 shipped. The hub is a dedicated `apps/dreaming/lucid/lucid_share.py` (stdlib +
 PIL on :8770, tailnet-only via `tailscale serve`; `test_lucid_share.py`, 21/21), with install units
 in `integrations/share/` and the `:8770` exposure added to `agentosd-remote.sh`. The only edit to the
 concurrently-rewritten `lucid_web.py` was the ~15-line `X-Share-Key` acceptance on `/api/start`.
@@ -31,7 +31,7 @@ installable PWA.
    subsystem) is under *active concurrent rewrite* by the ADR-0028 build (dream library +
    encrypted private stash). Hot-patching a file another agent is mid-rewrite on would clobber
    work. So the dedicated graduation is **pulled forward to v0**: the hub is a new
-   `spikes/dreaming/lucid/lucid_share.py` on its own port (**8770**), zero collision. This also
+   `apps/dreaming/lucid/lucid_share.py` on its own port (**8770**), zero collision. This also
    happens to be the *safer* end-state the council wanted (code-execution must not share the
    NSFW-capable dream loop's CSRF/lifecycle boundary) — we just arrive there immediately. The
    only edit to the contended `lucid_web.py` is a ~15-line `X-Share-Key` acceptance on
@@ -77,7 +77,7 @@ contract disarms the latent a11y cap the rating panel flagged.
 > **Amended 2026-06-20 (post-build):** an earlier draft named "reserved-warm luminance" as the
 > non-motion channel. That is **superseded** — §6 forbids spending `--inst-warm` on a route, and a
 > green-light receipt is not a needs-you cue, so the channel is the **cool** state word + dashed-vs-
-> solid luminance, never a warm hue. Implemented in `spikes/dreaming/lucid/lucid_share.py`'s receipt
+> solid luminance, never a warm hue. Implemented in `apps/dreaming/lucid/lucid_share.py`'s receipt
 > and pinned by `test_lucid_share.py` (no `--warm` reaches any receipt route).
 
 ## Phased rollout

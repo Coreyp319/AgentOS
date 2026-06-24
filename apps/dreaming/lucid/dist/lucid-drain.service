@@ -8,7 +8,7 @@ Type=oneshot
 # One-shot per timer fire (the timer is the clock, not a daemon loop). lucid_drain holds an flock so two
 # fires never drain at once; crash recovery decides from the spool FILE; the run takes a Tier::BestEffort
 # lease so any interactive turn structurally preempts it (fail-open by construction, not by measurement).
-ExecStart=/usr/bin/python3 %h/Documents/AgentOS/spikes/dreaming/lucid/lucid_drain.py
+ExecStart=/usr/bin/python3 %h/Documents/AgentOS/apps/dreaming/lucid/lucid_drain.py
 NoNewPrivileges=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=true

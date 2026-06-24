@@ -4,8 +4,8 @@
   No this-pass code fixes applied beyond committing the in-flight engine fixes; this is a
   design review of a `[SUBSTRATE-BLOCKED]` proposal, not a merge gate.
 - Subject: [ADR-0014](../adr/0014-lucid-interactive-branching-dream-loop.md) + the throwaway
-  spike `spikes/dreaming/lucid/{lucid_engine.py,lucid_panel.py,README.md}` (reuses
-  `spikes/dreaming/comfy_client.py` + the Wan2.2 Remix i2v workflow).
+  spike `apps/dreaming/lucid/{lucid_engine.py,lucid_panel.py,README.md}` (reuses
+  `apps/dreaming/comfy_client.py` + the Wan2.2 Remix i2v workflow).
 - Panel (8 dimensions): determinism-safety · ai-generation · responsible-ai/privacy ·
   security · resource-safety · reversibility-tx · ai-product/vision-fit · interaction.
 - Relates to: ADR-0001 (substrate not orchestrator), 0003/0004 (yield), 0005 (apply/rollback tx),

@@ -90,7 +90,7 @@ const OBJ_PATH: &str = "/org/agentos/Coordinator1";
 /// entries are joined onto `repo_root()` at resolve time; a leading `/` is kept verbatim.
 const PROFILES: &[(&str, &[&str])] = &[
     // The dreaming/overnight ComfyUI the daemon owns + can SIGKILL (ADR-0009/0010 §5).
-    ("comfyui", &["spikes/dreaming/start-comfyui.sh"]),
+    ("comfyui", &["apps/dreaming/start-comfyui.sh"]),
     // A headless Blender Cycles render the daemon owns + can SIGKILL (ADR-0022 §3, Phase 0). The
     // wrapper execs `blender -b … --python render.py` (a FIXED, repo-owned script — never an agent
     // param) and caps Cycles' own VRAM so a heavy scene fails its frame, not the driver. The owned
@@ -1965,7 +1965,7 @@ mod tests {
         // The comfyui launch profile maps to a friendly holder so the tray reads "batch (comfyui)"
         // (matches the keyhole WORKLOAD label) rather than the raw launcher basename.
         assert_eq!(
-            short_label("/srv/agentos/spikes/dreaming/start-comfyui.sh"),
+            short_label("/srv/agentos/apps/dreaming/start-comfyui.sh"),
             "comfyui"
         );
         // The Blender render profile (ADR-0022) maps the same way → tray reads "batch (blender-render)".

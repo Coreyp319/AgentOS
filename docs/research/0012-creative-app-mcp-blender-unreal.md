@@ -16,7 +16,7 @@
   warm-pool/heavy-lane), ADR-0019 (reviewable request queue — no-prioritization invariant), ADR-0020
   (agent-facing GPU MCP — the house pattern for "MCP over the lease"), ADR-0021 (agent tier-clamp +
   identity-binding). Codebase anchors: `crates/agentosd/src/{lease,coord,mcp,keyhole}.rs`,
-  `spikes/dreaming/{comfy_client.py,dream.sh,lucid/}`, `spikes/kwin-mcp/`, `~/.hermes/config.yaml`.
+  `apps/dreaming/{comfy_client.py,dream.sh,lucid/}`, `spikes/kwin-mcp/`, `~/.hermes/config.yaml`.
 
 ## Bottom line
 

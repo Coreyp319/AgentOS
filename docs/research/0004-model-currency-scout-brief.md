@@ -7,7 +7,7 @@
   ADR-0010 (VRAM coordinator: `admit()` predict-before-load + owned-PID lease — built),
   ADR-0011 (autonomous overnight pipeline emits *proposals*, never self-applies)
 - Reuses (built this session): `agentosd lease` (Spawn/Acquire/Release), `coord::admit`,
-  `spikes/dreaming/{dream.sh,comfy_client.py}`
+  `apps/dreaming/{dream.sh,comfy_client.py}`
 
 ## The need
 

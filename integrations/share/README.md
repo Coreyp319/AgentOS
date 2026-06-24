@@ -9,7 +9,7 @@ Share a photo from your iPhone into one of your box's own sinks, **chosen at sha
 | **Hermes task** | data → orchestrator | add a kanban task | ⏳ Phase 2 (honest "not yet") |
 | **Claude** | instructions → actor | save an **inert** proposal for desktop approval | 🔒 Phase 3 (never executes here) |
 
-The hub is a self-contained `spikes/dreaming/lucid/lucid_share.py` (stdlib + PIL) on
+The hub is a self-contained `apps/dreaming/lucid/lucid_share.py` (stdlib + PIL) on
 `127.0.0.1:8770`, fronted tailnet-only by `tailscale serve`. It is a **new, separate service** —
 it does *not* live inside `lucid_web.py` (the council's eventual "dedicated service," pulled
 forward to v0 because the Lucid web tree is under concurrent rewrite, and because code-execution

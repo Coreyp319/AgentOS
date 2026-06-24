@@ -169,7 +169,7 @@ gates as real code.** Five rules:
 
 ## Consequences
 
-- Evidence: `spikes/dreaming/lucid/{lucid_safety.py, lucid_linear.py, test_lucid_safety.py}` — the
+- Evidence: `apps/dreaming/lucid/{lucid_safety.py, lucid_linear.py, test_lucid_safety.py}` — the
   pure gates are unit-tested without a model/GPU/daemon; the lease dance is provable via `dream.sh`-style
   test seams (`LUCID_LAUNCHER`/`LUCID_GEN_CMD`) and falls open cleanly when the daemon is down.
 - This MVP is still `[SUBSTRATE-BLOCKED]` on the coordinator for live use, but — unlike the original
