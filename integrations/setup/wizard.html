@@ -4,14 +4,14 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
-<title>AgentOS · Set up</title>
+<title>AgentOS · first light</title>
 <style>
   :root{
     --bg-0:#12141c; --bg-1:#161a28; --bg-2:#1a2238;
     --text:#e6e9f0; --muted:#8a90a0; --faint:#878c9b;       /* --faint 4.7:1 on glass — passes AA */
     --blue:#9b82e0;                                          /* the instrument violet — the wizard's accent */
-    --warm:#e0884f;                                          /* RESERVED: the desktop's "needs-you" / "it's yours" hue.
-                                                               Spent ONLY on the ✓ ready beat — never on chrome. */
+    --warm:#e0884f;                                          /* RESERVED: the "it's ready / it's yours" hue.
+                                                               Spent ONLY on the ready/done beat — never on chrome. */
     --glass:rgba(38,42,54,0.46); --line:rgba(255,255,255,0.08); --line-hi:rgba(255,255,255,0.14);
     --up:#74d39a; --amber:#f2c879; --red:#ec7676;
     --blue-line:color-mix(in srgb,var(--blue) 34%,transparent);
@@ -19,8 +19,8 @@
     /* precise, engineered radii (instrument, not soft-app) */
     --radius:8px; --radius-sm:5px;
     /* local-first type — no external fetch; all faces are installed on the box (fc-list verified).
-       Fira Sans = characterful humanist body (replaces generic Inter); Condensed = technical display;
-       Hack = the machine-fact mono (GPU/GB/ports/sizes) — the "instrument" data register. */
+       Fira Sans = characterful humanist body; Condensed = technical display; Hack = the machine-fact
+       mono (GPU/GB/ports/sizes) — the "instrument" data register. */
     --sans:"Fira Sans","Fira Sans Book",system-ui,-apple-system,"Segoe UI",sans-serif;
     --display:"Fira Sans Condensed","Fira Sans",system-ui,sans-serif;
     --mono:"Hack","JetBrains Mono",ui-monospace,"DejaVu Sans Mono",monospace;
@@ -40,191 +40,273 @@
             mask-image:radial-gradient(125% 92% at 50% -4%,#000 34%,transparent 80%)}
   body::after{opacity:.04;mix-blend-mode:overlay;background-size:170px 170px;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='170' height='170'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
-  .wrap{max-width:760px;margin:0 auto;padding:48px 24px 72px;position:relative;z-index:1}
-  /* the mark: a keyhole — the product's own instrument motif — not a generic rounded square (T3: violet only) */
-  .mark{width:40px;height:40px;display:inline-block;filter:drop-shadow(0 0 11px color-mix(in srgb,var(--blue) 32%,transparent))}
-  .mark svg{display:block;width:100%;height:100%}
-  .mark .bez{fill:color-mix(in srgb,#000 28%,var(--bg-2));stroke:color-mix(in srgb,var(--blue) 46%,transparent);stroke-width:1.2}
-  .mark .kh{fill:var(--blue)}
-  .eyebrow{font-family:var(--mono);font-size:.67rem;letter-spacing:.24em;text-transform:uppercase;color:var(--blue);opacity:.85;margin:16px 0 0}
-  /* hairline SVG glyph language — one stroke weight everywhere (.gi avoids the .twarn .ic text-glyph) */
+  .wrap{max-width:720px;margin:0 auto;padding:44px 24px 72px;position:relative;z-index:1}
+  .mono{font-family:var(--mono)} a{color:var(--blue)}
+  /* hairline SVG glyph language — one stroke weight everywhere */
   .gi{display:inline-block;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;vertical-align:middle}
   .feat .ico .gi{width:24px;height:24px}
   .optsec .osi .gi{width:20px;height:20px}
   .drow .gtile .gi{width:26px;height:26px;color:color-mix(in srgb,var(--blue) 52%,var(--muted))}
-  .mono{font-family:var(--mono)}
-  h1{font-family:var(--display);font-size:2.05rem;font-weight:600;margin:5px 0 4px;letter-spacing:.3px}
-  .sub{color:var(--muted);font-size:.95rem;margin-bottom:6px}
-  .trust{color:var(--faint);font-size:.8rem;margin-bottom:10px}
-  .trust b{color:var(--up);font-weight:600}
-  .ledger{color:var(--text);font-size:.86rem;margin:0 0 24px;padding:9px 13px;border-radius:var(--radius-sm);
-    background:var(--blue-wash);border:1px solid var(--blue-line)}
-  .ledger b{color:var(--blue);font-family:var(--mono)}
-  h2{font-family:var(--display);font-size:.84rem;font-weight:640;color:var(--muted);text-transform:uppercase;letter-spacing:.9px;margin:30px 0 12px}
-  h2 .lede{font-weight:400;text-transform:none;letter-spacing:0;color:var(--faint)}
+
+  /* ── header: brand · "first light" tag · live ready-chip ── */
+  header{margin-bottom:8px}
+  .brand{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .mark{width:36px;height:36px;display:inline-block;flex:none;filter:drop-shadow(0 0 11px color-mix(in srgb,var(--blue) 32%,transparent))}
+  .mark svg{display:block;width:100%;height:100%}
+  .mark .bez{fill:color-mix(in srgb,#000 28%,var(--bg-2));stroke:color-mix(in srgb,var(--blue) 46%,transparent);stroke-width:1.2}
+  .mark .kh{fill:var(--blue)}
+  .brand h1{font-family:var(--display);font-size:1.5rem;font-weight:600;margin:0;letter-spacing:.3px}
+  .brand .tag{font-family:var(--mono);font-size:.6rem;letter-spacing:.2em;text-transform:uppercase;color:var(--blue);
+    border:1px solid var(--blue-line);border-radius:4px;padding:2px 7px;opacity:.9}
+  /* ready-chip: non-colour dot SHAPE (●/◐) so the state never depends on hue */
+  .ready-chip{display:inline-flex;align-items:center;gap:7px;margin-left:auto;font-size:.76rem;font-weight:560;
+    padding:4px 11px;border-radius:999px;border:1px solid var(--line-hi);background:rgba(0,0,0,.18);white-space:nowrap}
+  .ready-chip .dot{font-size:.7em;line-height:1}
+  .ready-chip.go{color:var(--warm);border-color:color-mix(in srgb,var(--warm) 40%,transparent)}    /* genuine "ready" beat */
+  .ready-chip.almost{color:var(--muted)}
+  .lede{color:var(--muted);font-size:.9rem;max-width:56ch;margin:8px 0 0;line-height:1.55}
+  .lede b{color:var(--up);font-weight:600}
+
+  /* ── card + numbered step head ── */
   .card{background:var(--glass);border:1px solid var(--line);border-radius:var(--radius);
-    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);padding:2px 0;overflow:hidden}
-  .feat{display:flex;align-items:center;gap:14px;padding:15px 18px;border-top:1px solid var(--line)}
-  .feat:first-child{border-top:0}
-  .feat .ico{font-size:1.5rem;width:30px;text-align:center;flex:none}
-  .feat .meta{flex:1;min-width:0}
-  .feat .nm{font-size:.95rem;font-weight:560}
-  /* 18+ tag: amber OUTLINE, not warm fill (T3 — warm is reserved) */
-  .feat .nm .tag{font-size:.6rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
-    color:var(--amber);border:1px solid color-mix(in srgb,var(--amber) 45%,transparent);border-radius:4px;
-    padding:1px 7px;margin-left:8px;vertical-align:1px}
-  .feat .dsc{color:var(--muted);font-size:.8rem;margin-top:2px}
-  .feat .size{color:var(--faint);font-size:.72rem;margin-top:3px;font-family:var(--mono);letter-spacing:-.1px}
-  /* fit is a standalone chip (a caution, not part of the size string); non-colour glyph (◐/⚠) for a11y */
-  .feat .fit{display:inline-flex;align-items:center;font-size:.71rem;font-weight:560;margin-top:6px;
-    padding:1px 9px;border-radius:var(--radius-sm);border:1px solid currentColor}
-  .feat .fit.tight{color:var(--amber)} .feat .fit.big{color:var(--red)}
-  .feat .suggest{color:var(--blue);font-size:.78rem;margin-top:5px;font-style:italic}
-  .state{font-size:.74rem;font-weight:640;white-space:nowrap;flex:none}
-  .state.gap,.state.busy{color:var(--blue)}
-  /* the ONE warm beat: a bundle crossing to ready (T3/S2) */
-  .state.ready{color:var(--warm)}
-  .feat.bloom{animation:bloom .6s ease-out 1}
-  @keyframes bloom{from{background:color-mix(in srgb,var(--warm) 16%,transparent)} to{background:transparent}}
-  .btn{font:inherit;font-size:.84rem;font-weight:560;cursor:pointer;flex:none;padding:7px 15px;border-radius:var(--radius-sm);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);padding:18px;margin-top:14px}
+  .shead{display:flex;align-items:baseline;gap:11px;margin-bottom:12px}
+  .shead .no{font-family:var(--mono);font-size:.74rem;font-variant-numeric:tabular-nums;letter-spacing:.14em;color:var(--faint);flex:none}
+  .shead h2{font-family:var(--display);font-size:1.12rem;font-weight:600;margin:0;letter-spacing:.2px}
+  .shead .aside{margin-left:auto;font-family:var(--mono);font-size:.72rem;color:var(--faint);white-space:nowrap}
+
+  /* ── 01: honest fit bar ── */
+  .fitline{display:flex;gap:8px;align-items:baseline;margin-bottom:7px;font-size:.72rem}
+  .fitline .k{text-transform:uppercase;letter-spacing:.07em;color:var(--faint)}
+  .fitline .v{margin-left:auto;font-family:var(--mono);color:var(--muted)}
+  .fittrack{position:relative;height:10px;border-radius:999px;background:rgba(255,255,255,.05);overflow:visible}
+  .fittrack .clip{position:absolute;inset:0;border-radius:999px;overflow:hidden}
+  .fittrack .fill{position:absolute;inset:0 auto 0 0;height:100%;border-radius:999px;
+    background:linear-gradient(90deg,#27306E,#4A5AD2 55%,#8A6BDC)}
+  /* the marker color is the REAL fit verdict (peak vs VRAM) — NOT keyhole state */
+  .fittrack .mark2{position:absolute;top:-4px;bottom:-4px;width:2px;border-radius:2px;transform:translateX(-1px)}
+  .fittrack .mark2.fits{background:var(--up);box-shadow:0 0 8px color-mix(in srgb,var(--up) 80%,transparent)}
+  .fittrack .mark2.tight{background:var(--amber);box-shadow:0 0 9px color-mix(in srgb,var(--amber) 85%,transparent)}
+  .fittrack .mark2.big{background:var(--red);box-shadow:0 0 9px color-mix(in srgb,var(--red) 85%,transparent)}
+  .fitfoot{display:flex;justify-content:space-between;margin-top:8px;font-size:.72rem;font-family:var(--mono)}
+  .fitfoot .hd{font-variant-numeric:tabular-nums}
+  .fitfoot .hd.fits{color:var(--up)} .fitfoot .hd.tight{color:var(--amber)} .fitfoot .hd.big{color:var(--red)}
+  .fitfoot .pk{color:var(--faint);font-variant-numeric:tabular-nums}
+  /* the honest pacing line — credits AgentOS coordination (always on), never the keyhole */
+  .pace{margin-top:12px;font-size:.82rem;line-height:1.5;display:flex;gap:8px;align-items:flex-start}
+  .pace .g{flex:none;font-style:normal}
+  .pace.fits{color:var(--muted)} .pace.fits .g{color:var(--up)}
+  .pace.tight{color:var(--amber)} .pace.big{color:var(--red)}
+  .pace b{font-weight:600;color:var(--text)}
+  /* GPU-not-detected calm fallback (no fabricated bar) */
+  .nogpu{font-size:.84rem;color:var(--muted);line-height:1.5}
+  /* a thin row under 01 for the ComfyUI runtime + research */
+  .subrow{display:flex;gap:13px;align-items:center;margin-top:15px;padding-top:14px;border-top:1px solid var(--line)}
+  .subrow .ico{width:26px;text-align:center;flex:none;color:color-mix(in srgb,var(--blue) 62%,var(--muted))}
+  .subrow .meta{flex:1;min-width:0}
+  .subrow .nm{font-size:.9rem;font-weight:560}
+  .subrow .dsc{color:var(--muted);font-size:.78rem;margin-top:1px;line-height:1.4}
+  .subrow .state.ready{color:var(--up);font-size:.76rem;font-weight:640;white-space:nowrap}
+
+  /* ── buttons ── */
+  .btn{font:inherit;font-size:.84rem;font-weight:560;cursor:pointer;flex:none;padding:8px 15px;border-radius:var(--radius-sm);
     border:1px solid var(--blue-line);background:var(--blue-wash);color:var(--blue);white-space:nowrap}
   .btn:hover{background:color-mix(in srgb,var(--blue) 20%,transparent)}
   .btn:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
   .btn.ghost{border-color:var(--line-hi);background:transparent;color:var(--muted)}
-  /* "Make one": cool violet, solid — no warm gradient (T3) */
-  .btn.go{background:color-mix(in srgb,var(--blue) 22%,transparent);color:var(--text);border-color:var(--blue-line);font-weight:640}
+  .btn.ghost:hover{background:rgba(255,255,255,.04);color:var(--text)}
+  /* the genuine ready beat — warm, earned */
+  .btn.warm{background:color-mix(in srgb,var(--warm) 20%,transparent);color:var(--text);
+    border-color:color-mix(in srgb,var(--warm) 42%,transparent);font-weight:640}
+  .btn.warm:hover{background:color-mix(in srgb,var(--warm) 30%,transparent)}
   .btn:disabled{opacity:.5;cursor:default}
-  .bar{height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:9px}
-  .bar > i{display:block;height:100%;background:var(--blue);transition:width .5s}   /* cool — no warm fill */
-  .tail{font-family:ui-monospace,monospace;font-size:.68rem;color:var(--faint);white-space:pre-wrap;
-    margin-top:8px;max-height:78px;overflow:auto;opacity:.85}
+  .lnk{background:none;border:0;color:var(--blue);font:inherit;cursor:pointer;padding:0;text-decoration:underline}
+
+  /* ── 02: the GPU keyhole instrument ── */
+  .khcard{display:flex;gap:24px;align-items:center;flex-wrap:wrap;
+    background:linear-gradient(180deg,color-mix(in srgb,var(--blue) 7%,transparent),transparent 60%),var(--glass)}
+  .inst{position:relative;width:140px;height:140px;flex:0 0 auto;display:grid;place-items:center}
+  .inst .glow{position:absolute;inset:-16%;border-radius:50%;
+    background:radial-gradient(circle,color-mix(in srgb,var(--blue) 36%,transparent),transparent 60%);filter:blur(15px);opacity:.55}
+  .inst .ring{position:absolute;inset:0;border-radius:50%;opacity:.92;
+    background:conic-gradient(from 210deg,#27306E,#4A5AD2 36%,#8A6BDC 60%,#4A5AD2 80%,#27306E);
+    -webkit-mask:radial-gradient(farthest-side,transparent 63%,#000 65%);mask:radial-gradient(farthest-side,transparent 63%,#000 65%)}
+  .inst .core{position:relative;width:88px;height:88px;border-radius:50%;
+    background:radial-gradient(circle at 50% 36%,#151b2f,#0a0d18);
+    box-shadow:inset 0 0 0 1px var(--line-hi),0 10px 26px -12px #000;display:grid;place-items:center}
+  .inst .kh{position:relative;width:28px;height:40px;color:color-mix(in srgb,var(--blue) 78%,#fff)}
+  .inst .kh .h{position:absolute;top:0;left:50%;transform:translateX(-50%);width:19px;height:19px;border-radius:50%;background:currentColor}
+  .inst .kh .s{position:absolute;top:12px;left:50%;transform:translateX(-50%);width:18px;height:26px;background:currentColor;clip-path:polygon(33% 0,67% 0,100% 100%,0 100%)}
+  .inst .live{position:absolute;bottom:6px;right:6px;width:11px;height:11px;border-radius:50%;background:var(--up);box-shadow:0 0 0 2px #0a0d18}
+  /* animation is OPT-IN under the data-anim attr, gated off by prefers-reduced-motion below */
+  [data-anim="glow"]{animation:kh-breathe 4.6s ease-in-out infinite}
+  [data-anim="ring"]{animation:kh-spin 17s linear infinite}
+  [data-anim="live"]{animation:kh-live 2.4s ease-in-out infinite}
+  @keyframes kh-breathe{0%,100%{transform:scale(1);opacity:.46}50%{transform:scale(1.08);opacity:.82}}
+  @keyframes kh-spin{to{transform:rotate(360deg)}}
+  @keyframes kh-live{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--up) 55%,transparent),0 0 0 2px #0a0d18}60%{box-shadow:0 0 0 6px transparent,0 0 0 2px #0a0d18}}
+  .khbody{flex:1 1 300px;min-width:0}
+  .khbody .eyb{display:flex;align-items:baseline;gap:11px;margin-bottom:2px}
+  .khbody .eyb .no{font-family:var(--mono);font-size:.72rem;font-variant-numeric:tabular-nums;letter-spacing:.14em;color:var(--faint)}
+  .khbody .eyb .opt{font-family:var(--mono);font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:var(--blue)}
+  .khbody h2{font-family:var(--display);font-size:1.16rem;font-weight:600;margin:0}
+  .khbody .why{margin:8px 0 0;font-size:.83rem;color:var(--muted);line-height:1.55;max-width:48ch}
+  .khrow{display:flex;gap:10px;margin-top:14px;align-items:center;flex-wrap:wrap}
+  .khprog{margin-top:16px}
+  .khprog .lab{display:flex;justify-content:space-between;font-size:.72rem;color:var(--muted);margin-bottom:6px;font-family:var(--mono)}
+  .pbar{position:relative;height:7px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden}
+  .pbar > i{position:absolute;inset:0 auto 0 0;height:100%;border-radius:999px;background:linear-gradient(90deg,#4A5AD2,#8A6BDC);transition:width .5s}
+  .banner{margin-top:14px;font-size:.83rem;line-height:1.5;display:flex;gap:8px;align-items:flex-start;color:var(--up)}
+  .banner .g{flex:none}
+  .khpost{color:var(--amber);font-size:.78rem;margin-top:9px;line-height:1.45}      /* honest residual manual step */
+  .khskip{margin-top:14px;font-size:.83rem;color:var(--muted)}
+
+  /* ── 03: bundles ── */
+  .brow{display:flex;gap:16px;align-items:center;padding:16px 0;border-top:1px solid var(--line)}
+  .brow:first-of-type{border-top:0}
+  .brow .ico{width:30px;font-size:1.4rem;text-align:center;flex:none;color:color-mix(in srgb,var(--blue) 62%,var(--muted))}
+  .brow .meta{flex:1;min-width:0}
+  .brow .nm{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:.95rem;font-weight:560}
+  .brow .nm .eng{font-size:.74rem;font-weight:400;color:var(--faint);font-family:var(--mono)}
+  /* 18+ tag: amber OUTLINE, never warm fill */
+  .brow .nm .tag{font-size:.6rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--amber);border:1px solid color-mix(in srgb,var(--amber) 45%,transparent);border-radius:4px;padding:1px 7px}
+  .brow .dsc{color:var(--muted);font-size:.8rem;margin-top:3px;line-height:1.45}
+  .brow .fit{display:inline-flex;align-items:center;gap:5px;font-size:.71rem;font-weight:560;margin-top:6px;
+    padding:1px 9px;border-radius:var(--radius-sm);border:1px solid currentColor}
+  .brow .fit.tight{color:var(--amber)} .brow .fit.big{color:var(--red)}
+  .brow .suggest{color:var(--blue);font-size:.78rem;margin-top:5px;font-style:italic}
+  .brow .act{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:9px}
+  .brow .installed{display:inline-flex;align-items:center;gap:7px;font-size:.74rem;color:var(--up);font-weight:560}
+  .brow .installed .dot{font-size:.7em}
+  .brow .size{font-size:.74rem;font-family:var(--mono);color:var(--faint);font-variant-numeric:tabular-nums}
+  .brow .state.busy{font-size:.76rem;font-weight:640;color:var(--blue)}
+  /* active fetch panel — sheen + mono log */
+  .fetchpanel{margin-top:16px;padding:15px 16px;border-radius:var(--radius-sm);
+    border:1px solid var(--blue-line);background:var(--blue-wash)}
+  .fetchpanel .top{display:flex;justify-content:space-between;align-items:baseline;font-size:.84rem;margin-bottom:8px}
+  .fetchpanel .top b{color:var(--blue);font-weight:600}
+  .fetchpanel .top .pct{font-family:var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+  .pbar .sheen{position:absolute;top:0;bottom:0;left:-40%;width:35%;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.28),transparent)}
+  [data-anim="sheen"]{animation:sheen 1.5s linear infinite}
+  @keyframes sheen{to{transform:translateX(360%)}}
+  .fetchlog{margin-top:11px;font-family:var(--mono);font-size:.71rem;line-height:1.7;color:var(--muted);
+    max-height:96px;overflow:auto;white-space:pre-wrap}
+  .fetchlog .pfx{color:var(--blue)}
+  .matoggle{display:flex;justify-content:center;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+  .matoggle button{background:none;border:0;color:var(--muted);font:inherit;font-size:.84rem;cursor:pointer;
+    display:inline-flex;align-items:center;gap:7px}
+  .matoggle button:hover{color:var(--text)}
+  .matoggle button:focus-visible{outline:2px solid var(--blue);outline-offset:3px;border-radius:4px}
   /* inline 18+ affirmation panel (replaces the native confirm) */
-  .affirm{padding:14px 18px;border-top:1px solid var(--line);background:color-mix(in srgb,var(--amber) 6%,transparent)}
+  .affirm{margin-top:14px;padding:14px 16px;border-radius:var(--radius-sm);
+    border:1px solid color-mix(in srgb,var(--amber) 34%,transparent);background:color-mix(in srgb,var(--amber) 6%,transparent)}
   .affirm h3{font-size:.85rem;margin:0 0 6px;color:var(--amber)}
   .affirm p{font-size:.8rem;color:var(--muted);margin:0 0 8px;line-height:1.5}
   .affirm label{display:flex;gap:8px;align-items:flex-start;font-size:.82rem;color:var(--text);margin:8px 0}
   .affirm .row{display:flex;gap:8px;margin-top:10px}
-  .creds{padding:16px 18px}
-  .creds label{display:block;font-size:.8rem;color:var(--muted);margin:8px 0 4px}
-  .creds input,.creds select{width:100%;font:inherit;font-size:.84rem;padding:8px 11px;border-radius:var(--radius-sm);
-    border:1px solid var(--line-hi);background:rgba(0,0,0,.25);color:var(--text)}
-  .creds .row{display:flex;gap:8px;align-items:flex-end}
-  .creds .row > div{flex:1}
-  .ok{color:var(--up);font-size:.8rem;margin-top:6px}
-  .err{color:var(--red);font-size:.78rem;margin-top:6px}
-  a{color:var(--blue)} .foot{color:var(--faint);font-size:.74rem;margin-top:30px;line-height:1.8}
-  .foot .stored{color:var(--muted)} .foot button{font:inherit;font-size:.72rem;color:var(--blue);background:none;border:0;cursor:pointer;padding:0;text-decoration:underline}
-  code{background:rgba(255,255,255,.06);padding:1px 6px;border-radius:5px;color:var(--muted)}
-  /* ── "Make Lucid feel smooth" callout — a slim companion card tied to the video/Lucid lanes.
-       Strongly RECOMMENDED, never a gate: the keyhole makes the shared-GPU queue legible so a
-       waiting dream never reads as a freeze. Cool violet throughout — no --warm here (the keyhole
-       is a calm instrument, not a "done" beat); the one allowed glow is the violet preview frame. ── */
-  .khc{display:flex;gap:15px;align-items:flex-start;margin-top:12px;padding:15px 17px;border-radius:var(--radius);
-    background:var(--glass);border:1px solid var(--blue-line);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
-  .khc .shot{width:104px;height:60px;flex:none;border-radius:var(--radius-sm);object-fit:cover;display:block;
-    background:var(--bg-2);border:1px solid var(--blue-line);
-    box-shadow:0 0 0 1px color-mix(in srgb,var(--blue) 18%,transparent),0 6px 18px rgba(0,0,0,.28)}
-  .khc .body{flex:1;min-width:0}
-  .khc .eyb{font-family:var(--mono);font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:var(--blue);opacity:.9}
-  /* "optional" tag — a calm, neutral outline chip (NOT amber/18+, NOT warm): makes optionality explicit */
-  .khc .eyb .opt{font-size:.9em;font-weight:600;letter-spacing:.08em;color:var(--faint);
-    border:1px solid var(--line-hi);border-radius:4px;padding:0 6px;margin-left:8px;vertical-align:1px}
-  .khc .ttl{font-size:.95rem;font-weight:600;margin-top:3px}
-  .khc .why{color:var(--muted);font-size:.81rem;margin-top:4px;line-height:1.5;max-width:54ch}
-  /* the live arbitration line the keyhole shows — set in the data register so it reads as a real instrument */
-  .khc .qline{font-family:var(--mono);font-size:.73rem;color:var(--faint);letter-spacing:-.1px;margin-top:7px}
-  .khc .post{color:var(--amber);font-size:.76rem;margin-top:7px;line-height:1.45}   /* honest residual manual step */
-  .khc .act{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:6px;white-space:nowrap}
-  .khc .act .don{color:var(--up);font-size:.78rem;font-weight:640}
-  .khc .act .state.busy{color:var(--blue);font-size:.78rem;font-weight:640}
-  /* non-colour status glyph (◐) so "waiting" never depends on hue */
-  .khc .qline .gly{font-style:normal;color:var(--blue);margin-right:5px}
-  @media (max-width:560px){ .khc{flex-wrap:wrap} .khc .shot{width:100%;height:120px} .khc .act{flex:1 1 100%;align-items:flex-start} }
-  /* ── Optional setup — one quiet, clearly-secondary region below the make-flow (no extra glass) ── */
-  .opthead{margin:46px 0 14px;padding-top:28px;border-top:1px solid var(--line)}
-  .opthead .opth2{font-size:.96rem;font-weight:640;color:var(--text);letter-spacing:.2px;margin:0;text-transform:none}
-  .opthead .optsub{color:var(--muted);font-size:.83rem;line-height:1.5;margin:5px 0 0;max-width:58ch}
-  /* lighter than the primary .card — a flat surface that gently lifts only once expanded */
-  .optsec{background:color-mix(in srgb,var(--bg-1) 76%,transparent);border:1px solid var(--line);
-    border-radius:var(--radius);overflow:hidden;margin-bottom:10px}
+  .acthint{margin:10px 0 0;font-size:.8rem;color:var(--amber);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+
+  /* ── 04: extras disclosure ── */
+  .optsec{margin-top:14px;background:color-mix(in srgb,var(--bg-1) 76%,transparent);border:1px solid var(--line);
+    border-radius:var(--radius);overflow:hidden}
   .optsec[open]{background:var(--glass)}
-  .optsec > summary{cursor:pointer;list-style:none;display:flex;gap:13px;align-items:center;padding:14px 18px}
+  .optsec > summary{cursor:pointer;list-style:none;display:flex;gap:13px;align-items:center;padding:15px 18px}
   .optsec > summary::-webkit-details-marker{display:none}
   .optsec > summary:hover{background:rgba(255,255,255,.025)}
   .optsec > summary:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
   .optsec .osi{width:24px;text-align:center;flex:none;color:var(--blue);opacity:.95}
   .optsec .ost{flex:1;min-width:0}
-  .optsec .ost .t{display:block;font-size:.95rem;font-weight:560;color:var(--text)}
+  .optsec .ost .t{display:block;font-size:.96rem;font-weight:560;color:var(--text)}
   .optsec .ost .d{display:block;font-size:.78rem;color:var(--muted);margin-top:1px;line-height:1.4}
   .optsec > summary .chev{color:var(--faint);font-size:.74rem;flex:none;white-space:nowrap}
-  .optbody{padding:2px 18px 16px}
-  /* ── Desktop rows — one coherent 84×48 preview tile per row: photo · swatch · glyph ── */
+  .optbody{padding:4px 18px 18px}
+  .ssub{font-size:.86rem;font-weight:640;color:var(--text);margin:18px 0 2px;padding-top:16px;border-top:1px solid var(--line)}
+  .ssub:first-child{padding-top:4px;border-top:0}
+  /* accounts (creds) */
+  .creds label{display:block;font-size:.8rem;color:var(--muted);margin:8px 0 4px}
+  .creds input,.creds select{width:100%;font:inherit;font-size:.84rem;padding:8px 11px;border-radius:var(--radius-sm);
+    border:1px solid var(--line-hi);background:rgba(0,0,0,.25);color:var(--text)}
+  .creds .row{display:flex;gap:8px;align-items:flex-end;margin-top:10px}
+  .creds .row > div{flex:1}
+  .ok{color:var(--up);font-size:.8rem;margin-top:6px} .err{color:var(--red);font-size:.78rem;margin-top:6px}
+  /* desktop rows — one coherent 84×48 preview tile per row */
   .dgroup{margin:14px 0 2px}
   .dgroup .ghd{font-size:.85rem;font-weight:640;color:var(--text)}
   .dgroup .gld{font-size:.78rem;color:var(--muted);margin:2px 0 4px;line-height:1.45}
   .drow{display:flex;gap:13px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
   .drow .thumb,.drow .swatch,.drow .gtile{width:84px;height:48px;border-radius:8px;flex:none;border:1px solid var(--line-hi)}
   .drow .thumb{object-fit:cover;display:block;background:var(--bg-2)}
-  .drow .swatch{display:flex;overflow:hidden}
-  .drow .swatch > i{flex:1}
-  .drow .gtile{display:flex;align-items:center;justify-content:center;font-size:1.35rem;
-    background:linear-gradient(160deg,var(--bg-1),var(--bg-2))}
+  .drow .swatch{display:flex;overflow:hidden} .drow .swatch > i{flex:1}
+  .drow .gtile{display:flex;align-items:center;justify-content:center;font-size:1.35rem;background:linear-gradient(160deg,var(--bg-1),var(--bg-2))}
   .drow .meta{flex:1;min-width:0}
   .drow .nm{font-size:.92rem;font-weight:560}
   .drow .dsc{color:var(--muted);font-size:.78rem;margin-top:2px;line-height:1.45}
   .drow .eff{color:var(--faint);font-size:.74rem;margin-top:3px}
-  .drow .post{color:var(--amber);font-size:.76rem;margin-top:5px}      /* honest residual manual step */
+  .drow .post{color:var(--amber);font-size:.76rem;margin-top:5px}
   .don{color:var(--up);font-size:.74rem;font-weight:640;white-space:nowrap}
-  .acthint{margin:12px 0 0;font-size:.8rem;color:var(--muted);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
-  /* ── Remote access (Tailscale) — copy-don't-execute; the wizard runs nothing here ── */
-  .twarn{margin-top:12px;border-radius:var(--radius-sm);border:1px solid color-mix(in srgb,var(--red) 32%,transparent);background:color-mix(in srgb,var(--red) 6%,transparent);overflow:hidden}
+  .drow .state.busy{color:var(--blue);font-size:.74rem;font-weight:640;white-space:nowrap}
+  /* remote access — copy-don't-execute */
+  .twarn{margin-top:8px;border-radius:var(--radius-sm);border:1px solid color-mix(in srgb,var(--red) 32%,transparent);background:color-mix(in srgb,var(--red) 6%,transparent);overflow:hidden}
   .twarn .th{display:flex;gap:9px;align-items:flex-start;padding:11px 15px;background:color-mix(in srgb,var(--red) 13%,transparent);font-size:.83rem;font-weight:640;color:var(--amber);line-height:1.45}
   .twarn .th .ic{flex:none;font-size:1rem;line-height:1.2}
   .twarn .body{padding:13px 15px 4px}
   .twarn .lede2{font-size:.81rem;color:var(--text);margin:0 0 11px;line-height:1.5}
-  /* exposed surfaces — a port chip + what it can do, scannable rows */
   .expo{list-style:none;margin:0;padding:0;display:grid;gap:7px}
   .expo li{display:flex;gap:10px;align-items:baseline;font-size:.8rem;line-height:1.4}
-  .expo .port{flex:none;min-width:80px;text-align:center;font-family:ui-monospace,monospace;font-size:.69rem;color:var(--red);background:color-mix(in srgb,var(--red) 12%,transparent);border:1px solid color-mix(in srgb,var(--red) 26%,transparent);border-radius:6px;padding:2px 6px}
-  .expo .what{color:var(--muted)}
-  .expo .what b{color:var(--text);font-weight:560}
-  /* labelled rule blocks — the eyebrow carries the structure so bold can stay rare */
+  .expo .port{flex:none;min-width:80px;text-align:center;font-family:var(--mono);font-size:.69rem;color:var(--red);background:color-mix(in srgb,var(--red) 12%,transparent);border:1px solid color-mix(in srgb,var(--red) 26%,transparent);border-radius:6px;padding:2px 6px}
+  .expo .what{color:var(--muted)} .expo .what b{color:var(--text);font-weight:560}
   .trule{margin-top:12px}
   .trule .lbl{display:block;font-size:.67rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--amber);margin-bottom:3px}
-  .trule p{font-size:.8rem;color:var(--muted);margin:0;line-height:1.5}
-  .trule p b{color:var(--text);font-weight:560}
+  .trule p{font-size:.8rem;color:var(--muted);margin:0;line-height:1.5} .trule p b{color:var(--text);font-weight:560}
   .twarn .tbottom{margin:13px 15px;padding:10px 13px;border-radius:var(--radius-sm);border:1px solid color-mix(in srgb,var(--amber) 38%,transparent);background:color-mix(in srgb,var(--amber) 9%,transparent);font-size:.81rem;color:var(--amber);font-weight:600;line-height:1.45}
   .tconsent{display:flex;gap:9px;align-items:flex-start;font-size:.82rem;margin:13px 0 0;cursor:pointer;line-height:1.5}
   .tconsent input{margin-top:3px;flex:none}
-  .tcmd{font-family:ui-monospace,monospace;font-size:.72rem;color:var(--text);background:rgba(0,0,0,.3);border:1px solid var(--line-hi);border-radius:var(--radius-sm);padding:11px 13px;overflow:auto;white-space:pre;line-height:1.6;margin:8px 0}
+  .tcmd{font-family:var(--mono);font-size:.72rem;color:var(--text);background:rgba(0,0,0,.3);border:1px solid var(--line-hi);border-radius:var(--radius-sm);padding:11px 13px;overflow:auto;white-space:pre;line-height:1.6;margin:8px 0}
+  code{background:rgba(255,255,255,.06);padding:1px 6px;border-radius:5px;color:var(--muted)}
+
+  /* ── 05: handoff ── */
+  .handoff{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+  .handoff .left{flex:1 1 240px;min-width:0}
+  .handoff .k{font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
+  .handoff .prompt{margin:6px 0 0;font-size:1.05rem;line-height:1.45;color:var(--text)}
+  .handoff .pcap{font-size:.74rem;color:var(--muted);margin-top:5px}
+  .handoff .right{flex:0 0 auto;display:flex;flex-direction:column;gap:9px;align-items:stretch;min-width:188px}
+  .handoff .right .btn{text-align:center;padding:11px 20px}
+  .handoff .cap{font-size:.74rem;color:var(--muted);text-align:center;line-height:1.45}
+
+  .foot{color:var(--faint);font-size:.74rem;margin-top:30px;line-height:1.8}
+  .foot .stored{color:var(--muted)} .foot .lnk{font-size:.72rem}
+
   /* one calm first-paint stagger (idle is sacred — runs once, then stillness) */
   @keyframes rise{from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none}}
-  body.first .feat{animation:rise .35s ease both}
-  /* ── ACCESSIBILITY (T0): respect reduced motion + reduced transparency ── */
+  body.first .card{animation:rise .35s ease both}
+  body.first .card:nth-of-type(2){animation-delay:.04s}
+  body.first .card:nth-of-type(3){animation-delay:.08s}
+
+  /* ── ACCESSIBILITY: reduced motion AND reduced transparency ── */
   @media (prefers-reduced-motion: reduce){
-    *,.bar>i,.feat.bloom,body.first .feat{animation:none !important;transition:none !important}
+    *,.pbar>i,body.first .card{animation:none !important;transition:none !important}
+    [data-anim]{animation:none !important}     /* the keyhole instrument freezes to a still emblem */
   }
   @media (prefers-reduced-transparency: reduce){
     :root{--glass:rgba(24,28,40,0.96)}
     .card{backdrop-filter:none !important;-webkit-backdrop-filter:none !important}
     .optsec,.optsec[open]{background:rgba(22,26,38,0.98)}
-    body::after{display:none}                 /* drop the grain — keep surfaces clean & solid */
+    .inst .glow{display:none}                  /* drop the blurred bloom — keep the solid emblem */
+    body::after{display:none}                  /* drop the grain — keep surfaces clean & solid */
   }
-  /* ── focus order is DOM order (top→bottom); make every interactive surface show a visible ring ── */
-  a:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
-  /* ── narrow widths: let the action wrap below the text instead of crushing it ── */
+  a:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+  /* ── narrow widths: let actions wrap below the text instead of crushing it ── */
   @media (max-width:560px){
-    .wrap{padding:36px 16px 60px}
-    .feat{flex-wrap:wrap}
-    .feat .meta{flex:1 1 calc(100% - 44px)}
-    .feat .btn,.feat > a.btn,.feat .state{margin-left:44px}
-    .drow{flex-wrap:wrap}
-    .drow .meta{flex:1 1 100%}
-    .drow .btn,.drow .don,.drow .state{margin-left:0}
-    .creds .row{flex-wrap:wrap}
-    .creds .row > div{flex:1 1 100%}
-    .expo li{flex-wrap:wrap}
-    .expo .port{min-width:0}
+    .wrap{padding:32px 16px 60px}
+    .khcard{gap:16px} .inst{width:120px;height:120px}
+    .brow{flex-wrap:wrap} .brow .meta{flex:1 1 calc(100% - 46px)} .brow .act{align-items:flex-start;margin-left:46px}
+    .drow{flex-wrap:wrap} .drow .meta{flex:1 1 100%}
+    .creds .row{flex-wrap:wrap} .creds .row > div{flex:1 1 100%}
+    .handoff .right{min-width:0;flex:1 1 100%}
+    .expo li{flex-wrap:wrap} .expo .port{min-width:0}
   }
 </style>
 </head>
@@ -246,103 +328,127 @@
   <symbol id="i-ambient" viewBox="0 0 24 24"><path d="M3 12h3l2-6 3.5 13L15 9l1.5 3H21"/></symbol>
 </defs></svg>
 <div class="wrap">
-  <div class="mark" aria-hidden="true"><svg viewBox="0 0 36 36">
-    <rect class="bez" x="1.5" y="1.5" width="33" height="33" rx="8"/>
-    <path class="kh" d="M18 10a5 5 0 0 0-2.7 9.2L13.2 27h9.6l-2.1-7.8A5 5 0 0 0 18 10z"/>
-  </svg></div>
-  <div class="eyebrow">On-device setup</div>
-  <h1>Set up AgentOS</h1>
-  <div class="sub">Pick what you want to make. We detect what's already here and download only what's missing.</div>
-  <div class="trust"><b>Everything runs on this machine.</b> Nothing about your choices or your creations leaves the box.</div>
-  <div id="ledger" class="ledger" role="status" aria-live="polite" hidden></div>
 
-  <h2>Your machine</h2>
-  <div id="runtime" class="card"><div class="feat"><div class="meta"><div class="dsc">checking your hardware…</div></div></div></div>
-
-  <h2>What do you want to make? <span class="lede">· start with text — it's quick and writes your prompts</span></h2>
-  <div id="bundles" class="card"><div class="feat"><div class="meta"><div class="dsc">checking what's installed…</div></div></div></div>
-
-  <div id="progress" role="status" aria-live="polite" aria-atomic="false"></div>
-
-  <!-- "Make Lucid feel smooth": appears alongside the video/Lucid lanes; the keyhole makes the
-       shared-GPU queue legible so a waiting dream never reads as a freeze. Recommended, not required. -->
-  <div id="lucidkey" role="status" aria-live="polite"></div>
-
-  <div class="opthead">
-    <h2 class="opth2">Optional setup</h2>
-    <p class="optsub">The AgentOS desktop look, ambient instruments, accounts, and remote access — set any of these up now, later, or not at all. None of it is needed to start making things.</p>
-  </div>
-
-  <details id="desktop-sec" class="optsec">
-    <summary>
-      <span class="osi" aria-hidden="true"><svg class="gi"><use href="#i-look"/></svg></span>
-      <span class="ost"><span class="t">Customize your desktop</span><span class="d">The AgentOS look, ambient instruments &amp; agent wiring</span></span>
-      <span class="chev" id="dchev" aria-hidden="true">show ▾</span>
-    </summary>
-    <div class="optbody">
-      <div id="desktop"><div class="dsc" style="color:var(--muted);margin-top:10px">checking what's installed…</div></div>
+  <header>
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><svg viewBox="0 0 36 36">
+        <rect class="bez" x="1.5" y="1.5" width="33" height="33" rx="8"/>
+        <path class="kh" d="M18 10a5 5 0 0 0-2.7 9.2L13.2 27h9.6l-2.1-7.8A5 5 0 0 0 18 10z"/>
+      </svg></span>
+      <h1>AgentOS</h1>
+      <span class="tag">first light</span>
+      <span id="ready-chip" class="ready-chip almost" role="status" aria-live="polite"><span class="dot" aria-hidden="true">◐</span>Checking…</span>
     </div>
-  </details>
+    <p class="lede"><b>Everything runs on this machine.</b> Set up the models behind your dreams, in order — each step is optional, so skip what you don't need and come back later. We detect what's already here and download only what's missing.</p>
+    <div id="ledger" class="lede" role="status" aria-live="polite" hidden></div>
+  </header>
 
-  <details id="acct-sec" class="optsec">
+  <!-- 01 — your machine (honest fit bar) -->
+  <section class="card" aria-labelledby="h-machine">
+    <div class="shead"><span class="no">01</span><h2 id="h-machine">Your machine</h2><span class="aside" id="gpuName">checking…</span></div>
+    <div id="fit"><div class="nogpu">Reading your hardware…</div></div>
+    <div id="runtimeSub"></div>
+  </section>
+
+  <!-- 02 — the GPU keyhole (dedicated, optional instrument) -->
+  <section class="card khcard" aria-labelledby="h-keyhole">
+    <div class="inst" aria-hidden="true">
+      <div class="glow" data-anim="glow"></div>
+      <div class="ring" data-anim="ring"></div>
+      <div class="core"><div class="kh"><div class="h"></div><div class="s"></div></div><span id="khLive" class="live" data-anim="live" hidden></span></div>
+    </div>
+    <div class="khbody">
+      <div class="eyb"><span class="no">02</span><span class="opt">Recommended · optional</span></div>
+      <h2 id="h-keyhole">The GPU keyhole</h2>
+      <p class="why">Your local models — the dream/video model, the narrator that writes your scenes, image generation — all share this one GPU. AgentOS coordinates them (a VRAM lease and a demand queue) so they take turns instead of fighting over memory, which is what keeps generation steady. The Keyhole is a small, read-only tray instrument onto that coordination: GPU pressure, who holds the GPU, and the queue when dreams wait their turn. So a tight render reads as <i>holding steady</i> and a queued dream as <i>queued</i> — you can see it working, instead of guessing. It doesn't change anything itself; it's the window.</p>
+      <div id="khState" role="status" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- 03 — what to make -->
+  <section class="card" aria-labelledby="h-make">
+    <div class="shead"><span class="no">03</span><h2 id="h-make">What do you want to make?</h2><span class="aside" id="laneCount"></span></div>
+    <p class="lede" style="margin-top:0">Start with text — it's quick and writes your prompts. Image &amp; video need the ComfyUI runtime (step 01).</p>
+    <div id="bundles"><div class="brow"><div class="meta"><div class="dsc">checking what's installed…</div></div></div></div>
+    <div id="progress" role="status" aria-live="polite" aria-atomic="false"></div>
+    <div class="matoggle"><button id="matBtn" type="button" aria-expanded="false">Show the 18+ video lanes <span aria-hidden="true">›</span></button></div>
+  </section>
+
+  <!-- 04 — extras -->
+  <details id="extras-sec" class="optsec">
     <summary>
       <span class="osi" aria-hidden="true"><svg class="gi"><use href="#i-key"/></svg></span>
-      <span class="ost"><span class="t">Accounts</span><span class="d">Tokens for gated &amp; mature models — only the Mature video lane needs one</span></span>
-      <span class="chev" id="achev" aria-hidden="true">show ▾</span>
-    </summary>
-    <div class="optbody creds">
-      <div class="dsc" style="color:var(--muted);font-size:.82rem">A free <a href="https://civitai.com/user/account" target="_blank" rel="noopener">Civitai</a> token unlocks the Wan mature checkpoints. A <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">HuggingFace</a> token is only needed for gated models. Tokens go to your OS keyring — never a file, never sent anywhere but the download.</div>
-      <div class="row" style="margin-top:12px">
-        <div><label for="svc">Service</label>
-          <select id="svc"><option value="civitai">Civitai (mature video)</option><option value="huggingface">HuggingFace (gated models)</option></select></div>
-        <div><label for="tok">Token</label><input id="tok" type="password" placeholder="paste token, then Save" autocomplete="off" /></div>
-        <button class="btn" id="saveTok">Save</button>
-        <button class="btn ghost" id="forgetTok" title="Remove the stored token for the selected service">Forget</button>
-      </div>
-      <div id="credMsg" role="status" aria-live="polite"></div>
-    </div>
-  </details>
-
-  <details id="remote-sec" class="optsec">
-    <summary>
-      <span class="osi" aria-hidden="true"><svg class="gi"><use href="#i-signal"/></svg></span>
-      <span class="ost"><span class="t">Remote access</span><span class="d">Reach these UIs from your phone over Tailscale</span></span>
-      <span class="chev" id="tchev" aria-hidden="true">show ▾</span>
+      <span class="ost"><span class="t">04 · Extras</span><span class="d">Accounts, desktop components &amp; remote access — all optional</span></span>
+      <span class="chev" id="echev" aria-hidden="true">show ▾</span>
     </summary>
     <div class="optbody">
-    <div class="twarn">
-      <div class="th"><span class="ic" aria-hidden="true">⚠</span><span>Remote access exposes <u>unauthenticated</u> desktop UIs to your whole tailnet. Read this before you copy anything.</span></div>
-      <div class="body">
-        <p class="lede2">These UIs have <b>no per-request login</b> — tailnet membership is the entire authorization boundary. Anyone on your Tailscale account (every device you've added <b>or shared</b>, and your account if it's compromised) can reach, with no password:</p>
-        <ul class="expo">
-          <li><span class="port">:8765</span><span class="what"><b>Lucid</b> — generate <b>explicit (18+) content</b> and drive the GPU / VRAM lease</span></li>
-          <li><span class="port">:9123 / :9124</span><span class="what"><b>Status &amp; Models panels</b> — your system state and model library</span></li>
-          <li><span class="port">:9119</span><span class="what"><b>Hermes board</b> — can drive the agent</span></li>
-          <li><span class="port">:8770</span><span class="what"><b>Share hub</b> — push photos straight into your box</span></li>
-        </ul>
-        <div class="trule"><span class="lbl">Your credentials stay on-box</span>
-          <p>This installer (<code>:9125</code>) is never put on the tailnet — your Hugging&nbsp;Face / Civitai tokens live in your OS keyring (or a disclosed <code>0600</code> file) and never leave this machine. The Hermes control API (<code>:8642</code>) and ComfyUI (<code>:8188</code>) are deliberately <b>not</b> exposed — keep them that way.</p></div>
-        <div class="trule"><span class="lbl">serve, never funnel</span>
-          <p><code>tailscale serve</code> = tailnet-only. <code>tailscale funnel</code> = <b>the public internet</b> — never run it. Verify every line of <code>tailscale serve status</code> reads “tailnet only.” Never port-forward, bind <code>0.0.0.0</code>, or use <code>funnel</code>/<code>ngrok</code>.</p></div>
-        <div class="trule"><span class="lbl">Reboot gap — eyes open</span>
-          <p>Leaving <code>tailscaled</code> <b>enabled</b> keeps these unauthenticated UIs reachable across <b>every reboot</b> — only do that with 2FA + a <code>tag:agentos</code> ACL in place. Disabled, your box drops off the tailnet after a reboot until you re-run <code>sudo systemctl enable --now tailscaled</code>.</p></div>
-        <div class="trule"><span class="lbl">Lower the blast radius</span>
-          <p>Turn on Tailscale <b>2FA</b> (highest leverage), apply a <code>tag:agentos</code> ACL so only <i>your</i> devices reach these ports, and never set <code>GATEWAY_ALLOW_ALL_USERS=true</code>.</p></div>
+
+      <div class="ssub">Accounts</div>
+      <div class="creds">
+        <div class="dsc" style="color:var(--muted);font-size:.82rem;line-height:1.5">A free <a href="https://civitai.com/user/account" target="_blank" rel="noopener">Civitai</a> token unlocks the Wan mature checkpoints. A <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">HuggingFace</a> token is only needed for gated models. Tokens go to your OS keyring — never a file, never sent anywhere but the download.</div>
+        <div class="row">
+          <div><label for="svc">Service</label>
+            <select id="svc"><option value="civitai">Civitai (mature video)</option><option value="huggingface">HuggingFace (gated models)</option></select></div>
+          <div><label for="tok">Token</label><input id="tok" type="password" placeholder="paste token, then Save" autocomplete="off" /></div>
+          <button class="btn" id="saveTok">Save</button>
+          <button class="btn ghost" id="forgetTok" title="Remove the stored token for the selected service">Forget</button>
+        </div>
+        <div id="credMsg" role="status" aria-live="polite"></div>
       </div>
-      <p class="tbottom">Bottom line — use <code>serve</code> (never <code>funnel</code>), keep 2FA on, and restrict to your own devices with a <code>tag:agentos</code> ACL.</p>
-    </div>
-    <label class="tconsent"><input type="checkbox" id="tsok">
-      <span>I understand these UIs have no login; that anyone on my tailnet — every device I've added <b>or shared</b>, and my account if it is compromised — can reach Lucid (explicit content + GPU) and the agent board with no password; and that I will use <code>serve</code> (never <code>funnel</code>) and keep Tailscale 2FA on.</span></label>
-    <div id="tsteps" hidden>
-      <p class="dsc" style="margin-top:12px">Run these yourself — the wizard never runs them (they need sudo, and it deliberately can't expose itself):</p>
-      <pre class="tcmd">sudo pacman -S tailscale
+
+      <div class="ssub">Desktop components</div>
+      <p class="dsc" style="color:var(--muted);font-size:.8rem;margin:2px 0 0">Adopt the AgentOS look, ambient instruments &amp; agent wiring — including the GPU keyhole — into your desktop session.</p>
+      <div id="desktop"><div class="dsc" style="color:var(--muted);margin-top:10px">checking what's installed…</div></div>
+
+      <div class="ssub">Remote access</div>
+      <p class="dsc" style="color:var(--muted);font-size:.8rem;margin:2px 0 8px">Reach these UIs from your phone over Tailscale — the wizard never runs anything here.</p>
+      <div class="twarn">
+        <div class="th"><span class="ic" aria-hidden="true">⚠</span><span>Remote access exposes <u>unauthenticated</u> desktop UIs to your whole tailnet. Read this before you copy anything.</span></div>
+        <div class="body">
+          <p class="lede2">These UIs have <b>no per-request login</b> — tailnet membership is the entire authorization boundary. Anyone on your Tailscale account (every device you've added <b>or shared</b>, and your account if it's compromised) can reach, with no password:</p>
+          <ul class="expo">
+            <li><span class="port">:8765</span><span class="what"><b>Lucid</b> — generate <b>explicit (18+) content</b> and drive the GPU / VRAM lease</span></li>
+            <li><span class="port">:9123 / :9124</span><span class="what"><b>Atrium &amp; Models panels</b> — your system state, library and model panel</span></li>
+            <li><span class="port">:9119</span><span class="what"><b>Hermes board</b> — can drive the agent</span></li>
+            <li><span class="port">:8770</span><span class="what"><b>Share hub</b> — push photos straight into your box</span></li>
+          </ul>
+          <div class="trule"><span class="lbl">Your credentials stay on-box</span>
+            <p>This installer (<code>:9125</code>) is never put on the tailnet — your Hugging&nbsp;Face / Civitai tokens live in your OS keyring (or a disclosed <code>0600</code> file) and never leave this machine. The Hermes control API (<code>:8642</code>) and ComfyUI (<code>:8188</code>) are deliberately <b>not</b> exposed — keep them that way.</p></div>
+          <div class="trule"><span class="lbl">serve, never funnel</span>
+            <p><code>tailscale serve</code> = tailnet-only. <code>tailscale funnel</code> = <b>the public internet</b> — never run it. Verify every line of <code>tailscale serve status</code> reads “tailnet only.” Never port-forward, bind <code>0.0.0.0</code>, or use <code>funnel</code>/<code>ngrok</code>.</p></div>
+          <div class="trule"><span class="lbl">Reboot gap — eyes open</span>
+            <p>Leaving <code>tailscaled</code> <b>enabled</b> keeps these unauthenticated UIs reachable across <b>every reboot</b> — only do that with 2FA + a <code>tag:agentos</code> ACL in place. Disabled, your box drops off the tailnet after a reboot until you re-run <code>sudo systemctl enable --now tailscaled</code>.</p></div>
+          <div class="trule"><span class="lbl">Lower the blast radius</span>
+            <p>Turn on Tailscale <b>2FA</b> (highest leverage), apply a <code>tag:agentos</code> ACL so only <i>your</i> devices reach these ports, and never set <code>GATEWAY_ALLOW_ALL_USERS=true</code>.</p></div>
+        </div>
+        <p class="tbottom">Bottom line — use <code>serve</code> (never <code>funnel</code>), keep 2FA on, and restrict to your own devices with a <code>tag:agentos</code> ACL.</p>
+      </div>
+      <label class="tconsent"><input type="checkbox" id="tsok">
+        <span>I understand these UIs have no login; that anyone on my tailnet — every device I've added <b>or shared</b>, and my account if it is compromised — can reach Lucid (explicit content + GPU) and the agent board with no password; and that I will use <code>serve</code> (never <code>funnel</code>) and keep Tailscale 2FA on.</span></label>
+      <div id="tsteps" hidden>
+        <p class="dsc" style="margin-top:12px;color:var(--muted)">Run these yourself — the wizard never runs them (they need sudo, and it deliberately can't expose itself):</p>
+        <pre class="tcmd">sudo pacman -S tailscale
 sudo systemctl enable --now tailscaled      # persist this — closes the reboot gap (only with 2FA + tag:agentos ACL)
 sudo tailscale up                           # opens an auth URL; use the same account on your phone
 integrations/agentosd-remote.sh up          # serve the UIs (down / status to reverse / inspect)</pre>
-      <p class="dsc">See <code>docs/REMOTE-ACCESS.md</code> for the <code>tag:agentos</code> ACL JSON + hardening.</p>
-    </div>
+        <p class="dsc" style="color:var(--muted)">See <code>docs/REMOTE-ACCESS.md</code> for the <code>tag:agentos</code> ACL JSON + hardening.</p>
+      </div>
     </div>
   </details>
+
+  <!-- 05 — handoff -->
+  <section class="card handoff" aria-labelledby="h-ready">
+    <div class="left">
+      <div class="shead" style="margin-bottom:6px"><span class="no">05</span><h2 id="h-ready">When you're ready</h2></div>
+      <p class="prompt" id="handoffPrompt">Your first dream is yours to write.</p>
+      <div class="pcap" id="handoffCap"></div>
+    </div>
+    <div class="right">
+      <a class="btn warm" id="openLucid" href="http://127.0.0.1:8765" target="_blank" rel="noopener">Open Lucid →</a>
+      <a class="btn ghost" id="openAtrium" href="http://127.0.0.1:9123/atrium" target="_blank" rel="noopener">Open the Atrium →</a>
+      <div class="cap">Lucid to make one · the Atrium for your library &amp; instruments</div>
+    </div>
+  </section>
 
   <div class="foot">
     Prefer the terminal? <code>./install.sh --onboard</code> does the same.<br />
@@ -354,164 +460,233 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
 <script>
   const ESC={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
   const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>ESC[c]);
-  const SVG=id=>`<svg class="gi"><use href="#${id}"/></svg>`;   // hairline glyph from the sprite (decorative)
+  const SVG=id=>`<svg class="gi"><use href="#${id}"/></svg>`;
   const ICON={text:SVG("i-text"),image:SVG("i-image"),video:SVG("i-video")};
-  let TOKEN="", busy={}, STATE={}, suggested={}, wasReady={};
+  const LUCID="http://127.0.0.1:8765", ATRIUM="http://127.0.0.1:9123/atrium";
+  let TOKEN="", busy={}, STATE={}, suggested={}, wasReady={}, showMature=false;
 
   async function tok(){ if(!TOKEN) TOKEN=(await (await fetch("/api/token")).json()).token; return TOKEN; }
   async function post(path,body){
     return (await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Setup-Token":await tok()},body:JSON.stringify(body)})).json();
   }
+  function inlineErr(btn,msg){ const e=document.createElement("span"); e.className="err"; e.style.marginLeft="8px"; e.textContent=String(msg).slice(0,60); btn.after(e); setTimeout(()=>e.remove(),4000); }
 
-  function bundleRow(b){
-    const ready=b.gap===0, mature=b.rating==="mature", ico=ICON[b.modality]||SVG("i-runtime");
-    const blocked = b.needs_comfyui && !STATE.comfyui && !ready;
-    let right="";
-    if(busy[b.id]) right=`<span class="state busy">setting up…</span>`;
-    else if(ready){
-      const url=(STATE.lucid_url||"http://127.0.0.1:8765")+(suggested[b.id]?`?prompt=${encodeURIComponent(suggested[b.id])}`:"");
-      right=`<a class="btn go" href="${esc(url)}" target="_blank" rel="noopener">Make one ↗</a>`;
-    }
-    else if(blocked) right=`<span class="state" style="color:var(--faint)">needs ComfyUI ↑</span>`;
-    else if(mature) right=`<button class="btn" data-mature="${esc(b.id)}">Set up…</button>`;
-    else right=`<button class="btn" data-fetch="${esc(b.id)}">Set up</button>`;
-    // calm note when ready; a clean clause list (no dot-soup) when there's work to do
-    let note;
-    if(ready) note="Installed · ready to use";
-    else{
-      const parts=[];
-      if(b.present>0 && b.present<b.total) parts.push(`${b.present}/${b.total} models here`);
-      parts.push(`~${b.approx_gb} GB to download`);
-      if(b.manual) parts.push(`${b.manual} manual file${b.manual>1?"s":""}`);
-      note=parts.join(" · ");
-    }
-    // fit is its OWN chip — a caution about running, not a fetch detail (#9: warn, never guarantee)
-    const fit = b.fit==="tight" ? `<div class="fit tight">◐ tight on this GPU</div>`
-      : b.fit==="too-big" ? `<div class="fit big">⚠ too big for this GPU — find a smaller one</div>` : "";
-    const sug = (ready && suggested[b.id]) ? `<div class="suggest">Your text model suggests: “${esc(suggested[b.id])}”</div>` : "";
-    // why = the motivation/prerequisite (best while there's work to do); once ready that prerequisite
-    // ("Needs the ComfyUI runtime") is stale, so describe what it makes instead.
-    const blurb = ready ? (b.desc||b.why) : (b.why||b.desc);
-    // NO persistent warm "✓ ready" badge — warm is reserved for the one-shot .bloom beat, so a fully
-    // set-up box reads as a calm list led by the violet "Make one ↗", not a wall of warm ticks.
-    return `<div class="feat" data-bid="${esc(b.id)}">
-      <div class="ico" aria-hidden="true">${ico}</div>
-      <div class="meta"><div class="nm">${esc(b.id)}${mature?'<span class="tag">18+</span>':''}</div>
-        <div class="dsc">${esc(blurb)}</div><div class="size">${esc(note)}</div>${fit}${sug}</div>
-      ${right}
-    </div>`;
+  // ── header: live ready-chip from real bundle readiness ──────────────────────────────────────
+  function renderReadyChip(){
+    const el=document.getElementById("ready-chip"); if(!el) return;
+    const vids=(STATE.bundles||[]).filter(b=>b.modality==="video");
+    const canVideo=vids.some(b=>b.gap===0);
+    // warm only when a video lane is genuinely ready — the earned "ready to dream" beat
+    if(canVideo){ el.className="ready-chip go"; el.innerHTML=`<span class="dot" aria-hidden="true">●</span>Ready to dream`; }
+    else { el.className="ready-chip almost"; el.innerHTML=`<span class="dot" aria-hidden="true">◐</span>Almost ready`; }
   }
 
-  function renderRuntime(s){
-    const hw=s.hardware||{};
-    const gpu = hw.vram_gb ? `<span class="mono">${esc(hw.vram_gb)} GB GPU · ${esc(hw.ram_gb)} GB RAM</span>` : "Couldn't read your GPU";
+  // ── 01: honest fit bar — REAL hardware fit only (peak vs VRAM); the keyhole never colours it ──
+  function heaviestVideoBundle(){
+    // the heaviest video lane drives the "peak" — that's the render this GPU must hold at once
+    const vids=(STATE.bundles||[]).filter(b=>b.modality==="video");
+    return vids.reduce((a,b)=>((b.peak_gb||0)>((a&&a.peak_gb)||0)?b:a), null);
+  }
+  function renderFit(s){
+    const el=document.getElementById("fit"); if(!el) return;
+    document.getElementById("gpuName").textContent = s.hardware&&s.hardware.vram_gb
+      ? `${s.hardware.vram_gb} GB GPU · ${s.hardware.ram_gb} GB RAM` : "GPU not detected";
+    const vram=(s.hardware||{}).vram_gb||0;
+    const heavy=heaviestVideoBundle();
+    const peak=heavy?(heavy.peak_gb||0):0;
+    // FAIL-OPEN: no GPU reading → calm static text, never a fabricated bar
+    if(!vram){
+      el.innerHTML=`<div class="nogpu">We couldn't read your GPU's memory, so we can't size a render against it. AgentOS still coordinates the shared GPU the same way; you just won't see the fit gauge here.</div>`;
+      return;
+    }
+    if(!peak){
+      el.innerHTML=`<div class="nogpu"><span class="mono">${esc(vram)} GB</span> of video memory detected. Once a video lane is set up (step 03) we'll size its heaviest render against it here.</div>`;
+      return;
+    }
+    // the REAL verdict — identical thresholds to the server's bundle_fit (0.92·VRAM)
+    const ratio=peak/vram;
+    const verdict = peak<=vram*0.92 ? "fits" : peak<=vram ? "tight" : "big";
+    const pct=Math.min(100,Math.round(ratio*100));
+    const headroom=Math.round((vram-peak)*10)/10;
+    const hdLabel = verdict==="big" ? `over by ${Math.abs(headroom)} GB` : `${headroom} GB headroom`;
+    const hdWord  = verdict==="fits" ? "comfortable" : verdict==="tight" ? "tight" : "won't fit";
+    // pacing line: credit AgentOS coordination (always on), NEVER the keyhole. No colour flip on adopt.
+    let pace;
+    if(verdict==="fits")
+      pace=`<p class="pace fits"><span class="g" aria-hidden="true">○</span><span>Comfortable on <b>${esc(vram)} GB</b>. AgentOS coordinates the shared GPU so this and your other local models take turns cleanly — add the keyhole (next) to watch that happen live.</span></p>`;
+    else if(verdict==="tight")
+      pace=`<p class="pace tight"><span class="g" aria-hidden="true">◐</span><span>A heavy render (<b>${esc(peak)} GB</b>) sits close to your <b>${esc(vram)} GB</b> — tight. AgentOS paces generation so a tight render holds steady instead of failing, by making models take turns on the GPU. Add the keyhole (next) to watch it pace live.</span></p>`;
+    else
+      pace=`<p class="pace big"><span class="g" aria-hidden="true">⚠</span><span>A heavy render (<b>${esc(peak)} GB</b>) is larger than your <b>${esc(vram)} GB</b> of memory — pick a smaller lane in step 03. AgentOS won't run a render it can't fit.</span></p>`;
+    el.innerHTML=`
+      <div class="fitline"><span class="k">Video render · peak</span><span class="v">${esc(peak)} / ${esc(vram)} GB</span></div>
+      <div class="fittrack">
+        <div class="clip"><div class="fill" style="width:${pct}%"></div></div>
+        <div class="mark2 ${verdict}" style="left:${pct}%"></div>
+      </div>
+      <div class="fitfoot"><span class="pk">peak ${esc(peak)} GB</span><span class="hd ${verdict}">${esc(hdLabel)} · ${esc(hdWord)}</span></div>
+      ${pace}`;
+  }
+
+  function renderRuntimeSub(s){
+    const el=document.getElementById("runtimeSub"); if(!el) return;
     const comfy = s.comfyui
-      ? `<div class="feat"><div class="ico" aria-hidden="true">${SVG("i-runtime")}</div><div class="meta"><div class="nm">ComfyUI runtime</div><div class="dsc">installed — image &amp; video can run</div></div><span class="state ready">✓ ready</span></div>`
-      : `<div class="feat"><div class="ico" aria-hidden="true">${SVG("i-runtime")}</div><div class="meta"><div class="nm">ComfyUI runtime</div><div class="dsc">not installed — needed for image &amp; video (clones it + sets up, several GB)</div></div><button class="btn" id="installComfy">Install</button></div>`;
-    document.getElementById("runtime").innerHTML =
-      `<div class="feat"><div class="ico" aria-hidden="true">${SVG("i-cpu")}</div><div class="meta"><div class="nm">${gpu}</div>`
-      + `<div class="dsc">we flag anything that may not fit — we never guarantee it</div></div>`
-      + `<button class="btn ghost" id="research" title="Ask an agent to web-search the latest models for this GPU">Find latest ↗</button></div>` + comfy;
+      ? `<div class="subrow"><div class="ico" aria-hidden="true">${SVG("i-runtime")}</div><div class="meta"><div class="nm">ComfyUI runtime</div><div class="dsc">installed — image &amp; video can run</div></div><span class="state ready">✓ ready</span></div>`
+      : `<div class="subrow"><div class="ico" aria-hidden="true">${SVG("i-runtime")}</div><div class="meta"><div class="nm">ComfyUI runtime</div><div class="dsc">not installed — needed for image &amp; video (clones it + sets up, several GB)</div></div><button class="btn" id="installComfy">Install</button></div>`;
+    const research = `<div class="subrow"><div class="ico" aria-hidden="true">${SVG("i-cpu")}</div><div class="meta"><div class="nm">Latest models for this GPU</div><div class="dsc">ask an agent to web-search what fits best right now — it proposes, you decide</div></div><button class="btn ghost" id="research">Find latest ↗</button></div>`;
+    el.innerHTML = comfy + research;
   }
 
   function renderLedger(s){
     const el=document.getElementById("ledger");
     if(s.found_gb>0){ el.hidden=false;
-      el.innerHTML = `Found <b>${s.found_gb} GB</b> already here — we'll only fetch the <b>${s.missing_gb} GB</b> you're missing.`; }
+      el.innerHTML=`Found <b style="color:var(--blue);font-family:var(--mono)">${s.found_gb} GB</b> already here — we'll only fetch the <b style="color:var(--blue);font-family:var(--mono)">${s.missing_gb} GB</b> you're missing.`; }
     else el.hidden=true;
   }
 
-  // ── "Smoother local models" callout ─────────────────────────────────────────────────────────
-  // The honest pitch: your local models — the dream/video model, the narrator LLM, image gen — all
-  // share ONE GPU. AgentOS coordinates them (the VRAM lease + demand queue) so they take turns
-  // instead of thrashing / OOMing each other — THAT coordination is what keeps generation smooth.
-  // The Keyhole is a READ-ONLY window into it (who holds the GPU, VRAM pressure, what's waiting): it
-  // lets you SEE and trust the coordination working. It does NOT itself speed anything up or actuate
-  // anything — the substrate does the smoothing; the keyhole shows it. Optional; never a gate.
-  let KH=null, khProbed=false, _khHTML="";   // KH = the keyhole's adopt row from /api/desktop; _khHTML dedupes re-renders
-
+  // ── 02: the GPU keyhole — states wired to REAL adoption (/api/desktop + /api/component[_jobs]) ──
+  // HONESTY: the keyhole is read-only. Copy credits AgentOS coordination for the smoothing; the
+  // keyhole is only the window. No "the keyhole paces / makes it faster / no stalls".
+  let KH=null, _khHTML="";   // KH = the keyhole's adopt row from /api/desktop
   async function probeKeyhole(){
-    // Reflect the keyhole's live adoption state even while the full Desktop section is collapsed
-    // (that section only polls when open — idle is sacred — so the callout needs its own light read).
     try{
       const d=await (await fetch("/api/desktop",{cache:"no-store"})).json();
-      khProbed=true;
       if(!d.reachable){ KH={reachable:false,why:d.why}; }
       else KH={reachable:true, row:(d.components||[]).find(c=>c.id==="keyhole")||null};
-    }catch(_){ khProbed=true; KH={reachable:false,why:"error"}; }
-    renderLucidKey();
+    }catch(_){ KH={reachable:false,why:"error"}; }
+    renderKeyhole();
+  }
+  function renderKeyhole(){
+    const el=document.getElementById("khState"); if(!el) return;
+    const adopted = !!(KH && KH.reachable && KH.row && KH.row.state==="adopted");
+    const job = CJOBS["keyhole"];
+    const installing = dbusy["keyhole"]==="adopt" || (job && (job.status==="queued"||job.status==="applying"));
+    const reachable = !KH || KH.reachable;
+    document.getElementById("khLive").hidden = !adopted;     // the live pulse-dot only when truly in the tray
+
+    let html;
+    if(installing){
+      const pct = job && job.total ? Math.round(100*(job.present||0)/job.total) : (dbusy["keyhole"]?12:0);
+      html=`<div class="khprog"><div class="lab"><span>Adding the keyhole…</span><span>${pct}%</span></div>
+        <div class="pbar"><i style="width:${pct}%"></i></div></div>`;
+    } else if(adopted){
+      const post = (KH.row && KH.row.post_adopt) ? KH.row.post_adopt
+        : "Add the Keyhole widget to your tray: right-click the system tray → Configure System Tray → Entries.";
+      html=`<p class="banner"><span class="g" aria-hidden="true">●</span><span>In your tray ✓ — your live window onto the shared GPU.</span></p>
+        <div class="khpost">One more step: ${esc(post)}</div>
+        <div class="khrow"><button class="btn ghost" id="khRemove">Remove</button></div>`;
+    } else if(reachable && KH && KH.row && KH.row.adoptable){
+      html=`<div class="khrow"><button class="btn" id="khAdd">Add the keyhole</button>
+        <button class="btn ghost" id="khSkip">Not now</button></div>`;
+    } else if(reachable && KH && KH.row){
+      html=`<div class="khrow"><button class="btn ghost" id="khJump" type="button">Set up in Extras ↓</button></div>`;
+    } else {
+      // FAIL-OPEN: panel down / keyhole not surfaced → calm pointer into Extras, never a dead button
+      html=`<p class="khskip">The desktop panel isn't reachable right now, so this can't switch on from here. <button class="lnk" id="khJump" type="button">Open Extras to set it up ↓</button></p>`;
+    }
+    if(html!==_khHTML){ _khHTML=html; el.innerHTML=html; }
+  }
+  document.getElementById("khState").addEventListener("click",async e=>{
+    if(e.target.id==="khJump"){ openExtras(); return; }
+    if(e.target.id==="khSkip"){
+      const el=document.getElementById("khState");
+      el.innerHTML=`<p class="khskip">Skipped — add it any time. <button class="lnk" id="khAddBack" type="button">Add the keyhole</button></p>`;
+      _khHTML=""; return;
+    }
+    if(e.target.id==="khAdd"||e.target.id==="khAddBack"){ adoptKeyhole(); return; }
+    if(e.target.id==="khRemove"){ removeKeyhole(); return; }
+  });
+  async function adoptKeyhole(){
+    dbusy["keyhole"]="adopt"; _khHTML=""; renderKeyhole();
+    const r=await post("/api/component",{id:"keyhole",action:"adopt"});
+    if(r && r.error && !/already|queued|working|just ran|give it a moment/i.test(r.error)){
+      delete dbusy["keyhole"]; _khHTML=""; renderKeyhole();
+      const el=document.getElementById("khState"); const er=document.createElement("div"); er.className="err"; er.textContent=r.error; el.appendChild(er); setTimeout(()=>er.remove(),5000);
+    }
+    probeKeyhole(); refreshComponentJobs();
+  }
+  async function removeKeyhole(){
+    dbusy["keyhole"]="unadopt"; _khHTML=""; renderKeyhole();
+    const r=await post("/api/component",{id:"keyhole",action:"unadopt"});
+    if(r && r.error && !/already|queued|working|just ran|give it a moment/i.test(r.error)){
+      delete dbusy["keyhole"]; _khHTML=""; renderKeyhole();
+    }
+    probeKeyhole(); refreshComponentJobs();
   }
 
-  function renderLucidKey(){
-    const el=document.getElementById("lucidkey"); if(!el) return;
-    // Tie the promotion to the Lucid lanes specifically: only surface it once a VIDEO bundle exists
-    // in the registry. (Image gen also leases the GPU, but the user framed the keyhole as a Lucid
-    // pre-req, so we keep it video/Lucid-focused rather than a generic desktop tweak.)
-    const vids=(STATE.bundles||[]).filter(b=>b.modality==="video");
-    if(!vids.length){ if(_khHTML!==""){ _khHTML=""; el.innerHTML=""; } return; }
-
-    const adopted = !!(KH && KH.reachable && KH.row && KH.row.state==="adopted");
-    const busyNow = dbusy["keyhole"]==="adopt";
-    const reachable = !KH || KH.reachable;        // unknown (not yet probed) reads as reachable/calm
-
-    // the live arbitration line the keyhole renders — honest about what you'd SEE in the tray
-    const qline = `<div class="qline"><i class="gly" aria-hidden="true">◐</i>In the tray you'd see: who holds the GPU · VRAM pressure · <b>what's waiting its turn</b>.</div>`;
-    // local-model-performance framing. AgentOS does the smoothing (lease + queue); the keyhole only
-    // LETS YOU SEE it — never "adopt this and your models get faster" (honesty non-negotiable).
-    const why = `<div class="why">Your local models — the dream/video model, the narrator that writes your scenes, image generation — all share this one GPU. AgentOS coordinates them so they take turns instead of fighting over memory, which is what keeps generation smooth. The Keyhole is a calm tray window into that coordination: it shows you the live GPU lease, memory pressure, and what's waiting — so you can <i>see</i> it working and trust it, rather than guess.</div>`;
-
+  // ── 03: bundles (real /api/state) — mature lanes hidden until toggled ──
+  function bundleRow(b){
+    const ready=b.gap===0, mature=b.rating==="mature", ico=ICON[b.modality]||SVG("i-runtime");
+    const blocked = b.needs_comfyui && !STATE.comfyui && !ready;
+    const eng = b.modality ? b.modality : "";
+    const blurb = ready ? (b.desc||b.why) : (b.why||b.desc);
+    const fit = b.fit==="tight" ? `<div class="fit tight">◐ tight on this GPU</div>`
+      : b.fit==="too-big" ? `<div class="fit big">⚠ too big for this GPU — find a smaller one</div>` : "";
+    const sug = (ready && suggested[b.id]) ? `<div class="suggest">Your text model suggests: “${esc(suggested[b.id])}”</div>` : "";
     let act;
-    if(busyNow) act=`<span class="state busy">adding…</span>`;
-    else if(adopted) act=`<span class="don">Already in your tray ✓</span>`;
-    else if(reachable && KH && KH.row && KH.row.adoptable)
-      act=`<button class="btn" id="khAdd">Add to tray</button>`;
-    else if(reachable && KH && KH.row)                       // present but not one-click here
-      act=`<button class="btn ghost" id="khJump" type="button">Set up in Customize ↓</button>`;
-    else
-      // FAIL-OPEN: panel unreachable (or keyhole not surfaced) → a calm pointer, never a dead button.
-      act=`<button class="btn ghost" id="khJump" type="button">Set up later ↓</button>`;
-
-    // the honest residual manual step, only once it's actually adopted (mirrors the Desktop section)
-    const post = adopted
-      ? `<div class="post">One more step: add the Keyhole widget to your tray — right-click the system tray → Configure System Tray → Entries.</div>`
-      : "";
-
-    const html = `<div class="khc">
-      <img class="shot" src="/img/keyhole.webp" alt="Preview of the Keyhole tray instrument" loading="lazy">
-      <div class="body">
-        <div class="eyb">Smoother local models <span class="opt">optional</span></div>
-        <div class="ttl">The Keyhole · see your models share the GPU</div>
-        ${why}${qline}${post}
-      </div>
+    if(busy[b.id]) act=`<span class="state busy">setting up…</span>`;
+    else if(ready){
+      const url=LUCID+(suggested[b.id]?`?prompt=${encodeURIComponent(suggested[b.id])}`:"");
+      act=`<span class="installed"><span class="dot" aria-hidden="true">●</span>Installed</span><a class="btn warm" href="${esc(url)}" target="_blank" rel="noopener">Make one →</a>`;
+    }
+    else if(blocked) act=`<span class="size">needs ComfyUI ↑</span><button class="btn" disabled>Get</button>`;
+    else{
+      act=`<span class="size">${esc(b.approx_gb)} GB</span>`+(mature
+        ? `<button class="btn" data-mature="${esc(b.id)}">Get · ${esc(b.approx_gb)} GB</button>`
+        : `<button class="btn" data-fetch="${esc(b.id)}">Get · ${esc(b.approx_gb)} GB</button>`);
+    }
+    return `<div class="brow" data-bid="${esc(b.id)}">
+      <div class="ico" aria-hidden="true">${ico}</div>
+      <div class="meta"><div class="nm">${esc(b.id)}${mature?'<span class="tag">18+</span>':''}<span class="eng">· ${esc(eng)}</span></div>
+        <div class="dsc">${esc(blurb)}</div>${fit}${sug}</div>
       <div class="act">${act}</div>
     </div>`;
-    if(html!==_khHTML){ _khHTML=html; el.innerHTML=html; }   // dedupe → aria-live announces only real changes
+  }
+  function renderBundles(){
+    const all=(STATE.bundles||[]);
+    // MATURE HIDDEN BY DEFAULT — only shown once the user reveals the 18+ lanes
+    const shown = all.filter(b => b.rating!=="mature" || showMature);
+    document.getElementById("bundles").innerHTML = shown.map(bundleRow).join("")
+      || `<div class="brow"><div class="meta"><div class="dsc">no bundles in the registry.</div></div></div>`;
+    document.getElementById("laneCount").textContent = `${shown.length} lane${shown.length===1?"":"s"}`;
+    const hasMature = all.some(b=>b.rating==="mature");
+    const mb=document.getElementById("matBtn");
+    mb.style.display = hasMature ? "" : "none";
+    mb.setAttribute("aria-expanded", String(showMature));
+    mb.innerHTML = (showMature?"Hide the 18+ video lanes":"Show the 18+ video lanes")+' <span aria-hidden="true">›</span>';
   }
 
   async function refreshState(){
     try{
       const s=await (await fetch("/api/state",{cache:"no-store"})).json();
-      STATE=s; renderRuntime(s); renderLedger(s); renderLucidKey();
-      document.getElementById("bundles").innerHTML=(s.bundles||[]).map(bundleRow).join("")
-        || `<div class="feat"><div class="meta"><div class="dsc">no bundles in the registry.</div></div></div>`;
-      // the one warm beat + the suggested prompt, only when a bundle newly becomes ready
+      STATE=s; renderReadyChip(); renderFit(s); renderRuntimeSub(s); renderLedger(s); renderBundles(); renderKeyhole(); renderHandoff();
       for(const b of (s.bundles||[])){
         if(b.gap===0 && !wasReady[b.id]){
           wasReady[b.id]=true;
-          const row=document.querySelector(`.feat[data-bid="${CSS.escape(b.id)}"]`);
-          if(row) row.classList.add("bloom");
-          if(b.modality!=="text") fetchSuggestion(b);     // text model writes the first image/video prompt
+          if(b.modality!=="text") fetchSuggestion(b);   // text model writes the first image/video prompt
         }
       }
       renderStored();
     }catch(_){}
   }
-
   async function fetchSuggestion(b){
     try{
       const d=await (await fetch(`/api/suggest_prompt?modality=${encodeURIComponent(b.modality)}`,{cache:"no-store"})).json();
-      if(d.prompt){ suggested[b.id]=d.prompt; refreshState(); }
+      if(d.prompt){ suggested[b.id]=d.prompt; renderBundles(); renderHandoff(); }
     }catch(_){}
+  }
+
+  // ── 05: handoff ──
+  function renderHandoff(){
+    const vids=(STATE.bundles||[]).filter(b=>b.modality==="video"&&b.gap===0);
+    const imgs=(STATE.bundles||[]).filter(b=>b.modality==="image"&&b.gap===0);
+    const lane=vids[0]||imgs[0];
+    const p = lane && suggested[lane.id];
+    const el=document.getElementById("handoffPrompt"), cap=document.getElementById("handoffCap");
+    if(p){ el.textContent=`“${p}”`; cap.textContent="a first dream, suggested by your text model"; }
+    else { el.textContent="Your first dream is yours to write."; cap.textContent="set up a lane above, and your text model will suggest an opener"; }
+    // carry the suggested opener into Lucid
+    document.getElementById("openLucid").href = p ? `${LUCID}?prompt=${encodeURIComponent(p)}` : LUCID;
   }
 
   async function renderStored(){
@@ -519,53 +694,55 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
       const d=await (await fetch("/api/stored",{cache:"no-store"})).json();
       const n=(d.fetched||[]).length;
       document.getElementById("stored").innerHTML = n
-        ? `Everything this added (${n} item${n===1?"":"s"}) is listed — <button id="auditBtn">show</button>.`
-        : "";
+        ? `Everything this added (${n} item${n===1?"":"s"}) is listed — <button class="lnk" id="auditBtn">show</button>.` : "";
     }catch(_){}
   }
 
+  // ── 03: active fetch progress (real /api/jobs + log tail, with a sheen) ──
   async function refreshJobs(){
     try{
       const d=await (await fetch("/api/jobs",{cache:"no-store"})).json();
       const el=document.getElementById("progress");
       if(!d.jobs||!d.jobs.length){ el.innerHTML=""; return; }
-      el.innerHTML=`<h2>Activity</h2><div class="card">`+d.jobs.map(j=>{
+      el.innerHTML=d.jobs.map(j=>{
         const pct=j.total?Math.round(100*j.present/j.total):(j.status==="done"?100:0);
         let st;
         if(j.kind==="research") st=j.status==="running"?"searching the web…":j.status==="done"?"done":"couldn't finish";
         else st=j.status==="running"?`working…${j.total?` ${j.present}/${j.total}`:""}`:j.status==="done"?"✓ done":"couldn't finish — see terminal";
         if(j.status!=="running" && j.bundle) busy[j.bundle]=false;
-        const bar=j.kind==="research"?"":`<div class="bar"><i style="width:${pct}%"></i></div>`;
-        return `<div class="feat" style="display:block">
-          <div style="display:flex;justify-content:space-between"><b style="font-size:.9rem">${esc(j.label||j.bundle)}</b>
-          <span class="state ${j.status==='done'?'ready':''}">${esc(st)}</span></div>${bar}${j.tail?`<div class="tail">${esc(j.tail)}</div>`:""}</div>`;
-      }).join("")+`</div>`;
+        const sheen = j.status==="running" ? `<span class="sheen" data-anim="sheen"></span>` : "";
+        const bar=j.kind==="research"?"":`<div class="pbar" style="margin-top:2px"><i style="width:${pct}%"></i>${sheen}</div>`;
+        const logLines=(j.tail||"").split("\n").filter(Boolean).map(l=>`<div><span class="pfx">›</span> ${esc(l)}</div>`).join("");
+        return `<div class="fetchpanel">
+          <div class="top"><span>${j.status==="running"?"Fetching":""} <b>${esc(j.label||j.bundle)}</b></span><span class="pct">${esc(st)}</span></div>
+          ${bar}${logLines?`<div class="fetchlog">${logLines}</div>`:""}</div>`;
+      }).join("");
       if(d.jobs.some(j=>j.status==="running"||j.status==="done")) refreshState();
     }catch(_){}
   }
 
-  // ── delegated actions (no native dialogs — #7) ──
+  // ── 03: delegated bundle actions (no native dialogs) ──
   document.getElementById("bundles").addEventListener("click",async e=>{
     const fb=e.target.closest("button[data-fetch]");
-    if(fb){ const id=fb.dataset.fetch; fb.disabled=true; busy[id]=true; const r=await post("/api/fetch",{bundle:id}); if(r.error){ inlineErr(fb, r.error); busy[id]=false; fb.disabled=false; } refreshJobs(); return; }
+    if(fb){ const id=fb.dataset.fetch; fb.disabled=true; busy[id]=true; const r=await post("/api/fetch",{bundle:id}); if(r.error){ inlineErr(fb,r.error); busy[id]=false; fb.disabled=false; } refreshJobs(); renderBundles(); return; }
     const mb=e.target.closest("button[data-mature]");
-    if(mb){ openAffirm(mb.dataset.mature, mb.closest(".feat")); return; }
+    if(mb){ openAffirm(mb.dataset.mature, mb.closest(".brow")); return; }
     const ab=e.target.closest("button.affirm-go");
-    if(ab){ const id=ab.dataset.bid; if(!document.getElementById("ag-"+id).checked){ return; } closeAffirm(id); busy[id]=true; const r=await post("/api/fetch",{bundle:id,mature:true}); if(r.error){ alertRow(id,r.error); busy[id]=false; } refreshJobs(); return; }
+    if(ab){ const id=ab.dataset.bid; if(!document.getElementById("ag-"+id).checked) return; closeAffirm(id); busy[id]=true; renderBundles(); const r=await post("/api/fetch",{bundle:id,mature:true}); if(r.error){ alertRow(id,r.error); busy[id]=false; } refreshJobs(); return; }
     const cb=e.target.closest("button.affirm-cancel");
     if(cb){ closeAffirm(cb.dataset.bid); return; }
-    if(e.target.closest("button.acct-open")){ openAccounts(); return; }
+    if(e.target.closest("button.acct-open")){ openExtras(); return; }
   });
+  // the 18+ reveal toggle — keeps the explicit affirmation when fetching; revealing just shows the lanes
+  document.getElementById("matBtn").addEventListener("click",()=>{ showMature=!showMature; renderBundles(); });
 
-  function openAffirm(id, row){
+  function openAffirm(id,row){
     if(document.querySelector(`.affirm[data-bid="${CSS.escape(id)}"]`)) return;
-    // Accounts now lives (collapsed) under Optional setup — if this lane still needs a token, say so
-    // and offer a jump, so grouping the optional sections never strands the mature flow.
     const b=(STATE.bundles||[]).find(x=>x.id===id)||{};
     const missing=(b.needs_auth||[]).filter(svc=>!(STATE.creds||{})[svc]);
     const tokHint = missing.length
-      ? `<div class="acthint">⚠ Needs a ${esc(missing.join(" & "))} token to download.
-         <button class="btn ghost acct-open" type="button">Add it under Accounts ↓</button></div>` : "";
+      ? `<div class="acthint"><span aria-hidden="true">⚠</span> Needs a ${esc(missing.join(" & "))} token to download.
+         <button class="btn ghost acct-open" type="button">Add it under Extras → Accounts ↓</button></div>` : "";
     const el=document.createElement("div"); el.className="affirm"; el.dataset.bid=id;
     el.innerHTML=`<h3>Mature (18+) models</h3>
       <p>These download <b>under your own Civitai account</b> to this machine — AgentOS hosts nothing. You affirm you are an adult. <b>No minors, no real-person likenesses</b> (enforced denylist).</p>
@@ -574,18 +751,11 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
         <button class="btn ghost affirm-cancel" data-bid="${esc(id)}">Cancel</button></div>`;
     row.after(el); el.querySelector("input").focus();
   }
-  function openAccounts(){
-    const s=document.getElementById("acct-sec"); if(!s) return;
-    s.open=true;                                          // fires toggle → chevron syncs
-    const rm=matchMedia("(prefers-reduced-motion: reduce)").matches;
-    s.scrollIntoView({behavior:rm?"auto":"smooth",block:"start"});
-    setTimeout(()=>document.getElementById("tok")?.focus(),rm?0:350);
-  }
   function closeAffirm(id){ const el=document.querySelector(`.affirm[data-bid="${CSS.escape(id)}"]`); if(el) el.remove(); }
-  function alertRow(id,msg){ const el=document.querySelector(`.affirm[data-bid="${CSS.escape(id)}"]`)||document.querySelector(`.feat[data-bid="${CSS.escape(id)}"]`); if(el){ const e=document.createElement("div"); e.className="err"; e.style.padding="0 18px 10px"; e.textContent=msg; el.after(e); setTimeout(()=>e.remove(),5000);} }
-  function inlineErr(btn,msg){ const e=document.createElement("span"); e.className="err"; e.style.marginLeft="8px"; e.textContent=String(msg).slice(0,50); btn.after(e); setTimeout(()=>e.remove(),4000); }
+  function alertRow(id,msg){ const el=document.querySelector(`.affirm[data-bid="${CSS.escape(id)}"]`)||document.querySelector(`.brow[data-bid="${CSS.escape(id)}"]`); if(el){ const e=document.createElement("div"); e.className="err"; e.textContent=msg; el.after(e); setTimeout(()=>e.remove(),5000);} }
 
-  document.getElementById("runtime").addEventListener("click",async e=>{
+  // ── 01 runtime sub-row actions: ComfyUI install + research ──
+  document.getElementById("runtimeSub").addEventListener("click",async e=>{
     if(e.target.id==="installComfy"){
       e.target.disabled=true; const r=await post("/api/comfyui",{}); if(r.error){ inlineErr(e.target,r.error); e.target.disabled=false; } refreshJobs();
     }
@@ -600,6 +770,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     anchor.after(el);
   }
 
+  // ── 04 extras: accounts (creds) ──
   document.getElementById("saveTok").addEventListener("click",async()=>{
     const svc=document.getElementById("svc").value, t=document.getElementById("tok").value.trim(), msg=document.getElementById("credMsg");
     if(!t){ msg.innerHTML=`<div class="err">paste a token first</div>`; return; }
@@ -616,11 +787,11 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     if(e.target.id!=="auditBtn") return;
     const d=await (await fetch("/api/stored",{cache:"no-store"})).json();
     const lines=(d.fetched||[]).map(f=>`${f.via}: ${f.dest}`).join("\n");
-    const box=document.createElement("div"); box.className="tail"; box.style.marginTop="6px"; box.textContent=lines||"(nothing recorded)";
+    const box=document.createElement("div"); box.className="fetchlog"; box.style.marginTop="6px"; box.textContent=lines||"(nothing recorded)";
     e.target.replaceWith(box);
   });
 
-  // ── Desktop section (ADR-0044 grown front door): proxy the :9123 adopt engine ──
+  // ── 04 extras: desktop adopt engine (proxy of :9123 /adopt) ──
   const DGROUPS=[
     ["ambient","Ambient layer","Your desktop reflects the fleet — the wallpaper carries the mood, the keyhole tray the exact fact, your own window-drags the wind."],
     ["look","Look","Aurora — one violet accent across the shell, windows, and notifications."],
@@ -637,13 +808,10 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     "hermes-plugins":"Restarts the Hermes gateway.",
   };
   const LOOKIDS=new Set(["aurora-theme","aurora-panel","swaync-aurora"]);
-  // per-row glyph for rows with no real capture (the photographic thumbs + Aurora swatch carry their own)
   const DGLYPH={"swaync-race":"i-bell","dolphin-create":"i-cursor","browser-host":"i-globe","hermes-plugins":"i-plug","gpu-coordinator":"i-bolt"};
   const GGLYPH={ambient:"i-ambient",look:"i-look",agents:"i-plug",integrations:"i-runtime"};
   let DESKTOP={reachable:false}, CJOBS={}, dbusy={};
 
-  // one coherent 84×48 preview tile per row, three honest variants in the same frame:
-  // a real .webp capture · the Aurora accent swatch · a meaningful glyph tile (never a bare dot)
   function dthumb(c){
     const id=c.id;
     if(DIMG[id]) return `<img class="thumb" src="/img/${DIMG[id]}" alt="" loading="lazy">`;
@@ -652,14 +820,14 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
   }
   function drow(c){
     const id=c.id, adopted=c.state==="adopted", job=CJOBS[id];
-    const jobBusy = job && (job.status==="queued"||job.status==="applying"||job.status==="unadopting");  // adopt.py ACTIVE_STATUSES
+    const jobBusy = job && (job.status==="queued"||job.status==="applying"||job.status==="unadopting");
     const busyNow = dbusy[id] || jobBusy;
     let right;
     if(busyNow) right=`<span class="state busy">${dbusy[id]==="unadopt"?"removing…":"setting up…"}</span>`;
     else if(adopted && c.removable) right=`<span class="don">✓ on</span> <button class="btn ghost" data-comp="${esc(id)}" data-act="unadopt">Remove</button>`;
     else if(adopted) right=`<span class="don">✓ on</span>`;
     else if(c.adoptable) right=`<button class="btn" data-comp="${esc(id)}" data-act="adopt">Apply</button>`;
-    else right=`<span class="state" style="color:var(--faint)">unavailable</span>`;
+    else right=`<span class="size">unavailable</span>`;
     const eff = DEFFECT[id] ? `<div class="eff">${esc(DEFFECT[id])}</div>` : "";
     const post = (adopted && c.post_adopt) ? `<div class="post">One more step: ${esc(c.post_adopt)}</div>` : "";
     const failed = (job && job.status==="failed") ? `<div class="err">${esc(job.outcome||"that step didn't finish — see the status panel")}</div>` : "";
@@ -684,90 +852,72 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     for(const [key,label,lede] of DGROUPS){
       const rows=comps.filter(c=>c.group===key);
       if(!rows.length) continue;
-      h+=`<div class="dgroup"><div class="ghd">${esc(label)}</div><div class="gld">${esc(lede)}</div>`
-        + rows.map(drow).join("") + `</div>`;
+      h+=`<div class="dgroup"><div class="ghd">${esc(label)}</div><div class="gld">${esc(lede)}</div>`+rows.map(drow).join("")+`</div>`;
     }
     el.innerHTML = h || `<div class="dsc" style="color:var(--muted)">No desktop components found.</div>`;
   }
-  async function refreshDesktop(){
-    const sec=document.getElementById("desktop-sec");
-    if(!sec||!sec.open) return;                          // idle is sacred — only poll while open
+  function syncBusyFromJobs(d,j){
+    CJOBS={};
+    for(const job of (j.jobs||[])){ if(job.comp && !CJOBS[job.comp]) CJOBS[job.comp]=job; }
+    for(const id of Object.keys(dbusy)){
+      const c=(d.components||[]).find(x=>x.id===id), job=CJOBS[id];
+      const reached = c && (dbusy[id]==="adopt" ? c.state==="adopted" : c.state!=="adopted");
+      if(reached || (job && (job.status==="adopted"||job.status==="available"||job.status==="failed"))) delete dbusy[id];
+    }
+  }
+  async function refreshComponentJobs(){
+    // light: pull jobs (+ desktop) so step-02 keyhole progress is REAL, regardless of Extras open/closed
     try{
       const [d,j]=await Promise.all([
         fetch("/api/desktop",{cache:"no-store"}).then(r=>r.json()),
         fetch("/api/component_jobs",{cache:"no-store"}).then(r=>r.json()),
       ]);
-      DESKTOP=d; CJOBS={};
-      for(const job of (j.jobs||[])){ if(job.comp && !CJOBS[job.comp]) CJOBS[job.comp]=job; }  // sorted newest-first
-      for(const id of Object.keys(dbusy)){                // drop optimistic busy once the job is terminal
-        const c=(d.components||[]).find(x=>x.id===id), job=CJOBS[id];
-        const reached = c && (dbusy[id]==="adopt" ? c.state==="adopted" : c.state!=="adopted");
-        // clear on ANY terminal status (a worker can land "adopted" while the probe still reads
-        // "unknown" on an under-provisioned host — else the row would spin forever). adopt.py TERMINAL.
-        if(reached || (job && (job.status==="adopted"||job.status==="available"||job.status==="failed"))) delete dbusy[id];
-      }
-      // keep the Lucid callout coherent with the full catalog while the section is open (same source)
-      khProbed=true; KH={reachable:true, row:(d.components||[]).find(c=>c.id==="keyhole")||null};
-      renderDesktop(); renderLucidKey();
+      DESKTOP=d; KH=d.reachable?{reachable:true,row:(d.components||[]).find(c=>c.id==="keyhole")||null}:{reachable:false,why:d.why};
+      syncBusyFromJobs(d,j);
+      _khHTML=""; renderKeyhole();
+      if(document.getElementById("extras-sec").open) renderDesktop();
     }catch(_){}
+  }
+  async function refreshDesktop(){
+    const sec=document.getElementById("extras-sec");
+    if(!sec||!sec.open) return;                          // idle is sacred — only poll the full catalog while open
+    refreshComponentJobs();
   }
   document.getElementById("desktop").addEventListener("click",async e=>{
     const b=e.target.closest("button[data-comp]"); if(!b) return;
     const id=b.dataset.comp, act=b.dataset.act;
-    dbusy[id]=act; renderDesktop();                       // optimistic ack — a 409 "already working" must read calm
+    dbusy[id]=act; renderDesktop(); if(id==="keyhole"){ _khHTML=""; renderKeyhole(); }
     const r=await post("/api/component",{id,action:act});
-    // a benign retry (dedupe "already working" or the 5s cooldown "just ran…") must read calm, not red
     if(r && r.error && !/already|queued|working|just ran|give it a moment/i.test(r.error)){
       delete dbusy[id]; renderDesktop();
       const row=document.querySelector(`.drow[data-drow="${CSS.escape(id)}"] .meta`);
       if(row){ const er=document.createElement("div"); er.className="err"; er.textContent=r.error; row.appendChild(er); setTimeout(()=>er.remove(),5000); }
     }
-    refreshDesktop();
+    refreshComponentJobs();
   });
 
-  // ── "Make Lucid feel smooth" callout: one-click adopt the keyhole via the SAME hardened
-  //    /api/component proxy (real id "keyhole"), or — fail-open — jump to the full Customize section.
-  document.getElementById("lucidkey").addEventListener("click",async e=>{
-    if(e.target.id==="khJump"){ openDesktop(); return; }
-    if(e.target.id!=="khAdd") return;
-    dbusy["keyhole"]="adopt"; renderLucidKey();            // optimistic ack — a benign 409 must read calm
-    const r=await post("/api/component",{id:"keyhole",action:"adopt"});
-    if(r && r.error && !/already|queued|working|just ran|give it a moment/i.test(r.error)){
-      delete dbusy["keyhole"]; renderLucidKey();
-      const body=document.querySelector("#lucidkey .body");
-      if(body){ const er=document.createElement("div"); er.className="err"; er.textContent=r.error; body.appendChild(er); setTimeout(()=>er.remove(),5000); }
-    }
-    probeKeyhole();                                        // reflect the new adoption state (collapsed-section safe)
-  });
-  function openDesktop(){
-    const s=document.getElementById("desktop-sec"); if(!s) return;
-    s.open=true;                                           // fires toggle → chevron syncs + section polls
+  function openExtras(){
+    const s=document.getElementById("extras-sec"); if(!s) return;
+    s.open=true;
     const rm=matchMedia("(prefers-reduced-motion: reduce)").matches;
     s.scrollIntoView({behavior:rm?"auto":"smooth",block:"start"});
   }
-  // ── Optional-setup disclosure rows: swap the chevron text; the desktop section also (and only)
-  //    polls while open (idle is sacred). One helper keeps the three in sync. ──
-  function wireOpt(secId,chevId,onOpen){
-    const sec=document.getElementById(secId);
-    sec.addEventListener("toggle",()=>{ document.getElementById(chevId).textContent=sec.open?"hide ▴":"show ▾"; if(sec.open&&onOpen) onOpen(); });
-  }
-  wireOpt("desktop-sec","dchev",refreshDesktop);
-  wireOpt("acct-sec","achev");
-  wireOpt("remote-sec","tchev");
+  document.getElementById("extras-sec").addEventListener("toggle",()=>{
+    const s=document.getElementById("extras-sec");
+    document.getElementById("echev").textContent = s.open?"hide ▴":"show ▾";
+    if(s.open) refreshDesktop();
+  });
 
-  // ── Remote access card: pure copy-don't-execute. The wizard never runs tailscale; the commands
-  // stay hidden until the consent box is ticked. No route here touches the network. ──
+  // ── remote access: pure copy-don't-execute ──
   document.getElementById("tsok").addEventListener("change",e=>{ document.getElementById("tsteps").hidden=!e.target.checked; });
 
+  // ── boot ──
   document.body.classList.add("first");
   setTimeout(()=>document.body.classList.remove("first"),700);
-  refreshState(); refreshJobs(); probeKeyhole();
+  refreshState(); refreshJobs(); refreshComponentJobs();
   setInterval(refreshJobs,2500);
   setInterval(refreshState,8000);
-  setInterval(refreshDesktop,5000);
-  // a slow, calm read of the keyhole's adoption state for the Lucid callout (idle is sacred — the
-  // full Desktop section refreshes faster only while open; this light probe keeps the callout honest)
-  setInterval(()=>{ if(!document.getElementById("desktop-sec").open) probeKeyhole(); },20000);
+  setInterval(()=>{ if(document.getElementById("extras-sec").open) refreshDesktop(); else refreshComponentJobs(); },6000);
 </script>
 </body>
 </html>

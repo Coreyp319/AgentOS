@@ -20,8 +20,19 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import re               # noqa: E402
 import setup           # noqa: E402
 import setup_web as sw  # noqa: E402
+
+
+def _user_copy(html: str) -> str:
+    """Lowercased wizard text with developer comments stripped — honesty assertions target what the
+    USER sees (HTML body text + JS template strings), not the //-comments that DOCUMENT the rule by
+    quoting the very phrasing they forbid."""
+    s = re.sub(r"<!--.*?-->", " ", html, flags=re.S)        # HTML comments
+    s = re.sub(r"/\*.*?\*/", " ", s, flags=re.S)            # CSS/JS block comments
+    s = re.sub(r"(?m)^\s*//.*$", " ", s)                    # full-line JS comments (keeps inline http://)
+    return s.lower()
 
 
 class _FakeProc:
@@ -362,63 +373,147 @@ class DesktopSection(unittest.TestCase):
         self.assertEqual(self._req("GET", "/img/nope.webp")[0], 404)
 
 
-class LucidKeyholeCallout(unittest.TestCase):
-    """The "Smoother local models" callout promotes the keyhole as an OPTIONAL companion that makes
-    the shared-GPU coordination (lease + demand queue) legible. It must reuse the EXISTING adopt path
-    + the real component id + the existing preview — never a new install mechanism — and must stay
-    honest: the keyhole is a READ-ONLY window (it does not itself speed anything up), and optional."""
+class WizardStructure(unittest.TestCase):
+    """The wizard is the numbered 01→05 "first light" flow (ADR-0044 elegance pass, adopted from the
+    claude.ai/design prototype). These pin the structural promises that survive a restyle: the live
+    ready-chip, the steps, the dual Lucid/Atrium handoff, mature-hidden-by-default, and the a11y
+    fallbacks the animated keyhole instrument depends on."""
 
     @classmethod
     def setUpClass(cls):
         cls.html = (Path(sw.__file__).resolve().parent / "wizard.html").read_text()
+        cls.low = cls.html.lower()
 
-    def test_targets_real_keyhole_component_id_via_existing_proxy(self):
-        # adopts via the SAME /api/component proxy with the real id "keyhole" (no invented mechanism)
+    def test_numbered_steps_present(self):
+        for n in ("01", "02", "03", "05"):
+            self.assertIn(f'class="no">{n}', self.html)
+
+    def test_ready_chip_reflects_real_readiness(self):
+        self.assertIn('id="ready-chip"', self.html)
+        self.assertIn("Ready to dream", self.html)        # warm beat — a video lane is genuinely ready
+        self.assertIn("Almost ready", self.html)
+        self.assertIn("b.gap===0", self.html)             # computed from real bundle gap, not faked
+
+    def test_dual_lucid_and_atrium_handoff(self):
+        self.assertIn("Open Lucid", self.html)
+        self.assertIn("Open the Atrium", self.html)
+        self.assertIn("9123/atrium", self.html)
+
+    def test_mature_lanes_hidden_by_default(self):
+        self.assertIn("showMature=false", self.html)              # default closed
+        self.assertIn("Show the 18+ video lanes", self.html)
+        self.assertIn('b.rating!=="mature"', self.html)          # filtered out of the list unless revealed
+
+    def test_reduced_motion_and_transparency_fallbacks(self):
+        self.assertIn("prefers-reduced-motion", self.html)
+        self.assertIn("prefers-reduced-transparency", self.html)
+        self.assertIn("[data-anim]", self.html)                  # the instrument animation is gated off
+
+    def test_keyhole_instrument_is_decorative(self):
+        # the animated instrument is aria-hidden (decorative), and its animation is opt-in via data-anim
+        self.assertIn('class="inst" aria-hidden="true"', self.html)
+        self.assertIn('data-anim="ring"', self.html)
+
+
+class KeyholeStep(unittest.TestCase):
+    """Step 02: the GPU keyhole as an OPTIONAL, honest companion. It adopts through the EXISTING
+    /api/component proxy with the real id, reflects state from /api/desktop, fails open into Extras
+    when the panel is down, and stays read-only in its copy — the SUBSTRATE paces; the keyhole is the
+    window. (Supersedes the old slim "Smoother local models" callout.)"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = (Path(sw.__file__).resolve().parent / "wizard.html").read_text()
+        cls.low = cls.html.lower()
+        cls.copy = _user_copy(cls.html)        # user-facing copy, developer comments stripped
+
+    def test_adopts_via_existing_proxy_with_real_id(self):
+        # the SAME /api/component proxy + real id "keyhole" (no invented mechanism)
         self.assertIn('"/api/component",{id:"keyhole",action:"adopt"}', self.html)
         # the keyhole IS the panel's component id this proxy validates against (defense-in-depth)
         self.assertEqual(sw._DESKTOP_GROUPS.get("keyhole"), "ambient")
 
-    def test_reuses_existing_keyhole_preview_asset(self):
-        self.assertIn("/img/keyhole.webp", self.html)            # the thumbnail that already exists
-        self.assertTrue((Path(sw.__file__).resolve().parent / "assets" / "keyhole.webp").exists())
+    def test_state_reflected_from_desktop_proxy(self):
+        self.assertIn('fetch("/api/desktop"', self.html)         # state from the existing route
+        self.assertIn("In your tray", self.html)                 # adopted — calm state, not a redundant Add
+        self.assertIn("Add the keyhole", self.html)
+        self.assertIn("Not now", self.html)
 
-    def test_reflects_adoption_state_from_desktop_proxy(self):
-        # already-adopted shows the calm "in your tray" state, not a redundant Add button
-        self.assertIn("Already in your tray", self.html)
-        self.assertIn("Add to tray", self.html)
-        self.assertIn('fetch("/api/desktop"', self.html)        # state comes from the existing route
+    def test_installing_progress_is_real_not_simulated(self):
+        # progress comes from the real component-jobs poll, never a setInterval fake (the prototype's tell)
+        self.assertIn("refreshComponentJobs", self.html)
+        self.assertIn("Adding the keyhole", self.html)
 
-    def test_fails_open_when_panel_unreachable(self):
-        # panel down (or keyhole not surfaced) → a calm pointer into the full catalog, never a dead button
+    def test_fails_open_into_extras(self):
+        # panel down / keyhole not surfaced → a calm pointer into Extras, never a dead button
         self.assertIn("khJump", self.html)
-        self.assertIn("openDesktop", self.html)
+        self.assertIn("openExtras", self.html)
 
-    def test_local_model_performance_framing(self):
-        # the benefit is local-model performance via shared-GPU coordination, made concrete by naming
-        # the models that share the GPU — NOT abstract "Lucid legibility"
-        low = self.html.lower()
-        self.assertIn("share this one gpu", low)
-        self.assertIn("narrator", low)            # the LLM
-        self.assertIn("image generation", low)    # image gen
-        self.assertIn("take turns", low)          # the coordination mechanism (lease + queue)
-        # the keyhole's own role stays read-only: a WINDOW into the coordination you can SEE working
-        self.assertIn("window into that coordination", low)
+    def test_explicitly_optional(self):
+        self.assertIn("Recommended · optional", self.html)
+        self.assertIn('class="opt"', self.html)
 
-    def test_reads_as_optional(self):
-        # optionality is EXPLICIT (a tag), not merely implied
-        self.assertIn('class="opt">optional', self.html)
+    def test_local_model_framing_is_concrete(self):
+        # names the models that share the GPU — not abstract "Lucid legibility"
+        self.assertIn("share this one gpu", self.low)
+        self.assertIn("narrator", self.low)                      # the LLM
+        self.assertIn("image generation", self.low)              # image gen
+        self.assertIn("take turns", self.low)                    # lease + queue
 
-    def test_honest_keyhole_does_not_claim_to_speed_things_up(self):
-        # honesty non-negotiable: the SUBSTRATE smooths; the keyhole only lets you SEE it. The copy must
-        # never claim adopting the keyhole itself improves/speeds performance, nor that it's required.
-        low = self.html.lower()
+    def test_copy_stays_a_read_only_window(self):
+        # the keyhole's own role: a read-only window onto coordination it does not itself perform
+        self.assertIn("read-only tray instrument onto that coordination", self.low)
+        # honesty non-negotiable — never credit the keyhole with pacing/speed, nor call it required
         forbidden = (
-            "makes your models faster", "make your models faster", "makes generation faster",
-            "speeds up", "speed up your", "the keyhole improves", "keyhole makes it faster",
+            "paced by the keyhole", "the keyhole paces", "keyhole paces",
+            "keyhole keeps them flowing", "keyhole makes", "makes generation faster",
+            "makes your models faster", "speeds up", "speed up your", "the keyhole improves",
             "required for lucid", "keyhole is required", "mandatory", "you must install the keyhole",
         )
         for f in forbidden:
-            self.assertNotIn(f, low, f"dishonest/over-claim copy present: {f!r}")
+            self.assertNotIn(f, self.copy, f"dishonest/over-claim copy present: {f!r}")
+
+
+class FitBarHonesty(unittest.TestCase):
+    """Step 01: the peak-vs-VRAM fit bar is sized from REAL hardware + the registry's heaviest model
+    (peak_gb), credits AgentOS coordination for the pacing — never the keyhole — and colours its marker
+    from the real fit verdict, not adoption state. Adopting the keyhole must not turn a tight render
+    'safe'."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = (Path(sw.__file__).resolve().parent / "wizard.html").read_text()
+        cls.low = cls.html.lower()
+        cls.copy = _user_copy(cls.html)        # user-facing copy, developer comments stripped
+
+    def test_state_exposes_peak_gb(self):
+        st = sw.build_state()
+        self.assertTrue(st["bundles"])
+        for b in st["bundles"]:
+            self.assertIn("peak_gb", b)
+
+    def test_bundle_peak_gb_is_the_heaviest_model(self):
+        reg = setup.load_registry()
+        for b in reg.get("bundles", []):
+            sizes = [float((setup.find_model(reg, m) or {}).get("size_gb", 0) or 0)
+                     for m in b.get("models", [])]
+            expected = round(max(sizes), 1) if sizes else 0.0
+            self.assertEqual(setup.bundle_peak_gb(reg, b), expected)
+
+    def test_pacing_credits_the_substrate_not_the_keyhole(self):
+        self.assertIn("AgentOS paces generation", self.html)
+        self.assertIn("AgentOS coordinates the shared GPU", self.html)
+        self.assertNotIn("paced by the keyhole", self.copy)
+
+    def test_marker_colour_is_the_real_fit_verdict(self):
+        # the marker class is the fit verdict (fits/tight/big), wired to the real peak/VRAM ratio — not khAdded
+        for v in ("fits", "tight", "big"):
+            self.assertIn(f".mark2.{v}", self.html)
+        self.assertIn("mark2 ${verdict}", self.html)
+
+    def test_gpu_not_detected_fails_open(self):
+        self.assertIn("GPU not detected", self.html)
+        self.assertIn("couldn't read your gpu", self.low)
 
 
 class NoTailscaleExposure(unittest.TestCase):

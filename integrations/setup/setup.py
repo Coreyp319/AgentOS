@@ -225,14 +225,21 @@ def detect_hardware(run=subprocess.run) -> dict:
             "vram_gb": round(vram_total / 1024, 1), "ram_gb": round(ram_gb, 1)}
 
 
+def bundle_peak_gb(reg: dict, bundle: dict) -> float:
+    """The bundle's heaviest single-model VRAM footprint (GB) — the 'peak' a render must hold at once.
+    Heuristic: loaded footprint ≈ size_gb (GGUF/fp8 weights dominate). This is the SAME number the fit
+    verdict is computed from, exposed so the UI can draw an honest peak-vs-VRAM bar (no fabricated value)."""
+    return round(max((float(m.get("size_gb", 0) or 0)
+                      for mid in bundle.get("models", []) if (m := find_model(reg, mid))), default=0.0), 1)
+
+
 def bundle_fit(reg: dict, bundle: dict, hw: dict) -> str:
     """Does the bundle's heaviest model fit this GPU? 'fits' | 'tight' | 'too-big' | 'unknown'.
     Heuristic: a model's loaded VRAM footprint ≈ its size_gb (GGUF/fp8 weights dominate)."""
     vram = hw.get("vram_gb", 0)
     if not vram:
         return "unknown"
-    biggest = max((float(m.get("size_gb", 0) or 0)
-                   for mid in bundle.get("models", []) if (m := find_model(reg, mid))), default=0.0)
+    biggest = bundle_peak_gb(reg, bundle)
     if biggest <= vram * 0.92:
         return "fits"
     if biggest <= vram:

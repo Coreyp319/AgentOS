@@ -74,6 +74,8 @@ def build_state(reg: dict | None = None) -> dict:
             "needs_auth": plan["needs_auth"], "manual": sum(1 for a in plan["gap"] if a.get("via") == "manual"),
             "order": b.get("order", 9), "needs_comfyui": b.get("needs_comfyui", False),
             "why": b.get("why", ""), "fit": setup.bundle_fit(reg, b, hw),
+            # the heaviest single-model footprint — the honest "peak" for the fit bar (GB held at once)
+            "peak_gb": setup.bundle_peak_gb(reg, b),
         })
     creds = {svc: bool(setup.keyring_get(svc)) for svc in ("huggingface", "civitai")}
     found_gb = missing_gb = 0.0                  # the reuse ledger: what's already here vs the gap
