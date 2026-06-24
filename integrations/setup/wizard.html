@@ -16,24 +16,51 @@
     --up:#74d39a; --amber:#f2c879; --red:#ec7676;
     --blue-line:color-mix(in srgb,var(--blue) 34%,transparent);
     --blue-wash:color-mix(in srgb,var(--blue) 13%,transparent);
-    --radius:14px; --radius-sm:9px;
+    /* precise, engineered radii (instrument, not soft-app) */
+    --radius:8px; --radius-sm:5px;
+    /* local-first type — no external fetch; all faces are installed on the box (fc-list verified).
+       Fira Sans = characterful humanist body (replaces generic Inter); Condensed = technical display;
+       Hack = the machine-fact mono (GPU/GB/ports/sizes) — the "instrument" data register. */
+    --sans:"Fira Sans","Fira Sans Book",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --display:"Fira Sans Condensed","Fira Sans",system-ui,sans-serif;
+    --mono:"Hack","JetBrains Mono",ui-monospace,"DejaVu Sans Mono",monospace;
   }
   *{box-sizing:border-box} html,body{height:100%}
-  body{margin:0;font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);
+  body{margin:0;font-family:var(--sans);color:var(--text);line-height:1.5;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
     background:radial-gradient(1100px 640px at 80% -10%,color-mix(in srgb,var(--blue) 12%,transparent),transparent 58%),
-      linear-gradient(162deg,var(--bg-0),var(--bg-1) 46%,var(--bg-2));background-attachment:fixed;line-height:1.5}
-  .wrap{max-width:760px;margin:0 auto;padding:48px 24px 72px}
-  /* logo: cool violet only — no warm (T3) */
-  .mark{width:34px;height:34px;border-radius:10px;background:linear-gradient(150deg,var(--blue),color-mix(in srgb,var(--blue) 55%,#3a4d8f));
-    box-shadow:0 0 0 1px rgba(255,255,255,.1) inset;display:inline-block;vertical-align:middle}
-  h1{font-size:1.7rem;font-weight:640;margin:14px 0 4px;letter-spacing:.2px}
+      linear-gradient(162deg,var(--bg-0),var(--bg-1) 46%,var(--bg-2));background-attachment:fixed}
+  /* instrument atmosphere: a faint measurement grid (masked toward the top) + a fine grain — both inert, calm */
+  body::before,body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0}
+  body::before{background-image:
+      linear-gradient(to right,rgba(255,255,255,.022) 1px,transparent 1px),
+      linear-gradient(to bottom,rgba(255,255,255,.022) 1px,transparent 1px);
+    background-size:34px 34px;
+    -webkit-mask-image:radial-gradient(125% 92% at 50% -4%,#000 34%,transparent 80%);
+            mask-image:radial-gradient(125% 92% at 50% -4%,#000 34%,transparent 80%)}
+  body::after{opacity:.04;mix-blend-mode:overlay;background-size:170px 170px;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='170' height='170'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+  .wrap{max-width:760px;margin:0 auto;padding:48px 24px 72px;position:relative;z-index:1}
+  /* the mark: a keyhole — the product's own instrument motif — not a generic rounded square (T3: violet only) */
+  .mark{width:40px;height:40px;display:inline-block;filter:drop-shadow(0 0 11px color-mix(in srgb,var(--blue) 32%,transparent))}
+  .mark svg{display:block;width:100%;height:100%}
+  .mark .bez{fill:color-mix(in srgb,#000 28%,var(--bg-2));stroke:color-mix(in srgb,var(--blue) 46%,transparent);stroke-width:1.2}
+  .mark .kh{fill:var(--blue)}
+  .eyebrow{font-family:var(--mono);font-size:.67rem;letter-spacing:.24em;text-transform:uppercase;color:var(--blue);opacity:.85;margin:16px 0 0}
+  /* hairline SVG glyph language — one stroke weight everywhere (.gi avoids the .twarn .ic text-glyph) */
+  .gi{display:inline-block;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;vertical-align:middle}
+  .feat .ico .gi{width:24px;height:24px}
+  .optsec .osi .gi{width:20px;height:20px}
+  .drow .gtile .gi{width:26px;height:26px;color:color-mix(in srgb,var(--blue) 52%,var(--muted))}
+  .mono{font-family:var(--mono)}
+  h1{font-family:var(--display);font-size:2.05rem;font-weight:600;margin:5px 0 4px;letter-spacing:.3px}
   .sub{color:var(--muted);font-size:.95rem;margin-bottom:6px}
   .trust{color:var(--faint);font-size:.8rem;margin-bottom:10px}
   .trust b{color:var(--up);font-weight:600}
   .ledger{color:var(--text);font-size:.86rem;margin:0 0 24px;padding:9px 13px;border-radius:var(--radius-sm);
     background:var(--blue-wash);border:1px solid var(--blue-line)}
-  .ledger b{color:var(--blue)}
-  h2{font-size:.82rem;font-weight:640;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin:30px 0 12px}
+  .ledger b{color:var(--blue);font-family:var(--mono)}
+  h2{font-family:var(--display);font-size:.84rem;font-weight:640;color:var(--muted);text-transform:uppercase;letter-spacing:.9px;margin:30px 0 12px}
   h2 .lede{font-weight:400;text-transform:none;letter-spacing:0;color:var(--faint)}
   .card{background:var(--glass);border:1px solid var(--line);border-radius:var(--radius);
     backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);padding:2px 0;overflow:hidden}
@@ -44,13 +71,13 @@
   .feat .nm{font-size:.95rem;font-weight:560}
   /* 18+ tag: amber OUTLINE, not warm fill (T3 — warm is reserved) */
   .feat .nm .tag{font-size:.6rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
-    color:var(--amber);border:1px solid color-mix(in srgb,var(--amber) 45%,transparent);border-radius:999px;
+    color:var(--amber);border:1px solid color-mix(in srgb,var(--amber) 45%,transparent);border-radius:4px;
     padding:1px 7px;margin-left:8px;vertical-align:1px}
   .feat .dsc{color:var(--muted);font-size:.8rem;margin-top:2px}
-  .feat .size{color:var(--faint);font-size:.74rem;margin-top:3px}
+  .feat .size{color:var(--faint);font-size:.72rem;margin-top:3px;font-family:var(--mono);letter-spacing:-.1px}
   /* fit is a standalone chip (a caution, not part of the size string); non-colour glyph (◐/⚠) for a11y */
   .feat .fit{display:inline-flex;align-items:center;font-size:.71rem;font-weight:560;margin-top:6px;
-    padding:1px 9px;border-radius:999px;border:1px solid currentColor}
+    padding:1px 9px;border-radius:var(--radius-sm);border:1px solid currentColor}
   .feat .fit.tight{color:var(--amber)} .feat .fit.big{color:var(--red)}
   .feat .suggest{color:var(--blue);font-size:.78rem;margin-top:5px;font-style:italic}
   .state{font-size:.74rem;font-weight:640;white-space:nowrap;flex:none}
@@ -100,7 +127,7 @@
   .optsec > summary::-webkit-details-marker{display:none}
   .optsec > summary:hover{background:rgba(255,255,255,.025)}
   .optsec > summary:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
-  .optsec .osi{font-size:1.15rem;width:24px;text-align:center;flex:none;opacity:.9}
+  .optsec .osi{width:24px;text-align:center;flex:none;color:var(--blue);opacity:.95}
   .optsec .ost{flex:1;min-width:0}
   .optsec .ost .t{display:block;font-size:.95rem;font-weight:560;color:var(--text)}
   .optsec .ost .d{display:block;font-size:.78rem;color:var(--muted);margin-top:1px;line-height:1.4}
@@ -156,6 +183,7 @@
     :root{--glass:rgba(24,28,40,0.96)}
     .card{backdrop-filter:none !important;-webkit-backdrop-filter:none !important}
     .optsec,.optsec[open]{background:rgba(22,26,38,0.98)}
+    body::after{display:none}                 /* drop the grain — keep surfaces clean & solid */
   }
   /* ── focus order is DOM order (top→bottom); make every interactive surface show a visible ring ── */
   a:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
@@ -176,8 +204,28 @@
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/><path d="M9.5 3v3.5M14.5 3v3.5M9.5 17.5V21M14.5 17.5V21M3 9.5h3.5M3 14.5h3.5M17.5 9.5H21M17.5 14.5H21"/></symbol>
+  <symbol id="i-runtime" viewBox="0 0 24 24"><circle cx="6" cy="6.5" r="2.3"/><circle cx="18" cy="9" r="2.3"/><circle cx="9.5" cy="18" r="2.3"/><path d="M8.1 7.4 15.7 8.4M7.7 8.2 9 15.8"/></symbol>
+  <symbol id="i-text" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h12.5M4 17.5h9"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="9.8" r="1.5"/><path d="M21 15.5 16 10.5 7.5 19"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10.5 9.2 14.8 12l-4.3 2.8z"/></symbol>
+  <symbol id="i-look" viewBox="0 0 24 24"><path d="M4 7h7M15 7h5M4 12h2M10 12h10M4 17h11M19 17h1"/><circle cx="13" cy="7" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="8" r="4"/><path d="M10.9 10.9 20 20M16.5 16.5 19 14M19 19l2-2"/></symbol>
+  <symbol id="i-signal" viewBox="0 0 24 24"><circle cx="12" cy="17" r="1.5"/><path d="M8.4 13.4a5 5 0 0 1 7.2 0M5.6 10.6a9 9 0 0 1 12.8 0"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0c0 4.5 1.8 5.5 2 6H4c.2-.5 2-1.5 2-6Z"/><path d="M10 20a2 2 0 0 0 4 0"/></symbol>
+  <symbol id="i-cursor" viewBox="0 0 24 24"><path d="M5.5 4 12 18.5l2.3-5.7L20 10.5z"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v4M15 3v4"/><path d="M7 7h10v3.5a5 5 0 0 1-10 0z"/><path d="M12 15.5V21"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3 5.5 13.5H11l-1 7.5L18.5 10H13z"/></symbol>
+  <symbol id="i-ambient" viewBox="0 0 24 24"><path d="M3 12h3l2-6 3.5 13L15 9l1.5 3H21"/></symbol>
+</defs></svg>
 <div class="wrap">
-  <div class="mark" aria-hidden="true"></div>
+  <div class="mark" aria-hidden="true"><svg viewBox="0 0 36 36">
+    <rect class="bez" x="1.5" y="1.5" width="33" height="33" rx="8"/>
+    <path class="kh" d="M18 10a5 5 0 0 0-2.7 9.2L13.2 27h9.6l-2.1-7.8A5 5 0 0 0 18 10z"/>
+  </svg></div>
+  <div class="eyebrow">On-device setup</div>
   <h1>Set up AgentOS</h1>
   <div class="sub">Pick what you want to make. We detect what's already here and download only what's missing.</div>
   <div class="trust"><b>Everything runs on this machine.</b> Nothing about your choices or your creations leaves the box.</div>
@@ -198,7 +246,7 @@
 
   <details id="desktop-sec" class="optsec">
     <summary>
-      <span class="osi" aria-hidden="true">🎨</span>
+      <span class="osi" aria-hidden="true"><svg class="gi"><use href="#i-look"/></svg></span>
       <span class="ost"><span class="t">Customize your desktop</span><span class="d">The AgentOS look, ambient instruments &amp; agent wiring</span></span>
       <span class="chev" id="dchev" aria-hidden="true">show ▾</span>
     </summary>
@@ -209,7 +257,7 @@
 
   <details id="acct-sec" class="optsec">
     <summary>
-      <span class="osi" aria-hidden="true">🔑</span>
+      <span class="osi" aria-hidden="true"><svg class="gi"><use href="#i-key"/></svg></span>
       <span class="ost"><span class="t">Accounts</span><span class="d">Tokens for gated &amp; mature models — only the Mature video lane needs one</span></span>
       <span class="chev" id="achev" aria-hidden="true">show ▾</span>
     </summary>
@@ -228,7 +276,7 @@
 
   <details id="remote-sec" class="optsec">
     <summary>
-      <span class="osi" aria-hidden="true">📡</span>
+      <span class="osi" aria-hidden="true"><svg class="gi"><use href="#i-signal"/></svg></span>
       <span class="ost"><span class="t">Remote access</span><span class="d">Reach these UIs from your phone over Tailscale</span></span>
       <span class="chev" id="tchev" aria-hidden="true">show ▾</span>
     </summary>
@@ -277,7 +325,8 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
 <script>
   const ESC={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
   const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>ESC[c]);
-  const ICON={text:"✍",image:"🖼",video:"🎞"};
+  const SVG=id=>`<svg class="gi"><use href="#${id}"/></svg>`;   // hairline glyph from the sprite (decorative)
+  const ICON={text:SVG("i-text"),image:SVG("i-image"),video:SVG("i-video")};
   let TOKEN="", busy={}, STATE={}, suggested={}, wasReady={};
 
   async function tok(){ if(!TOKEN) TOKEN=(await (await fetch("/api/token")).json()).token; return TOKEN; }
@@ -286,7 +335,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
   }
 
   function bundleRow(b){
-    const ready=b.gap===0, mature=b.rating==="mature", ico=ICON[b.modality]||"•";
+    const ready=b.gap===0, mature=b.rating==="mature", ico=ICON[b.modality]||SVG("i-runtime");
     const blocked = b.needs_comfyui && !STATE.comfyui && !ready;
     let right="";
     if(busy[b.id]) right=`<span class="state busy">setting up…</span>`;
@@ -326,12 +375,12 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
 
   function renderRuntime(s){
     const hw=s.hardware||{};
-    const gpu = hw.vram_gb ? `${hw.vram_gb} GB GPU · ${hw.ram_gb} GB RAM` : "Couldn't read your GPU";
+    const gpu = hw.vram_gb ? `<span class="mono">${esc(hw.vram_gb)} GB GPU · ${esc(hw.ram_gb)} GB RAM</span>` : "Couldn't read your GPU";
     const comfy = s.comfyui
-      ? `<div class="feat"><div class="ico" aria-hidden="true">🧩</div><div class="meta"><div class="nm">ComfyUI runtime</div><div class="dsc">installed — image &amp; video can run</div></div><span class="state ready">✓ ready</span></div>`
-      : `<div class="feat"><div class="ico" aria-hidden="true">🧩</div><div class="meta"><div class="nm">ComfyUI runtime</div><div class="dsc">not installed — needed for image &amp; video (clones it + sets up, several GB)</div></div><button class="btn" id="installComfy">Install</button></div>`;
+      ? `<div class="feat"><div class="ico" aria-hidden="true">${SVG("i-runtime")}</div><div class="meta"><div class="nm">ComfyUI runtime</div><div class="dsc">installed — image &amp; video can run</div></div><span class="state ready">✓ ready</span></div>`
+      : `<div class="feat"><div class="ico" aria-hidden="true">${SVG("i-runtime")}</div><div class="meta"><div class="nm">ComfyUI runtime</div><div class="dsc">not installed — needed for image &amp; video (clones it + sets up, several GB)</div></div><button class="btn" id="installComfy">Install</button></div>`;
     document.getElementById("runtime").innerHTML =
-      `<div class="feat"><div class="ico" aria-hidden="true">🖥️</div><div class="meta"><div class="nm">${esc(gpu)}</div>`
+      `<div class="feat"><div class="ico" aria-hidden="true">${SVG("i-cpu")}</div><div class="meta"><div class="nm">${gpu}</div>`
       + `<div class="dsc">we flag anything that may not fit — we never guarantee it</div></div>`
       + `<button class="btn ghost" id="research" title="Ask an agent to web-search the latest models for this GPU">Find latest ↗</button></div>` + comfy;
   }
@@ -493,8 +542,8 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
   };
   const LOOKIDS=new Set(["aurora-theme","aurora-panel","swaync-aurora"]);
   // per-row glyph for rows with no real capture (the photographic thumbs + Aurora swatch carry their own)
-  const DGLYPH={"swaync-race":"🔔","dolphin-create":"🖱","browser-host":"🌐","hermes-plugins":"🔌","gpu-coordinator":"⚡"};
-  const GGLYPH={ambient:"◓",look:"🎨",agents:"🔌",integrations:"🧩"};
+  const DGLYPH={"swaync-race":"i-bell","dolphin-create":"i-cursor","browser-host":"i-globe","hermes-plugins":"i-plug","gpu-coordinator":"i-bolt"};
+  const GGLYPH={ambient:"i-ambient",look:"i-look",agents:"i-plug",integrations:"i-runtime"};
   let DESKTOP={reachable:false}, CJOBS={}, dbusy={};
 
   // one coherent 84×48 preview tile per row, three honest variants in the same frame:
@@ -503,7 +552,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     const id=c.id;
     if(DIMG[id]) return `<img class="thumb" src="/img/${DIMG[id]}" alt="" loading="lazy">`;
     if(LOOKIDS.has(id)) return `<div class="swatch" aria-hidden="true"><i style="background:#765CC4"></i><i style="background:#9b82e0"></i><i style="background:#1a2238"></i></div>`;
-    return `<div class="gtile" aria-hidden="true">${DGLYPH[id]||GGLYPH[c.group]||"•"}</div>`;
+    return `<div class="gtile" aria-hidden="true">${SVG(DGLYPH[id]||GGLYPH[c.group]||"i-runtime")}</div>`;
   }
   function drow(c){
     const id=c.id, adopted=c.state==="adopted", job=CJOBS[id];
