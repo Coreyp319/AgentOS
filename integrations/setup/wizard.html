@@ -48,6 +48,10 @@
     padding:1px 7px;margin-left:8px;vertical-align:1px}
   .feat .dsc{color:var(--muted);font-size:.8rem;margin-top:2px}
   .feat .size{color:var(--faint);font-size:.74rem;margin-top:3px}
+  /* fit is a standalone chip (a caution, not part of the size string); non-colour glyph (◐/⚠) for a11y */
+  .feat .fit{display:inline-flex;align-items:center;font-size:.71rem;font-weight:560;margin-top:6px;
+    padding:1px 9px;border-radius:999px;border:1px solid currentColor}
+  .feat .fit.tight{color:var(--amber)} .feat .fit.big{color:var(--red)}
   .feat .suggest{color:var(--blue);font-size:.78rem;margin-top:5px;font-style:italic}
   .state{font-size:.74rem;font-weight:640;white-space:nowrap;flex:none}
   .state.gap,.state.busy{color:var(--blue)}
@@ -84,30 +88,43 @@
   a{color:var(--blue)} .foot{color:var(--faint);font-size:.74rem;margin-top:30px;line-height:1.8}
   .foot .stored{color:var(--muted)} .foot button{font:inherit;font-size:.72rem;color:var(--blue);background:none;border:0;cursor:pointer;padding:0;text-decoration:underline}
   code{background:rgba(255,255,255,.06);padding:1px 6px;border-radius:5px;color:var(--muted)}
-  /* ── Desktop section — restrained: plain rows + a small honest preview, no extra glass ── */
-  .dsec{padding:14px 18px}
-  .dsec > summary{cursor:pointer;list-style:none;color:var(--text);font-weight:560;font-size:.95rem;display:flex;justify-content:space-between;align-items:center}
-  .dsec > summary::-webkit-details-marker{display:none}
-  .dsec > summary .chev{color:var(--muted);font-size:.78rem;font-weight:400}
-  .dgroup{margin:16px 0 2px}
+  /* ── Optional setup — one quiet, clearly-secondary region below the make-flow (no extra glass) ── */
+  .opthead{margin:46px 0 14px;padding-top:28px;border-top:1px solid var(--line)}
+  .opthead .opth2{font-size:.96rem;font-weight:640;color:var(--text);letter-spacing:.2px;margin:0;text-transform:none}
+  .opthead .optsub{color:var(--muted);font-size:.83rem;line-height:1.5;margin:5px 0 0;max-width:58ch}
+  /* lighter than the primary .card — a flat surface that gently lifts only once expanded */
+  .optsec{background:color-mix(in srgb,var(--bg-1) 76%,transparent);border:1px solid var(--line);
+    border-radius:var(--radius);overflow:hidden;margin-bottom:10px}
+  .optsec[open]{background:var(--glass)}
+  .optsec > summary{cursor:pointer;list-style:none;display:flex;gap:13px;align-items:center;padding:14px 18px}
+  .optsec > summary::-webkit-details-marker{display:none}
+  .optsec > summary:hover{background:rgba(255,255,255,.025)}
+  .optsec > summary:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+  .optsec .osi{font-size:1.15rem;width:24px;text-align:center;flex:none;opacity:.9}
+  .optsec .ost{flex:1;min-width:0}
+  .optsec .ost .t{display:block;font-size:.95rem;font-weight:560;color:var(--text)}
+  .optsec .ost .d{display:block;font-size:.78rem;color:var(--muted);margin-top:1px;line-height:1.4}
+  .optsec > summary .chev{color:var(--faint);font-size:.74rem;flex:none;white-space:nowrap}
+  .optbody{padding:2px 18px 16px}
+  /* ── Desktop rows — one coherent 84×48 preview tile per row: photo · swatch · glyph ── */
+  .dgroup{margin:14px 0 2px}
   .dgroup .ghd{font-size:.85rem;font-weight:640;color:var(--text)}
   .dgroup .gld{font-size:.78rem;color:var(--muted);margin:2px 0 4px;line-height:1.45}
   .drow{display:flex;gap:13px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
-  .drow .thumb,.drow .swatch{width:84px;height:48px;border-radius:8px;flex:none;border:1px solid var(--line-hi);background:var(--bg-2)}
-  .drow .thumb{object-fit:cover;display:block}
+  .drow .thumb,.drow .swatch,.drow .gtile{width:84px;height:48px;border-radius:8px;flex:none;border:1px solid var(--line-hi)}
+  .drow .thumb{object-fit:cover;display:block;background:var(--bg-2)}
   .drow .swatch{display:flex;overflow:hidden}
   .drow .swatch > i{flex:1}
+  .drow .gtile{display:flex;align-items:center;justify-content:center;font-size:1.35rem;
+    background:linear-gradient(160deg,var(--bg-1),var(--bg-2))}
   .drow .meta{flex:1;min-width:0}
   .drow .nm{font-size:.92rem;font-weight:560}
   .drow .dsc{color:var(--muted);font-size:.78rem;margin-top:2px;line-height:1.45}
   .drow .eff{color:var(--faint);font-size:.74rem;margin-top:3px}
   .drow .post{color:var(--amber);font-size:.76rem;margin-top:5px}      /* honest residual manual step */
   .don{color:var(--up);font-size:.74rem;font-weight:640;white-space:nowrap}
-  /* ── Remote access (Tailscale) card — copy-don't-execute; the wizard runs nothing here ── */
-  .tcard{padding:14px 18px}
-  .tcard > summary{cursor:pointer;list-style:none;color:var(--text);font-weight:560;font-size:.95rem;display:flex;justify-content:space-between;align-items:center}
-  .tcard > summary::-webkit-details-marker{display:none}
-  .tcard > summary .chev{color:var(--muted);font-size:.78rem;font-weight:400}
+  .acthint{margin:12px 0 0;font-size:.8rem;color:var(--muted);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+  /* ── Remote access (Tailscale) — copy-don't-execute; the wizard runs nothing here ── */
   .twarn{margin-top:12px;border-radius:var(--radius-sm);border:1px solid color-mix(in srgb,var(--red) 32%,transparent);background:color-mix(in srgb,var(--red) 6%,transparent);overflow:hidden}
   .twarn .th{display:flex;gap:9px;align-items:flex-start;padding:11px 15px;background:color-mix(in srgb,var(--red) 13%,transparent);font-size:.83rem;font-weight:640;color:var(--amber);line-height:1.45}
   .twarn .th .ic{flex:none;font-size:1rem;line-height:1.2}
@@ -138,6 +155,23 @@
   @media (prefers-reduced-transparency: reduce){
     :root{--glass:rgba(24,28,40,0.96)}
     .card{backdrop-filter:none !important;-webkit-backdrop-filter:none !important}
+    .optsec,.optsec[open]{background:rgba(22,26,38,0.98)}
+  }
+  /* ── focus order is DOM order (top→bottom); make every interactive surface show a visible ring ── */
+  a:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+  /* ── narrow widths: let the action wrap below the text instead of crushing it ── */
+  @media (max-width:560px){
+    .wrap{padding:36px 16px 60px}
+    .feat{flex-wrap:wrap}
+    .feat .meta{flex:1 1 calc(100% - 44px)}
+    .feat .btn,.feat > a.btn,.feat .state{margin-left:44px}
+    .drow{flex-wrap:wrap}
+    .drow .meta{flex:1 1 100%}
+    .drow .btn,.drow .don,.drow .state{margin-left:0}
+    .creds .row{flex-wrap:wrap}
+    .creds .row > div{flex:1 1 100%}
+    .expo li{flex-wrap:wrap}
+    .expo .port{min-width:0}
   }
 </style>
 </head>
@@ -157,28 +191,48 @@
 
   <div id="progress" role="status" aria-live="polite" aria-atomic="false"></div>
 
-  <h2>Customize your desktop <span class="lede">· optional — the AgentOS look, ambient instruments, and agent wiring</span></h2>
-  <details id="desktop-sec" class="card dsec">
-    <summary>Desktop customizations <span class="chev" id="dchev">show ▾</span></summary>
-    <div id="desktop"><div class="dsc" style="color:var(--muted);margin-top:10px">checking what's installed…</div></div>
-  </details>
-
-  <h2>Accounts <span class="lede">· only the Mature video lane needs one</span></h2>
-  <div class="card creds">
-    <div class="dsc" style="color:var(--muted);font-size:.82rem">A free <a href="https://civitai.com/user/account" target="_blank" rel="noopener">Civitai</a> token unlocks the Wan mature checkpoints. A <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">HuggingFace</a> token is only needed for gated models. Tokens go to your OS keyring — never a file, never sent anywhere but the download.</div>
-    <div class="row" style="margin-top:12px">
-      <div><label for="svc">Service</label>
-        <select id="svc"><option value="civitai">Civitai (mature video)</option><option value="huggingface">HuggingFace (gated models)</option></select></div>
-      <div><label for="tok">Token</label><input id="tok" type="password" placeholder="paste token, then Save" autocomplete="off" /></div>
-      <button class="btn" id="saveTok">Save</button>
-      <button class="btn ghost" id="forgetTok" title="Remove the stored token for the selected service">Forget</button>
-    </div>
-    <div id="credMsg" role="status" aria-live="polite"></div>
+  <div class="opthead">
+    <h2 class="opth2">Optional setup</h2>
+    <p class="optsub">The AgentOS desktop look, ambient instruments, accounts, and remote access — set any of these up now, later, or not at all. None of it is needed to start making things.</p>
   </div>
 
-  <h2>Remote access <span class="lede">· optional — reach these UIs from your phone over Tailscale</span></h2>
-  <details class="card tcard">
-    <summary>Expose the AgentOS UIs to your tailnet <span class="chev" id="tchev">show ▾</span></summary>
+  <details id="desktop-sec" class="optsec">
+    <summary>
+      <span class="osi" aria-hidden="true">🎨</span>
+      <span class="ost"><span class="t">Customize your desktop</span><span class="d">The AgentOS look, ambient instruments &amp; agent wiring</span></span>
+      <span class="chev" id="dchev" aria-hidden="true">show ▾</span>
+    </summary>
+    <div class="optbody">
+      <div id="desktop"><div class="dsc" style="color:var(--muted);margin-top:10px">checking what's installed…</div></div>
+    </div>
+  </details>
+
+  <details id="acct-sec" class="optsec">
+    <summary>
+      <span class="osi" aria-hidden="true">🔑</span>
+      <span class="ost"><span class="t">Accounts</span><span class="d">Tokens for gated &amp; mature models — only the Mature video lane needs one</span></span>
+      <span class="chev" id="achev" aria-hidden="true">show ▾</span>
+    </summary>
+    <div class="optbody creds">
+      <div class="dsc" style="color:var(--muted);font-size:.82rem">A free <a href="https://civitai.com/user/account" target="_blank" rel="noopener">Civitai</a> token unlocks the Wan mature checkpoints. A <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">HuggingFace</a> token is only needed for gated models. Tokens go to your OS keyring — never a file, never sent anywhere but the download.</div>
+      <div class="row" style="margin-top:12px">
+        <div><label for="svc">Service</label>
+          <select id="svc"><option value="civitai">Civitai (mature video)</option><option value="huggingface">HuggingFace (gated models)</option></select></div>
+        <div><label for="tok">Token</label><input id="tok" type="password" placeholder="paste token, then Save" autocomplete="off" /></div>
+        <button class="btn" id="saveTok">Save</button>
+        <button class="btn ghost" id="forgetTok" title="Remove the stored token for the selected service">Forget</button>
+      </div>
+      <div id="credMsg" role="status" aria-live="polite"></div>
+    </div>
+  </details>
+
+  <details id="remote-sec" class="optsec">
+    <summary>
+      <span class="osi" aria-hidden="true">📡</span>
+      <span class="ost"><span class="t">Remote access</span><span class="d">Reach these UIs from your phone over Tailscale</span></span>
+      <span class="chev" id="tchev" aria-hidden="true">show ▾</span>
+    </summary>
+    <div class="optbody">
     <div class="twarn">
       <div class="th"><span class="ic" aria-hidden="true">⚠</span><span>Remote access exposes <u>unauthenticated</u> desktop UIs to your whole tailnet. Read this before you copy anything.</span></div>
       <div class="body">
@@ -210,6 +264,7 @@ sudo tailscale up                           # opens an auth URL; use the same ac
 integrations/agentosd-remote.sh up          # serve the UIs (down / status to reverse / inspect)</pre>
       <p class="dsc">See <code>docs/REMOTE-ACCESS.md</code> for the <code>tag:agentos</code> ACL JSON + hardening.</p>
     </div>
+    </div>
   </details>
 
   <div class="foot">
@@ -223,7 +278,6 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
   const ESC={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
   const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>ESC[c]);
   const ICON={text:"✍",image:"🖼",video:"🎞"};
-  const STATE_LABEL={fits:"",tight:"◐ tight on your GPU",["too-big"]:"⚠ too big for this GPU",unknown:""};
   let TOKEN="", busy={}, STATE={}, suggested={}, wasReady={};
 
   async function tok(){ if(!TOKEN) TOKEN=(await (await fetch("/api/token")).json()).token; return TOKEN; }
@@ -243,18 +297,30 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     else if(blocked) right=`<span class="state" style="color:var(--faint)">needs ComfyUI ↑</span>`;
     else if(mature) right=`<button class="btn" data-mature="${esc(b.id)}">Set up…</button>`;
     else right=`<button class="btn" data-fetch="${esc(b.id)}">Set up</button>`;
-    // honest fit copy (#9): warn, never guarantee
-    let fit = STATE_LABEL[b.fit] || "";
-    if(b.fit==="too-big") fit=" · ⚠ too big for this GPU — find a smaller one";
-    const note = ready ? "ready — nothing left to fetch"
-      : `${b.present}/${b.total} present · ~${b.approx_gb} GB to download`
-        + (b.manual?` · ${b.manual} manual file(s)`:"") + (fit?` · ${fit.replace(/^ · /,"")}`:"");
+    // calm note when ready; a clean clause list (no dot-soup) when there's work to do
+    let note;
+    if(ready) note="Installed · ready to use";
+    else{
+      const parts=[];
+      if(b.present>0 && b.present<b.total) parts.push(`${b.present}/${b.total} models here`);
+      parts.push(`~${b.approx_gb} GB to download`);
+      if(b.manual) parts.push(`${b.manual} manual file${b.manual>1?"s":""}`);
+      note=parts.join(" · ");
+    }
+    // fit is its OWN chip — a caution about running, not a fetch detail (#9: warn, never guarantee)
+    const fit = b.fit==="tight" ? `<div class="fit tight">◐ tight on this GPU</div>`
+      : b.fit==="too-big" ? `<div class="fit big">⚠ too big for this GPU — find a smaller one</div>` : "";
     const sug = (ready && suggested[b.id]) ? `<div class="suggest">Your text model suggests: “${esc(suggested[b.id])}”</div>` : "";
+    // why = the motivation/prerequisite (best while there's work to do); once ready that prerequisite
+    // ("Needs the ComfyUI runtime") is stale, so describe what it makes instead.
+    const blurb = ready ? (b.desc||b.why) : (b.why||b.desc);
+    // NO persistent warm "✓ ready" badge — warm is reserved for the one-shot .bloom beat, so a fully
+    // set-up box reads as a calm list led by the violet "Make one ↗", not a wall of warm ticks.
     return `<div class="feat" data-bid="${esc(b.id)}">
       <div class="ico" aria-hidden="true">${ico}</div>
       <div class="meta"><div class="nm">${esc(b.id)}${mature?'<span class="tag">18+</span>':''}</div>
-        <div class="dsc">${esc(b.why||b.desc)}</div><div class="size">${esc(note)}</div>${sug}</div>
-      <span class="state ${ready?'ready':'gap'}">${ready?'✓ ready':''}</span>${right}
+        <div class="dsc">${esc(blurb)}</div><div class="size">${esc(note)}</div>${fit}${sug}</div>
+      ${right}
     </div>`;
   }
 
@@ -343,17 +409,32 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     if(ab){ const id=ab.dataset.bid; if(!document.getElementById("ag-"+id).checked){ return; } closeAffirm(id); busy[id]=true; const r=await post("/api/fetch",{bundle:id,mature:true}); if(r.error){ alertRow(id,r.error); busy[id]=false; } refreshJobs(); return; }
     const cb=e.target.closest("button.affirm-cancel");
     if(cb){ closeAffirm(cb.dataset.bid); return; }
+    if(e.target.closest("button.acct-open")){ openAccounts(); return; }
   });
 
   function openAffirm(id, row){
     if(document.querySelector(`.affirm[data-bid="${CSS.escape(id)}"]`)) return;
+    // Accounts now lives (collapsed) under Optional setup — if this lane still needs a token, say so
+    // and offer a jump, so grouping the optional sections never strands the mature flow.
+    const b=(STATE.bundles||[]).find(x=>x.id===id)||{};
+    const missing=(b.needs_auth||[]).filter(svc=>!(STATE.creds||{})[svc]);
+    const tokHint = missing.length
+      ? `<div class="acthint">⚠ Needs a ${esc(missing.join(" & "))} token to download.
+         <button class="btn ghost acct-open" type="button">Add it under Accounts ↓</button></div>` : "";
     const el=document.createElement("div"); el.className="affirm"; el.dataset.bid=id;
     el.innerHTML=`<h3>Mature (18+) models</h3>
       <p>These download <b>under your own Civitai account</b> to this machine — AgentOS hosts nothing. You affirm you are an adult. <b>No minors, no real-person likenesses</b> (enforced denylist).</p>
-      <label><input type="checkbox" id="ag-${esc(id)}"> I'm an adult and I want these models</label>
+      <label><input type="checkbox" id="ag-${esc(id)}"> I'm an adult and I want these models</label>${tokHint}
       <div class="row"><button class="btn affirm-go" data-bid="${esc(id)}">Download</button>
         <button class="btn ghost affirm-cancel" data-bid="${esc(id)}">Cancel</button></div>`;
     row.after(el); el.querySelector("input").focus();
+  }
+  function openAccounts(){
+    const s=document.getElementById("acct-sec"); if(!s) return;
+    s.open=true;                                          // fires toggle → chevron syncs
+    const rm=matchMedia("(prefers-reduced-motion: reduce)").matches;
+    s.scrollIntoView({behavior:rm?"auto":"smooth",block:"start"});
+    setTimeout(()=>document.getElementById("tok")?.focus(),rm?0:350);
   }
   function closeAffirm(id){ const el=document.querySelector(`.affirm[data-bid="${CSS.escape(id)}"]`); if(el) el.remove(); }
   function alertRow(id,msg){ const el=document.querySelector(`.affirm[data-bid="${CSS.escape(id)}"]`)||document.querySelector(`.feat[data-bid="${CSS.escape(id)}"]`); if(el){ const e=document.createElement("div"); e.className="err"; e.style.padding="0 18px 10px"; e.textContent=msg; el.after(e); setTimeout(()=>e.remove(),5000);} }
@@ -411,12 +492,18 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     "hermes-plugins":"Restarts the Hermes gateway.",
   };
   const LOOKIDS=new Set(["aurora-theme","aurora-panel","swaync-aurora"]);
+  // per-row glyph for rows with no real capture (the photographic thumbs + Aurora swatch carry their own)
+  const DGLYPH={"swaync-race":"🔔","dolphin-create":"🖱","browser-host":"🌐","hermes-plugins":"🔌","gpu-coordinator":"⚡"};
+  const GGLYPH={ambient:"◓",look:"🎨",agents:"🔌",integrations:"🧩"};
   let DESKTOP={reachable:false}, CJOBS={}, dbusy={};
 
-  function dthumb(id){
+  // one coherent 84×48 preview tile per row, three honest variants in the same frame:
+  // a real .webp capture · the Aurora accent swatch · a meaningful glyph tile (never a bare dot)
+  function dthumb(c){
+    const id=c.id;
     if(DIMG[id]) return `<img class="thumb" src="/img/${DIMG[id]}" alt="" loading="lazy">`;
     if(LOOKIDS.has(id)) return `<div class="swatch" aria-hidden="true"><i style="background:#765CC4"></i><i style="background:#9b82e0"></i><i style="background:#1a2238"></i></div>`;
-    return `<div class="swatch" aria-hidden="true" style="align-items:center;justify-content:center;color:var(--muted)">•</div>`;
+    return `<div class="gtile" aria-hidden="true">${DGLYPH[id]||GGLYPH[c.group]||"•"}</div>`;
   }
   function drow(c){
     const id=c.id, adopted=c.state==="adopted", job=CJOBS[id];
@@ -431,7 +518,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     const eff = DEFFECT[id] ? `<div class="eff">${esc(DEFFECT[id])}</div>` : "";
     const post = (adopted && c.post_adopt) ? `<div class="post">One more step: ${esc(c.post_adopt)}</div>` : "";
     const failed = (job && job.status==="failed") ? `<div class="err">${esc(job.outcome||"that step didn't finish — see the status panel")}</div>` : "";
-    return `<div class="drow" data-drow="${esc(id)}">${dthumb(id)}
+    return `<div class="drow" data-drow="${esc(id)}">${dthumb(c)}
       <div class="meta"><div class="nm">${esc(id)}</div><div class="dsc">${esc(c.desc||"")}</div>${eff}${post}${failed}</div>${right}</div>`;
   }
   function renderDesktop(){
@@ -490,14 +577,19 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     }
     refreshDesktop();
   });
-  const _dsec=document.getElementById("desktop-sec");
-  _dsec.addEventListener("toggle",()=>{ document.getElementById("dchev").textContent=_dsec.open?"hide ▴":"show ▾"; if(_dsec.open) refreshDesktop(); });
+  // ── Optional-setup disclosure rows: swap the chevron text; the desktop section also (and only)
+  //    polls while open (idle is sacred). One helper keeps the three in sync. ──
+  function wireOpt(secId,chevId,onOpen){
+    const sec=document.getElementById(secId);
+    sec.addEventListener("toggle",()=>{ document.getElementById(chevId).textContent=sec.open?"hide ▴":"show ▾"; if(sec.open&&onOpen) onOpen(); });
+  }
+  wireOpt("desktop-sec","dchev",refreshDesktop);
+  wireOpt("acct-sec","achev");
+  wireOpt("remote-sec","tchev");
 
   // ── Remote access card: pure copy-don't-execute. The wizard never runs tailscale; the commands
   // stay hidden until the consent box is ticked. No route here touches the network. ──
   document.getElementById("tsok").addEventListener("change",e=>{ document.getElementById("tsteps").hidden=!e.target.checked; });
-  const _tcard=document.querySelector(".tcard");
-  _tcard.addEventListener("toggle",()=>{ document.getElementById("tchev").textContent=_tcard.open?"hide ▴":"show ▾"; });
 
   document.body.classList.add("first");
   setTimeout(()=>document.body.classList.remove("first"),700);
