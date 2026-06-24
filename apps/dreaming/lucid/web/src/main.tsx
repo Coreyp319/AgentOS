@@ -3,7 +3,9 @@ import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'motion/react'
 import './theme.css'   // editorial serif converged onto system P052 (unified AgentOS type); no bundled webfont
+import './mobile.css'  // ADR-0047: phone ergonomics — bottom-sheet choices, touch targets, safe-area (loaded AFTER theme to override)
 import App from './App'
+import { initLucidPwa } from './sw-register'   // ADR-0047: SW install + honest "box offline" banner
 
 // gcTime 10min: the beats query is unobserved for the whole (multi-minute) 'dreaming' phase, so a 60s
 // gcTime evicted it mid-turn and the held menu was lost on return. The server now guarantees the hold,
@@ -24,3 +26,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     </QueryClientProvider>
   </React.StrictMode>,
 )
+
+// ADR-0047 Phase 1: make the installed PWA boot offline and tell the truth when the
+// box is unreachable. Additive + dependency-free; the app works unchanged without it.
+initLucidPwa()
