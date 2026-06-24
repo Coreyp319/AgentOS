@@ -40,15 +40,38 @@ PlasmoidItem {
     // and the WhiteSur desktop themes ship the SAME dark colours in both light and dark
     // variants — so Kirigami.Theme never changes here. The scheme's window background does.
     property bool schemeDark: true
+    // ~/.config/kdeglobals, resolved the same way feedPath resolves the runtime dir:
+    // StandardPaths returns a file:// QUrl; the `cat` backend needs a plain path. Honors
+    // XDG_CONFIG_HOME automatically (unlike a hardcoded $HOME/.config fallback).
+    readonly property string _kdeglobals:
+        StandardPaths.writableLocation(StandardPaths.GenericConfigLocation).toString()
+            .replace(/^file:\/\//, "") + "/kdeglobals"
+    // Read the active colour scheme's window background straight from the kdeglobals
+    // INI via `cat` — NOT `kreadconfig6`. kreadconfig6 is a Qt *GUI* binary whose KConfig
+    // writability probe can transiently fail (cold boot / xdg-portal stall / a non-writable
+    // ~/.config/kreadconfig6rc) and then pop a BLOCKING "kreadconfig6rc not writable" modal.
+    // Polled every few seconds inside plasmashell, that one bad probe becomes an endless
+    // modal loop on the user's screen. Parsing the INI ourselves spawns no Qt toolkit, so
+    // the modal is structurally impossible — the same reason swaync-apply-scheme.sh reads
+    // the INI with awk instead of kreadconfig6. Value read is identical.
     function readScheme() {
-        var cmd = "kreadconfig6 --file kdeglobals --group " + fileReader.shellQuote("Colors:Window")
-                  + " --key BackgroundNormal"
-        fileReader.run(cmd, function(txt) {
-            var p = String(txt).trim().split(",")
-            if (p.length >= 3) {
-                var r = parseInt(p[0]), g = parseInt(p[1]), b = parseInt(p[2])
-                if (!isNaN(r) && !isNaN(g) && !isNaN(b))
-                    root.schemeDark = (0.299 * r + 0.587 * g + 0.114 * b) < 128
+        fileReader.read(root._kdeglobals, function(txt) {
+            var lines = String(txt).split("\n")
+            var inWindow = false
+            for (var i = 0; i < lines.length; i++) {
+                var ln = lines[i].trim()
+                if (ln.length === 0) continue
+                if (ln.charAt(0) === "[") { inWindow = (ln === "[Colors:Window]"); continue }
+                if (!inWindow) continue
+                var eq = ln.indexOf("=")
+                if (eq < 0 || ln.substring(0, eq).trim() !== "BackgroundNormal") continue
+                var p = ln.substring(eq + 1).trim().split(",")
+                if (p.length >= 3) {
+                    var r = parseInt(p[0]), g = parseInt(p[1]), b = parseInt(p[2])
+                    if (!isNaN(r) && !isNaN(g) && !isNaN(b))
+                        root.schemeDark = (0.299 * r + 0.587 * g + 0.114 * b) < 128
+                }
+                return   // found BackgroundNormal in [Colors:Window]; done
             }
         })
     }

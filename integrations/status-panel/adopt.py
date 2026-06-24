@@ -174,6 +174,48 @@ def _cmd(args: list[str], timeout: float = 4.0) -> tuple[int, str]:
         return 127, ""
 
 
+def _read_kde_value(fname: str, group: str, key: str) -> str | None:
+    """Read a single KDE config value the way `kreadconfig6` would, but by parsing the INI
+    cascade DIRECTLY — never shelling out to kreadconfig6.
+
+    Why: this panel runs as a systemd unit with ProtectHome=read-only, so its $HOME (incl.
+    ~/.config) is mounted read-only. kreadconfig6 is a Qt GUI binary that write-locks its own
+    ~/.config/kreadconfig6rc even to READ a value; under the read-only-home sandbox that probe
+    fails and it pops a BLOCKING "kreadconfig6rc not writable" GUI modal (the service inherits
+    the session DISPLAY/WAYLAND_DISPLAY, so it's visible). Probed on every /components.json the
+    modal loops on the user's screen. Reading the file ourselves spawns no Qt toolkit — read-only
+    home is fine for reads — so the modal is impossible.
+
+    Searches XDG_CONFIG_HOME then each XDG_CONFIG_DIRS entry; highest-precedence hit wins
+    (mirrors kreadconfig6's cascade). Returns the value, or None if unset everywhere.
+    """
+    home = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    dirs = (os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(":")
+    want = f"[{group}]"
+    for base in [home, *dirs]:
+        try:
+            text = (Path(base) / fname).read_text(errors="ignore")
+        except OSError:
+            continue
+        in_group = False
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if s.startswith("["):
+                in_group = (s == want)
+                continue
+            if not in_group:
+                continue
+            eq = s.find("=")
+            if eq < 0:
+                continue
+            # KDE keys may carry a locale/flag suffix: key[$i], key[en_US]. Match the base name.
+            if s[:eq].strip().split("[", 1)[0].strip() == key:
+                return s[eq + 1:].strip()
+    return None
+
+
 def probe_present(comp: dict) -> bool | None:
     spec = PROBES.get(comp["id"])
     if not spec:
@@ -195,17 +237,14 @@ def probe_present(comp: dict) -> bool | None:
         rc, out = _cmd(["kpackagetool6", "--type", "Plasma/Applet", "--list"])
         return any(line.strip() == arg for line in out.splitlines())
     if kind == "kwin":
-        if not shutil.which("kreadconfig6"):
-            return None
-        rc, out = _cmd(["kreadconfig6", "--file", "kwinrc", "--group", "Plugins",
-                        "--key", f"{arg}Enabled"])
-        return out.strip().lower() == "true"
+        # Direct INI read (NOT kreadconfig6) — see _read_kde_value: kreadconfig6 pops a
+        # "not writable" GUI modal under this unit's ProtectHome=read-only sandbox.
+        val = _read_kde_value("kwinrc", "Plugins", f"{arg}Enabled")
+        return (val or "").strip().lower() == "true"
     if kind == "kconfig":
-        if not shutil.which("kreadconfig6"):
-            return None
         fname, group, key, expect = arg
-        rc, out = _cmd(["kreadconfig6", "--file", fname, "--group", group, "--key", key])
-        return out.strip() == expect
+        val = _read_kde_value(fname, group, key)
+        return (val or "").strip() == expect
     if kind == "file":
         return Path(os.path.expanduser(arg)).exists()
     if kind == "file-contains":
