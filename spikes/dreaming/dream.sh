@@ -35,7 +35,7 @@ COORD_NAME="org.agentos.Coordinator1"
 COORD_PATH="/org/agentos/Coordinator1"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMFY_ROOT="${COMFY_ROOT:-/home/corey/ComfyUI}"
+COMFY_ROOT="${COMFY_ROOT:-$HOME/ComfyUI}"
 COMFY_HOST="${COMFY_HOST:-127.0.0.1:8188}"
 OUTPUT_DIR="$COMFY_ROOT/output"
 
