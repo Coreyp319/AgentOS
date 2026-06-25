@@ -26,7 +26,11 @@ tableviewdelegate {
         background-color: var(--view-background-alternate-color);
     }
 
-    &:hovered,
+    &:hovered {
+        border: 1px solid var(--control-hover-border-color);
+        background-color: transparent;
+    }
+
     &:active-focus {
         border: 1px solid var(--highlight-color);
         background-color: transparent;
@@ -117,6 +121,11 @@ headerviewdelegate
 
     icon-size: var(--icon-size-small);
 
+    &:visual-focus
+    {
+        outline: var(--focus-outline);
+    }
+
     &:disabled
     {
         border: 1px solid var(--button-disabled-border-color);
@@ -153,7 +162,7 @@ selectionrectanglehandle {
     height: var(--small-element-size);
     background-color: var(--bar-handle-active-background-color);
     border: 1px solid var(--bar-active-border-color);
-    border-radius: var(--small-element-size);
+    border-radius: var(--radius-full);   /* circle handle */
 
     &:visual-focus {
         border-color: var(--highlight-color);

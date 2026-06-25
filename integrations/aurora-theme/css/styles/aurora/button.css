@@ -14,31 +14,29 @@
     --button-active-highlight-color: mix(var(--button-active-background-color), var(--highlight-color), 0.333);
     --button-active-border-highlight-color: var(--highlight-color);
     --button-active-checked-color: mix(var(--button-active-background-color), var(--button-active-text-color), 0.125);
-    --button-active-focus-color: custom-color("kcolorscheme", "active", "button", "decoration", "focus");
-    /* Hover indicator — the SHIPPED-but-unused DecorationHover (dark 206,184,252 → 6.0:1 on the
-       button fill) so dark hover clears WCAG 1.4.11 non-text contrast, vs the ~2:1 selection violet
-       it replaced. */
-    --button-active-hover-color: custom-color("kcolorscheme", "active", "button", "decoration", "hover");
+    /* Hover border — the shared, WCAG-1.4.11-safe DecorationHover (>=3:1 on the control fill).
+       Aliased to the global --control-hover-border-color so buttons and every other control
+       share ONE engaged-hover colour. */
+    --button-active-hover-color: var(--control-hover-border-color);
 
     --button-active-header-border-color: custom-color("kcolorscheme", "active", "header", "decoration", "frame");
     --button-active-header-highlight-color: mix(var(--header-background-color), var(--highlight-color), 0.333);
     --button-active-header-checked-color: mix(var(--header-background-color), var(--header-text-color), 0.125);
 
-    --button-inactive-text-color: custom-color("kcolorscheme", "inactive", "button", "foreground", "text");
+    /* inactive (unfocused-window) button — these feed the dial's inactive tokens in bars.css */
     --button-inactive-background-color: custom-color("kcolorscheme", "inactive", "button", "background", "normal");
     --button-inactive-border-color: custom-color("kcolorscheme", "inactive", "button","decoration", "frame" );
-    --button-inactive-highlight-color: mix(var(--button-inactive-background-color), var(--highlight-color), 0.5);
-    --button-inactive-checked-color: mix(var(--button-inactive-background-color), var(--button-inactive-text-color), 0.2);
 
     --button-disabled-text-color: custom-color("kcolorscheme", "disabled", "button", "foreground", "text");
     --button-disabled-background-color: custom-color("kcolorscheme", "disabled", "button", "background", "normal");
     --button-disabled-border-color: custom-color("kcolorscheme", "disabled", "button", "decoration", "frame");
-    --button-disabled-highlight-color: mix(var(--button-disabled-background-color), var(--highlight-color), 0.333);
 
     --button-border: 1px solid var(--button-active-border-color);
     --button-border-highlight: 1px solid var(--button-active-border-highlight-color);
-    --button-shadow: 0px 1px 0px 0px rgba(0, 0, 0, 0.1);
-    --button-focus: 2px solid var(--button-active-focus-color);
+    --button-shadow: var(--elevation-0);
+    /* Focus ring — the ONE lavender accent: buttons share the global --focus-ring-color with
+       every other control, so the keyboard focus ring is a single colour desktop-wide. */
+    --button-focus: var(--focus-outline);
 
     /* Values derived from Breeze QStyle metrics */
     --button-default-size: 32px; /* 16 + 2 * 6 + 2 * 2  */
@@ -49,7 +47,6 @@
     --tab-text-color: var(--view-text-color);
     --tab-open-background-color: var(--window-background-color);
     --tab-open-text-color: var(--window-text-color);
-    --tab-disabled-text-color: var(--button-disabled-text-color);
     --tab-disabled-background-color: var(--button-disabled-background-color);
 
     --tab-highlight-size: 3px;
@@ -201,7 +198,7 @@ toolbutton.raised
 
 roundbutton
 {
-    border-radius: var(--button-default-size);
+    border-radius: var(--radius-full);
 }
 
 combobox
@@ -227,7 +224,7 @@ combobox
         box-shadow: none;
 
         &:hovered {
-            border-color: var(--button-active-border-highlight-color);
+            border-color: var(--control-hover-border-color);
         }
 
         &:pressed {
@@ -316,6 +313,11 @@ tabbutton {
         color: var(--button-disabled-text-color);
     }
 
+    &:visual-focus
+    {
+        outline: var(--focus-outline);
+    }
+
     &:hovered
     {
         background-color: var(--button-active-highlight-color);
@@ -374,13 +376,4 @@ tumbler {
             color: mix(var(--highlight-color), var(--view-text-color), 0.6);
         }
     }
-}
-
-button.changed,
-toolbutton.changed,
-combobox.changed,
-roundbutton.changed,
-delaybutton.changed {
-    background-color: var(--changed-background);
-    border: 1px solid var(--changed-foreground);
 }

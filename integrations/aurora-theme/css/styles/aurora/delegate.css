@@ -52,8 +52,13 @@ swipedelegate
 
     &:hovered
     {
-        border: 1px solid var(--highlight-color);
+        border: 1px solid var(--control-hover-border-color);
         background-color: var(--highlight-hover-color);
+    }
+
+    &:visual-focus
+    {
+        outline: var(--focus-outline);
     }
 
     &:pressed,
@@ -101,6 +106,8 @@ radiodelegate
 
 switchdelegate[display="text-under-icon"] > indicator {
     layout-alignment: content start start -1;
+    /* = -(var(--switch-indicator-width)); Union can't negate a var(), so this literal must stay
+       in lockstep with --switch-indicator-width (variables.css) / the switch track in check.css. */
     margin-right: -36px;
     margin-top: var(--small-spacing);
 }

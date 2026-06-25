@@ -24,6 +24,20 @@
        Union exposes no "is-dark" selector to CSS). */
     --corner-radius: 6px;            /* inline controls, inputs, small frames */
     --popup-corner-radius: 12px;     /* floating surfaces: menus, popups, dialogs, tooltips, cards */
+    /* The third radius family: fully-rounded pills + circles (radio dot, switch track/handle,
+       slider/dial handle, page-indicator, round button, scrollbar/selection handles). ONE token
+       that clamps to half the element, so the shape tracks the size automatically and can never
+       drift the way the prior hand-typed 6/8/9/10/64px radii did. */
+    --radius-full: 9999px;
+
+    /* Type scale — relative %, so every heading tracks the user's font/HiDPI scale (the one
+       absolute-px title was a scaling bug). --font-weight-emphasis replaces the literal 600
+       that was repeated across the heading rules. */
+    --font-size-heading-1: 135%;
+    --font-size-heading-2: 120%;
+    --font-size-heading-3: 115%;
+    --font-size-heading-4: 110%;
+    --font-weight-emphasis: 600;
 
     /* Icon sizes */
     --icon-size-small: 16px;
@@ -39,6 +53,10 @@
     --non-interactive-scrollbar-size: 10px;
     --menu-item-width: 150px;
     --text-field-width: 200px;
+    /* Switch track width — shared so delegate.css's text-under-icon overlap stays in lockstep
+       with the switch geometry (Union can't negate a var(), so the negative margin there cites
+       this token in a comment; keep the two in sync). */
+    --switch-indicator-width: 36px;
 
     /* Colors */
     --highlight-color: custom-color("kcolorscheme", "active", "selection", "background", "normal");
@@ -49,21 +67,22 @@
     --window-background-color: custom-color("kcolorscheme", "active", "window", "background", "normal");
     --window-background-alternate-color: custom-color("kcolorscheme", "active", "window", "background", "alternate");
     --window-border-color: custom-color("kcolorscheme", "active", "window", "decoration", "frame");
-    --window-highlight-color: mix(var(--window-background-color), var(--highlight-color), 0.5);
-
 
     --view-text-color: custom-color("kcolorscheme", "active", "view", "foreground", "text");
     --view-background-color: custom-color("kcolorscheme", "active", "view", "background", "normal");
     --view-background-alternate-color: custom-color("kcolorscheme", "active", "view", "background", "alternate");
     --view-border-color: custom-color("kcolorscheme", "active", "view", "decoration", "frame");
-    --view-highlight-color: mix(var(--view-background-color), var(--highlight-color), 0.5);
 
     --header-text-color: custom-color("kcolorscheme", "active", "header", "foreground", "text");
     --header-background-color: custom-color("kcolorscheme", "active", "header", "background", "normal");
-    --header-border-color: custom-color("kcolorscheme", "active", "header", "decoration", "frame");
 
     --complementary-text-color: custom-color("kcolorscheme", "active", "complementary", "foreground", "text");
-    --complementary-background-color: custom-color("kcolorscheme", "active", "complementary", "background", "normal");
+
+    /* The ONE engaged-hover border for every control (checkbox, switch, combobox, tab, chip,
+       textfield, slider …). DecorationHover clears WCAG 1.4.11 non-text contrast (>=3:1) on the
+       control fill, vs the ~2:1 selection violet that hover borders used to reach. INVARIANT:
+       a control's :hovered border routes through this, NOT through --highlight-color. */
+    --control-hover-border-color: custom-color("kcolorscheme", "active", "button", "decoration", "hover");
 
     --positive-text: custom-color("kcolorscheme", "active", "view", "foreground","positive");
     --neutral-text: custom-color("kcolorscheme", "active", "view", "foreground","neutral");
@@ -74,10 +93,12 @@
 
     /* "changed/modified-field" indicator — informational LAVENDER, deliberately OFF the amber
        neutral/hazard ramp: a benign reversible edit must not read as a warning on a calm,
-       reversibility-first desktop. (CVD non-colour redundancy — an edge-bar/glyph — is a deferred
-       app-layer follow-up; see ADR-0042.) */
+       reversibility-first desktop. CVD non-colour redundancy is now carried at the THEME layer
+       by a thick leading edge-bar (--changed-edge-width on border-left), so "changed" is
+       perceivable without colour for CVD / night-light users (ADR-0042). */
     --changed-foreground: var(--highlight-color);
     --changed-background: mix(var(--window-background-color), var(--highlight-color), 0.15);
+    --changed-edge-width: 3px;     /* the non-colour channel: a leading accent bar on a changed field */
 
     --card-background-color: var(--view-background-color);
     --card-text-color: var(--view-text-color);
@@ -95,7 +116,9 @@
     --focus-outline-alpha: 0.45;   /* soft hover-fill translucency (menu/menubar items), NOT the ring */
     --focus-color: modify-color(var(--focus-ring-color) set-alpha var(--focus-outline-alpha));
 
-    --shadow-color: rgba(0, 0, 0, 0.1);
+    /* Single shadow ink. Every elevation rung sets its own alpha off this one tint, so the
+       whole depth language can be re-toned in one place (no more three inline black-alphas). */
+    --shadow-color: rgb(0, 0, 0);
 
     /* Disabled colors */
     --window-disabled-text-color: custom-color("kcolorscheme", "disabled", "window", "foreground", "text");
@@ -106,12 +129,7 @@
     --view-disabled-background-color: custom-color("kcolorscheme", "disabled", "view", "background", "normal");
     --view-disabled-border-color: custom-color("kcolorscheme", "disabled", "view", "decoration", "frame");
 
-    --header-disabled-text-color: custom-color("kcolorscheme", "disabled", "header", "foreground", "text");
-    --header-disabled-background-color: custom-color("kcolorscheme", "disabled", "header", "background", "normal");
-    --header-disabled-border-color: custom-color("kcolorscheme", "disabled", "header", "decoration", "frame");
-
     --highlight-disabled-color: mix(var(--window-disabled-background-color), var(--highlight-color), 0.2);
-    --highlight-disabled-text-color: mix(var(--window-disabled-text-color), var(--highlight-text-color), 0.2);
 
     --card-disabled-background-color: var(--view-disabled-background-color);
     --card-disabled-text-color: var(--view-disabled-text-color);
@@ -121,12 +139,14 @@
     --focus-outline: 2px solid var(--focus-ring-color);
     /* Elevation ramp — the ONE depth language for floating surfaces. Union supports only a
        SINGLE shadow layer (no comma stacks, no `inset` keyword — verified against the engine),
-       so each rung is one soft drop with graduated y/blur and a gently-rising alpha. Black-
-       alpha reads on light backgrounds; on the dark scheme the scheme-bound 1px hairline border
-       carries the lift where the shadow fades — so the look holds in both modes. */
-    --elevation-1: 0px 2px 12px 0px rgba(0, 0, 0, 0.16);   /* cards, tooltips — resting */
-    --elevation-2: 0px 4px 20px 0px rgba(0, 0, 0, 0.22);   /* menus, popups — lifted */
-    --elevation-3: 0px 8px 28px 0px rgba(0, 0, 0, 0.28);   /* dialogs — floating free */
+       so each rung is one soft drop with graduated y/blur and a gently-rising alpha, all tinted
+       from the single --shadow-color ink. Black-alpha reads on light backgrounds; on the dark
+       scheme the scheme-bound 1px hairline border carries the lift where the shadow fades — so
+       the look holds in both modes. */
+    --elevation-0: 0px 1px 0px 0px modify-color(var(--shadow-color) set-alpha 0.1);    /* buttons — flush, hairline lift */
+    --elevation-1: 0px 2px 12px 0px modify-color(var(--shadow-color) set-alpha 0.16);  /* cards, tooltips — resting */
+    --elevation-2: 0px 4px 20px 0px modify-color(var(--shadow-color) set-alpha 0.22);  /* menus, popups — lifted */
+    --elevation-3: 0px 8px 28px 0px modify-color(var(--shadow-color) set-alpha 0.28);  /* dialogs — floating free */
     --dialog-shadow: var(--elevation-3);                   /* alias: popup.css dialog references it */
 
     --indicator-color: modify-color(var(--window-text-color) set-alpha 0.4);

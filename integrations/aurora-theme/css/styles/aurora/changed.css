@@ -1,0 +1,50 @@
+/*
+ * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-FileCopyrightText: 2026 AgentOS
+ */
+
+/*
+ * The "changed/modified-field" indicator (ADR-0042) — ONE home for the "this field was edited"
+ * cue, de-duplicated from button/check/text/bars (the rule had drifted across four files).
+ * Colour is the informational lavender (--changed-*, deliberately OFF the amber hazard ramp).
+ * The NON-colour channel — a thick leading edge-bar (--changed-edge-width) — makes "changed"
+ * perceivable under colour-vision-deficiency / night-light, where the faint lavender fill alone
+ * is not (WCAG 1.4.1). Each control targets the surface that carries its fill.
+ */
+
+/* Fill-and-border controls: bar + leading edge-bar on the control body. */
+button.changed,
+toolbutton.changed,
+combobox.changed,
+roundbutton.changed,
+delaybutton.changed,
+textfield.changed,
+textarea.changed,
+spinbox.changed {
+    background-color: var(--changed-background);
+    border: 1px solid var(--changed-foreground);
+    border-left: var(--changed-edge-width) solid var(--changed-foreground);
+}
+
+/* Checkables carry the cue on their indicator (the indicator IS the changed marker). */
+radiobutton.changed,
+radiodelegate.changed,
+checkbox.changed,
+checkdelegate.changed,
+switch.changed {
+    indicator {
+        background-color: var(--changed-background);
+        border: 1px solid var(--changed-foreground);
+    }
+}
+
+/* Slider carries it on the fill + active tickmarks. */
+slider.changed {
+    & > fill {
+        background-color: var(--changed-background);
+        border: 1px solid var(--changed-foreground);
+    }
+    & > tickmark.active {
+        background-color: var(--changed-foreground);
+    }
+}

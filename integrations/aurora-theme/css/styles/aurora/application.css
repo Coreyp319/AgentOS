@@ -115,13 +115,13 @@ splitview {
     }
 
     &.horizontal handle {
-        margin-left: 6px;
-        margin-right: 6px;
+        margin-left: var(--medium-spacing);
+        margin-right: var(--medium-spacing);
     }
 
     &.vertical handle {
-        margin-top: 6px;
-        margin-bottom: 6px;
+        margin-top: var(--medium-spacing);
+        margin-bottom: var(--medium-spacing);
     }
 }
 
@@ -133,7 +133,7 @@ pageindicatordelegate {
     background-color: var(--indicator-color);
     width: 8px;
     height: 8px;
-    border-radius: 4px;
+    border-radius: var(--radius-full);   /* circle dot */
 
     &:pressed {
         background-color: var(--indicator-press-color);

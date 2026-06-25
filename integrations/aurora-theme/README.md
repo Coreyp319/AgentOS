@@ -28,7 +28,12 @@ scheme. Switching modes = swapping the scheme (`aurora-mode.sh`).
 - **Soft floating lift** — a single, large-blur drop shadow (Union supports only one shadow
   layer — no comma stacks, no `inset`), backed by the scheme-bound 1px hairline border so the
   float still reads on dark backgrounds where a black shadow would vanish.
-- **Lavender focus ring** (`--focus-outline-alpha: 0.45`) — the one accent that ties it together.
+- **One lavender focus ring** — a SOLID `--focus-ring-color` (≥3:1, WCAG 1.4.11) on *every*
+  keyboard-focusable control, buttons included; the `0.45` alpha lives only on the soft menu
+  hover-fill, never on an outline. Enforced at install by `tools/lint-css.py` (solid-outline +
+  focus-coverage).
+- **One engaged-hover border** — `--control-hover-border-color` (DecorationHover, ≥3:1) on every
+  control's `:hovered`, replacing the old sub-3:1 selection violet.
 - **Generous menu gutter.**
 
 ## Colour identity
@@ -43,7 +48,8 @@ scheme. Switching modes = swapping the scheme (`aurora-mode.sh`).
   chrome reads *co-lit by the environment* yet can never leave violet or drop below AA. Re-run it
   to reproduce the accent; pinned to the Indigo Channel as the canonical home wallpaper.
 - Both verified **WCAG AA** (most pairings AAA) by `tools/check-contrast.py` — body, selection,
-  link, semantics, **and** the focus + hover rings (non-text 3:1).
+  link, semantics, the focus + hover rings (non-text 3:1), **and** the COMPUTED `mix()` colours the
+  CSS synthesises (menu shortcut text, placeholder), which raw-key checks were previously blind to.
 
 ## Use
 ```sh
@@ -69,16 +75,25 @@ tools/derive-accent.py     # re-derive the accent from the wallpaper's idle hue 
 - The name **`aurora`** intentionally overlaps the `nimbus-aurora` reactive-wallpaper feed —
   the ambient identity (wallpaper + widgets) is unified under one name by design.
 
-## Review follow-ups (see ADR-0042 Amendment, 2026-06-22)
-Three panels reviewed this — cohesion 7/10, a11y 5/10 (→ blocker fixed), vision-fit 8/10. Must-fixes
-are in: solid focus ring (the translucent ring failed WCAG 2.4.13), the `--elevation` ramp, and the
-selection alt-band. Open, **verify on screen at relogin** (GUI render isn't available in the authoring
-harness; every item below is a single-token, reversible edit):
-- **CVD redundancy** — links vs body/visited and the positive/neutral/negative semantics lean on hue;
-  the robust fix is underline / icon shape at the *app (Kirigami)* layer, not the theme.
-- **Interaction states** — dark button hover is border-only (~2:1), checked ≈ pressed fills, switch
-  off-handle is faint.
-- **Elevation-ladder mirror** — dark `View` is the recessed "well", light `View` is the brightest paper
-  (floating surfaces still lift via the ramp + hairline in both). Raising dark `View` above `Window` is
-  a one-token change if you prefer a true mirror.
-- **Dark hairline** is soft at `contrast=4`; a contrast bump sharpens it but trades against "calm".
+## Review follow-ups (see ADR-0042 Amendment)
+Five-lens systematic review (2026-06-25, ~7/10 across visual-system / a11y / craft / layout /
+reversibility) → a full remediation pass landed:
+- **Done** — focus ring unified to one solid colour + extended to every focusable widget (was
+  missing on dial/tabbutton/itemdelegate/card/chip/navigationtabbutton/calendar/headerview);
+  the WCAG-safe hover border now reaches *all* controls (was 2 of ~8); menu shortcut text raised
+  to ≥4.5:1 (was ~2.95:1 in light); `.changed` given a non-colour edge-bar; ~9 dead tokens swept;
+  the pill/circle radius family + elevation shadow + type sizes tokenized; the dialog-title HiDPI
+  bug fixed (fixed-px → relative). Gates hardened: `lint-css.py` (solid-outline + **focus
+  coverage**), computed-`mix()` contrast checks, and a leak-free `restore.sh` (best-effort,
+  env-knob round-trip, empty-scheme sentinel).
+- **Open — verify on screen at relogin** (GUI render isn't available in the authoring harness, and
+  Union 6.7's `ruleinspector` can't resolve `:state` rules — see the `union-css-theming` skill):
+  the new `:visual-focus` / `:selected` rules parse + load clean but their *rendering* is
+  unconfirmed.
+- **Open — deferred by design**: CVD redundancy for links/semantics (underline/icon shape belongs
+  at the *app/Kirigami* layer, not the theme); a handful of secondary controls below the 24px
+  WCAG-2.5.8 target (spinbox steppers, chip-delete, bar handles — mostly exempt as inline/secondary,
+  changing them distorts layout); the OFF-switch handle contrast; the elevation-ladder mirror
+  preference (dark `View` as "well" vs raising it above `Window`); the dark hairline softness at
+  `contrast=4`; and a keyboard `menuitem:highlighted` cue (deferred to avoid reintroducing the
+  sticky-highlight the `popup.css` comment warns about).

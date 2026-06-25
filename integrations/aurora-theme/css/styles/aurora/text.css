@@ -34,7 +34,10 @@ searchfield
     background-color: var(--view-background-color);
     color: var(--view-text-color);
 
-    &:hovered,
+    &:hovered {
+        border: 1px solid var(--control-hover-border-color);
+    }
+
     &:active-focus {
         border: 1px solid var(--highlight-color);
     }
@@ -92,8 +95,8 @@ spinbox
         border-radius: var(--corner-radius);
         color: var(--button-active-text-color);
 
-        margin-top: var(--corner-radius);
-        margin-bottom: var(--corner-radius);
+        margin-top: var(--medium-spacing);
+        margin-bottom: var(--medium-spacing);
 
         layout-alignment-container: item;
         layout-alignment-vertical: fill;
@@ -212,12 +215,5 @@ searchfield {
         icon-name: "edit-clear";
         margin-left: var(--small-spacing);
     }
-    
-}
 
-textfield.changed,
-textarea.changed,
-spinbox.changed {
-    background-color: var(--changed-background);
-    border: 1px solid var(--changed-foreground);
 }

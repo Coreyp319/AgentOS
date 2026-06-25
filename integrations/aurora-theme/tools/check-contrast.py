@@ -41,6 +41,11 @@ def _rgb(s):
         return None
 
 
+def _mix(a, b, t):
+    """Union mix(a, b, t): linear blend, t toward b (verified: t=0.5 is the midpoint)."""
+    return tuple(round(a[i] * (1 - t) + b[i] * t) for i in range(3))
+
+
 # (label, fg "Set:Key", bg "Set:Key"). The pairings that carry legibility — the
 # ones the charter's status-semantics + body-text principles depend on.
 PAIRS = [
@@ -68,6 +73,9 @@ NONTEXT = [
     ("focus ring (view)",   "View:DecorationFocus",   "View:BackgroundNormal"),
     ("focus ring (button)", "Button:DecorationFocus", "Button:BackgroundNormal"),
     ("focus ring (header)", "Header:DecorationFocus", "Header:BackgroundNormal"),
+    # The focus ring is now UNIFIED to the window DecorationFocus on EVERY control (buttons
+    # included), so verify that one ring colour clears 3:1 on the button surface too.
+    ("focus ring on button", "Window:DecorationFocus", "Button:BackgroundNormal"),
     # engaged (hover) states — the indicator the style binds on :hovered must also clear 3:1
     ("hover ring (button)", "Button:DecorationHover", "Button:BackgroundNormal"),
     ("hover ring (window)", "Window:DecorationHover", "Window:BackgroundNormal"),
@@ -76,10 +84,39 @@ NONTEXT = [
 
 AA, AAA, NONTEXT_MIN = 4.5, 7.0, 3.0   # normal-text thresholds; non-text/UI minimum
 
+# COMPUTED pairs — colours the CSS SYNTHESISES with mix() that no raw scheme key carries, so the
+# PAIRS/NONTEXT key-only checks above are blind to them. This is where the menu-shortcut-text
+# regression hid (mix(.5) → ~2.95:1 in light). Each row resolves the same formula the CSS uses.
+#   fg = ("mix", "Set:KeyA", "Set:KeyB", t)  -> _mix(A, B, t)   |  ("ref", "Set:Key")
+#   kind = "text" (AA 4.5) | "nontext" (3:1) ; enforced=False prints but never fails the gate.
+COMPUTED = [
+    # (label, fg_expr, bg_ref, kind, enforced)
+    ("menu shortcut text",  ("mix", "Window:BackgroundNormal", "Window:ForegroundNormal", 0.7),
+     "Window:BackgroundNormal", "text", True),       # popup.css --menu-shortcut-text-color
+    ("textfield placeholder", ("mix", "View:ForegroundNormal", "View:BackgroundNormal", 0.3),
+     "View:BackgroundNormal", "text", True),          # text.css .placeholder
+    ("secondary heading",   ("mix", "Window:BackgroundNormal", "Window:ForegroundNormal", 0.75),
+     "Window:BackgroundNormal", "text", False),       # kirigami.css heading.secondary (alpha 0.75 ~ mix .75)
+    # The "changed" field border is intentionally allowed below 3:1 — the non-colour edge-bar
+    # (--changed-edge-width) carries the cue — so this row is informational, not enforced.
+    ("changed-field border", ("ref", "Selection:BackgroundNormal"),
+     "Window:BackgroundNormal", "nontext", False),
+]
+
 
 def _get(cp, ref):
     sec, key = ref.split(":")
     return _rgb(cp.get(f"Colors:{sec}", key, fallback=None))
+
+
+def _resolve(cp, expr):
+    """Resolve a COMPUTED fg expression to an rgb tuple (or None if a key is missing)."""
+    if expr[0] == "ref":
+        return _get(cp, expr[1])
+    if expr[0] == "mix":
+        a, b = _get(cp, expr[1]), _get(cp, expr[2])
+        return _mix(a, b, expr[3]) if a and b else None
+    return None
 
 
 def check(path):
@@ -111,6 +148,29 @@ def check(path):
             ok = False
         rows.append({"pair": label, "ratio": r, "grade": grade,
                      "fg": ",".join(map(str, fg)), "bg": ",".join(map(str, bg))})
+    for label, fg_expr, bg_ref, kind, enforced in COMPUTED:
+        fg, bg = _resolve(cp, fg_expr), _get(cp, bg_ref)
+        if not fg or not bg:
+            continue
+        r = round(_ratio(fg, bg), 2)
+        floor = AA if kind == "text" else NONTEXT_MIN
+        if r >= AAA:
+            grade = "AAA"
+        elif r >= AA:
+            grade = "AA"
+        elif kind == "nontext" and r >= NONTEXT_MIN:
+            grade = "UI-OK"
+        else:
+            grade = "FAIL"
+        if grade == "FAIL" and enforced:
+            ok = False
+        # informational rows print their grade with a '~' marker and never fail the gate
+        rows.append({"pair": label + ("" if enforced else " ~"), "ratio": r,
+                     "grade": grade, "fg": ",".join(map(str, fg)), "bg": ",".join(map(str, bg))})
+    # Vacuous-pass guard: a scheme that matched NO pairings must NOT report "✓ all AA".
+    if not rows:
+        return {"scheme": name, "error": "no pairings evaluated (empty/foreign scheme?)",
+                "ok": False, "rows": []}
     return {"scheme": name, "ok": ok, "rows": rows}
 
 
@@ -130,7 +190,9 @@ def main():
         if res.get("error"):
             print(f"  {res['error']}"); continue
         for row in res["rows"]:
-            mark = {"AAA": "✓✓", "AA": "✓ ", "UI-OK": "✓ ", "FAIL": "✗ "}[row["grade"]]
+            info = row["pair"].endswith(" ~")   # informational (non-enforced) computed row
+            mark = ("·  " if info and row["grade"] == "FAIL"
+                    else {"AAA": "✓✓", "AA": "✓ ", "UI-OK": "✓ ", "FAIL": "✗ "}[row["grade"]])
             print(f"  {mark} {row['pair']:<18} {row['ratio']:>5}:1  [{row['grade']}]"
                   f"  ({row['fg']} on {row['bg']})")
     sys.exit(0 if allok else 1)

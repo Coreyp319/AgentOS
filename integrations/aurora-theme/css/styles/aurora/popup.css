@@ -15,7 +15,16 @@
     --tooltip-background-color: custom-color("kcolorscheme", "active", "tooltip", "background", "normal");
     --tooltip-border-color: custom-color("kcolorscheme", "active", "tooltip", "decoration", "frame");
 
+    /* The shadow blur of --elevation-2 (menus); the menu margin reserves room for it to bleed.
+       Keep in sync with the elevation-2 blur if that is retuned. */
     --popup-shadow-size: 20px;
+
+    /* Menu shortcut hint — de-emphasised but still readable. The old mix(.5) computed ~2.95:1 in
+       light mode (FAIL: WCAG 1.4.3 needs 4.5:1); mix(.7) clears AA in BOTH modes (dark 6.6:1,
+       light 5.2:1). check-contrast.py gates this exact computed pair. */
+    --menu-shortcut-text-color: mix(var(--window-background-color), var(--window-text-color), 0.7);
+    --menu-shortcut-disabled-text-color: mix(var(--window-background-color), var(--window-disabled-text-color), 0.7);
+    --menu-shortcut-gap: 36px;   /* label↔shortcut gutter (was a raw 40px) */
 }
 
 menu, popup
@@ -96,10 +105,10 @@ menuitem
     }
 
     & > shortcuttext {
-        spacing: 40px;
-        color: mix(var(--window-background-color), var(--window-text-color), 0.5);
+        spacing: var(--menu-shortcut-gap);
+        color: var(--menu-shortcut-text-color);
         &:disabled {
-            color: mix(var(--window-background-color), var(--window-disabled-text-color), 0.5);
+            color: var(--menu-shortcut-disabled-text-color);
         }
     }
 }
@@ -157,7 +166,7 @@ dialog
     box-shadow: var(--dialog-shadow);
 
     .header {
-        font-size: 20px;
+        font-size: var(--font-size-heading-1);   /* relative %, so the title scales with the user font (was a fixed 20px) */
         padding: var(--large-spacing);
     }
 }

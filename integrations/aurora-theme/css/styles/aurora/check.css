@@ -27,7 +27,6 @@
 
     --switch-handle-active-background-color: var(--button-active-background-color);
     --switch-handle-active-border-color: var(--button-active-border-color);
-    --switch-handle-active-highlight-border-color: var(--button-active-border-highlight-color);
 
     --switch-disabled-text-color: var(--window-disabled-text-color);
     --switch-indicator-disabled-background-color: var(--window-disabled-background-color);
@@ -76,7 +75,7 @@ radiodelegate
 
     &:hovered > indicator
     {
-        border-color: var(--checkable-indicator-active-highlight-border-color);
+        border-color: var(--control-hover-border-color);
     }
 
     &:checked > indicator
@@ -126,7 +125,7 @@ menuitem.exclusive
 {
     & > indicator
     {
-        border-radius: 8px;
+        border-radius: var(--radius-full);
     }
 
     &:checked > indicator
@@ -143,9 +142,9 @@ switchdelegate
         layout-alignment-container: content;
         layout-alignment-horizontal: start;
 
-        width: 36px;
+        width: var(--switch-indicator-width);
         height: 12px;
-        border-radius: 6px;
+        border-radius: var(--radius-full);   /* stadium: clamps to half the 12px track height */
 
         background-color: var(--switch-indicator-active-background-color);
         border: 1px solid var(--switch-indicator-active-border-color);
@@ -154,7 +153,7 @@ switchdelegate
         {
             width: var(--grid-unit);
             height: var(--grid-unit);
-            border-radius: 9px; /* grid-unit / 2 */
+            border-radius: var(--radius-full);   /* circle: clamps to half the handle size */
 
             background-color: var(--switch-handle-active-background-color);
             border: 1px solid var(--switch-handle-active-border-color);
@@ -165,11 +164,11 @@ switchdelegate
     {
         & > indicator
         {
-            border-color: var(--switch-indicator-active-highlight-border-color);
+            border-color: var(--control-hover-border-color);
 
             & > handle
             {
-                border-color: var(--switch-handle-active-highlight-border-color);
+                border-color: var(--control-hover-border-color);
             }
         }
     }
@@ -198,16 +197,5 @@ switchdelegate
                 background-color: var(--switch-handle-disabled-background-color);
             }
         }
-    }
-}
-
-radiobutton.changed,
-radiodelegate.changed,
-checkbox.changed,
-checkdelegate.changed,
-switch.changed {
-    indicator {
-        background-color: var(--changed-background);
-        border: 1px solid var(--changed-foreground);
     }
 }

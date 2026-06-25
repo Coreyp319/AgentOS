@@ -25,4 +25,17 @@ monthgrid label {
 		background-color: var(--highlight-color);
 		color: var(--highlight-text-color);
 	}
+
+	/* The selected date — distinct from today (translucent fill + accent ring, not the full
+	   highlight) so "today" and "the day I picked" never read the same. */
+	&.selected {
+		background-color: var(--highlight-hover-color);
+		color: var(--view-text-color);
+		outline: 2px solid var(--highlight-color);
+	}
+
+	/* Keyboard focus on a day cell — the one accent ring, like every other control. */
+	&:visual-focus {
+		outline: var(--focus-outline);
+	}
 }

@@ -47,8 +47,18 @@ card
         background-color: var(--card-hover-color);
     }
 
+    &:visual-focus {
+        outline: var(--focus-outline);
+    }
+
     &:pressed {
         background-color: var(--card-pressed-color);
+    }
+
+    &:disabled {
+        background-color: var(--card-disabled-background-color);
+        border-color: var(--card-disabled-border-color);
+        color: var(--card-disabled-text-color);
     }
 }
 
@@ -83,13 +93,25 @@ chip
 
     &:hovered
     {
-        border-color: var(--highlight-color);
+        border-color: var(--control-hover-border-color);
+    }
+
+    &:visual-focus
+    {
+        outline: var(--focus-outline);
     }
 
     &:pressed
     {
         border-color: var(--highlight-color);
         background-color: var(--button-active-highlight-color);
+    }
+
+    &:disabled
+    {
+        color: var(--button-disabled-text-color);
+        border-color: var(--button-disabled-border-color);
+        background-color: var(--button-disabled-background-color);
     }
 }
 
@@ -99,51 +121,51 @@ heading
 
     &.primary
     {
-        font-weight: 600;
+        font-weight: var(--font-weight-emphasis);
     }
 
     &.level-1
     {
-        font-size: 135%;
+        font-size: var(--font-size-heading-1);
     }
 
     &.primary.level-1
     {
-        font-size: 135%;
-        font-weight: 600;
+        font-size: var(--font-size-heading-1);
+        font-weight: var(--font-weight-emphasis);
     }
 
     &.level-2
     {
-        font-size: 120%;
+        font-size: var(--font-size-heading-2);
     }
 
     &.primary.level-2
     {
-        font-size: 120%;
-        font-weight: 600;
+        font-size: var(--font-size-heading-2);
+        font-weight: var(--font-weight-emphasis);
     }
 
     &.level-3
     {
-        font-size: 115%;
+        font-size: var(--font-size-heading-3);
     }
 
     &.primary.level-3
     {
-        font-size: 115%;
-        font-weight: 600;
+        font-size: var(--font-size-heading-3);
+        font-weight: var(--font-weight-emphasis);
     }
 
     &.level-4
     {
-        font-size: 110%;
+        font-size: var(--font-size-heading-4);
     }
 
     &.primary.level-4
     {
-        font-size: 110%;
-        font-weight: 600;
+        font-size: var(--font-size-heading-4);
+        font-weight: var(--font-weight-emphasis);
     }
 
     &.secondary
@@ -219,6 +241,11 @@ navigationtabbutton {
 
     &:disabled {
         color: var(--window-disabled-text-color);
+    }
+
+    &:visual-focus
+    {
+        outline: var(--focus-outline);
     }
 
     &:hovered

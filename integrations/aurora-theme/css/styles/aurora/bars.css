@@ -100,12 +100,12 @@ dial
         height: var(--bar-handle-size);
         background-color: var(--bar-handle-active-background-color);
         border: 1px solid var(--bar-handle-active-border-color);
-        border-radius: 10px;
+        border-radius: var(--radius-full);   /* circle: clamps to half the handle size */
         box-shadow: var(--button-shadow);
 
         &:hovered
         {
-            border-color: var(--bar-handle-active-highlight-border-color);
+            border-color: var(--control-hover-border-color);
         }
 
         &:pressed
@@ -203,7 +203,7 @@ scrollbar
     & > handle {
         background-color: var(--bar-active-background-color);
         border: 1px solid var(--bar-active-border-color);
-        border-radius: var(--small-element-size);
+        border-radius: var(--radius-full);   /* pill scrollbar handle */
 
         &:hovered,
         &:pressed
@@ -232,13 +232,17 @@ scrollbar
 dial {
     width: 128px;
     height: 128px;
-    border-radius: 64px; /* use half of width */
+    border-radius: var(--radius-full);   /* circle: clamps to half the 128px width */
     background-color: var(--dial-inactive-background-color);
     border-color: var(--dial-inactive-border-color);
 
     &:hovered {
         background-color: var(--dial-active-background-color);
         border-color: var(--dial-active-border-color);
+    }
+
+    &:visual-focus {
+        outline: var(--focus-outline);
     }
 
     &:pressed {
@@ -268,15 +272,5 @@ dial {
             background-color: var(--dial-handle-disabled-background-color);
             border-color: var(--dial-handle-disabled-border-color);
         }
-    }
-}
-
-slider.changed {
-    & > fill {
-        background-color: var(--changed-background);
-        border: 1px solid var(--changed-foreground);
-    }
-    & > tickmark.active {
-        background-color: var(--changed-foreground);
     }
 }

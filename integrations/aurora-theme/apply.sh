@@ -39,9 +39,27 @@ fi
 
 mkdir -p "$UNION/styles" "$SCHEMES" "$STATE" "$ENVD"
 
+# backup_once: atomically capture the ORIGINAL of a file exactly once (temp-in-same-dir + rename,
+# so a crash mid-backup can't leave a torn backup that a later restore copies over the good file).
+# A second apply finds the backup present and leaves the original capture intact.
+backup_once() {  # backup_once <src-file> <backup-path>
+  [ -f "$1" ] || return 0
+  [ -s "$2" ] && return 0
+  cp "$1" "$2.tmp.$$" && mv -f "$2.tmp.$$" "$2"
+}
+
+# fail_gate: a validation gate failed — back the just-copied (never-activated) style out, then exit.
+# Uniform across all three gates, so a contrast failure cleans up exactly like a load/lint failure.
+fail_gate() { rm -rf "$UNION/styles/aurora"; exit "$1"; }
+
 # 1. Install the aurora style (clean replace) + the REQUIRED defaults/ mirror. Copy the
 #    system defaults rather than vendoring a stale copy: Union's CSS dialect can shift
 #    between releases, so the defaults must match the INSTALLED engine.
+if [ -d "$UNION/styles/aurora" ] && ! diff -rq "$HERE/css/styles/aurora" "$UNION/styles/aurora" >/dev/null 2>&1; then
+  echo "! the installed aurora style differs from the repo — replacing it with the repo copy."
+  echo "  (If you were iterating via css-tx.py, those edits remain checkpointed under $UNION/.tx/ —"
+  echo "   recover with the skill's css-tx.py revert before re-running apply.sh.)"
+fi
 rm -rf "$UNION/styles/aurora"
 cp -r "$HERE/css/styles/aurora" "$UNION/styles/aurora"
 [ -d "$UNION/defaults" ] || cp -r /usr/share/union/css/defaults "$UNION/defaults"
@@ -54,32 +72,34 @@ if command -v union-ruleinspector >/dev/null 2>&1; then
   if printf '%s' "$probe" | grep -qiE 'cxxbridge|panicked|IO Error|terminate called|No such file'; then
     echo "✗ aurora style failed the union-ruleinspector load gate — NOT activating:" >&2
     printf '%s\n' "$probe" | grep -iE 'cxxbridge|panicked|IO Error|terminate|No such' | head -3 >&2
-    rm -rf "$UNION/styles/aurora"
-    exit 3
+    fail_gate 3
   fi
   echo "✓ aurora style loads clean (union-ruleinspector gate passed)"
 fi
 
-# 2a. Focus-binding lint (code disposes): a focus outline must use the SOLID --focus-ring-color
-#     (via --focus-outline / --button-focus), NEVER the translucent --focus-color hover fill, which
-#     composites <3:1 and fails WCAG 2.4.13. Catches the binding trap the design council found in a
-#     green-WCAG-gate-over-bad-binding state, so it cannot recur.
-bad="$(grep -rn 'outline:[^;]*--focus-color' "$UNION/styles/aurora"/*.css 2>/dev/null || true)"
-if [ -n "$bad" ]; then
-  echo "✗ aurora has a translucent focus outline (must be the solid --focus-ring-color) — NOT activating:" >&2
-  printf '%s\n' "$bad" >&2
-  rm -rf "$UNION/styles/aurora"
-  exit 5
+# 2a. Structural CSS lint (code disposes): replaces the old single bad-token grep with lint-css.py,
+#     which asserts (a) every focus outline is SOLID (--focus-ring-color, never a translucent
+#     set-alpha token — WCAG 1.4.11) AND (b) FOCUS COVERAGE — every interactive widget that styles
+#     hover/pressed also has a keyboard focus ring (WCAG 2.4.7). The coverage check is the guard
+#     that keeps the focus ring from silently dropping off a widget again.
+if command -v python3 >/dev/null 2>&1; then
+  if ! python3 "$HERE/tools/lint-css.py" "$UNION/styles/aurora" >/dev/null 2>&1; then
+    echo "✗ aurora CSS failed the structural lint (solid-outline / focus-coverage) — NOT activating:" >&2
+    python3 "$HERE/tools/lint-css.py" "$UNION/styles/aurora" 2>&1 | grep -E '✗' | head -6 >&2 || true
+    fail_gate 5
+  fi
+  echo "✓ aurora CSS passes the solid-outline + focus-coverage lint"
 fi
 
 # 2b. WCAG gate (code disposes): the schemes must clear AA before we install them — the
-#     accessibility verifier disposes, it is not decorative.
+#     accessibility verifier disposes, it is not decorative. Now also covers the COMPUTED mix()
+#     colours (menu shortcut text, placeholder) the CSS synthesises, not just raw scheme keys.
 if command -v python3 >/dev/null 2>&1; then
   if ! python3 "$HERE/tools/check-contrast.py" \
         "$HERE/color-schemes/AuroraDark.colors" "$HERE/color-schemes/AuroraLight.colors" >/dev/null 2>&1; then
     echo "✗ a colour scheme fails WCAG AA — NOT installing. Detail:" >&2
     python3 "$HERE/tools/check-contrast.py" "$HERE/color-schemes/AuroraDark.colors" "$HERE/color-schemes/AuroraLight.colors" 2>&1 | grep -i fail >&2 || true
-    exit 4
+    fail_gate 4
   fi
   echo "✓ Aurora Dark + Light clear WCAG AA (contrast gate passed)"
 fi
@@ -90,8 +110,11 @@ install -m644 "$HERE/color-schemes/AuroraLight.colors" "$SCHEMES/AuroraLight.col
 echo "✓ installed Aurora Dark + Aurora Light colour schemes"
 
 # 4. Session env knob — load the aurora CSS (Flatpak-safe; NOT the QT_QUICK_CONTROLS_STYLE
-#    var, which leaks into Flatpak sandboxes and breaks their QML apps).
-printf 'UNION_STYLE_NAME=aurora\n' > "$ENVD/union-style.conf"
+#    var, which leaks into Flatpak sandboxes and breaks their QML apps). Back up any pre-existing
+#    value ONCE first: a user may have set their own UNION_STYLE_NAME per the union-css-theming
+#    skill, and restore.sh must put it back rather than silently delete it.
+backup_once "$ENVD/union-style.conf" "$STATE/union-style.conf.preaurora"
+printf 'UNION_STYLE_NAME=aurora\n' > "$ENVD/union-style.conf.tmp.$$" && mv -f "$ENVD/union-style.conf.tmp.$$" "$ENVD/union-style.conf"
 
 # 5. Back up the prior widget style + colour scheme ONCE, then activate (reversible).
 #    Never record "Union" as the thing to restore to (that would be a no-op revert);
@@ -100,8 +123,13 @@ cur_style="$(kread_ini kdeglobals KDE widgetStyle)"
 [ "$cur_style" = "Union" ] && cur_style=kvantum
 [ -s "$STATE/prev-widgetstyle" ] || printf '%s\n' "${cur_style:-kvantum}" > "$STATE/prev-widgetstyle"
 cur_scheme="$(kread_ini kdeglobals General ColorScheme)"
-[ "$cur_scheme" = "AuroraDark" ] || [ "$cur_scheme" = "AuroraLight" ] && cur_scheme=""
-[ -s "$STATE/prev-colorscheme" ] || [ -z "$cur_scheme" ] || printf '%s\n' "$cur_scheme" > "$STATE/prev-colorscheme"
+# self-exclude an Aurora scheme (so a re-apply can't record Aurora as "previous"); braces make the
+# precedence explicit (the bare `[ A ] || [ B ] && C` form only worked by happy associativity).
+{ [ "$cur_scheme" = "AuroraDark" ] || [ "$cur_scheme" = "AuroraLight" ]; } && cur_scheme=""
+# Never let an EMPTY capture mean "leave the Aurora palette stamped on revert": fall back to the
+# Breeze default so restore always has a real scheme to re-apply (mirrors widgetStyle→kvantum).
+[ -n "$cur_scheme" ] || cur_scheme="BreezeDark"
+[ -s "$STATE/prev-colorscheme" ] || printf '%s\n' "$cur_scheme" > "$STATE/prev-colorscheme"
 
 kwriteconfig6 --file kdeglobals --group KDE --key widgetStyle Union
 
@@ -121,10 +149,11 @@ AURORA_VIOLET="#765CC4"     # = AuroraDark Selection bg 118,92,196; white-on-vio
 WHITESUR_BLUE="#0860F2"     # stock WhiteSur GTK4 accent (high-chroma blue) being replaced
 GTK4D="$HOME/.config/gtk-4.0"; GTK3D="$HOME/.config/gtk-3.0"
 
-# 7a. GTK4 accent: swap the WhiteSur blue accent defines → Aurora violet.
-if [ -f "$GTK4D/gtk.css" ] && grep -q "$WHITESUR_BLUE" "$GTK4D/gtk.css" 2>/dev/null; then
-  [ -f "$STATE/gtk4-gtk.css.preaurora" ] || cp "$GTK4D/gtk.css" "$STATE/gtk4-gtk.css.preaurora"
-  sed -i "s/$WHITESUR_BLUE/$AURORA_VIOLET/g" "$GTK4D/gtk.css"
+# 7a. GTK4 accent: swap the WhiteSur blue accent defines → Aurora violet (case-insensitive, so a
+#     lowercase #0860f2 is matched too).
+if [ -f "$GTK4D/gtk.css" ] && grep -qi "$WHITESUR_BLUE" "$GTK4D/gtk.css" 2>/dev/null; then
+  backup_once "$GTK4D/gtk.css" "$STATE/gtk4-gtk.css.preaurora"
+  sed -i "s/$WHITESUR_BLUE/$AURORA_VIOLET/gI" "$GTK4D/gtk.css"
   echo "✓ GTK4 accent → Aurora violet (was WhiteSur blue $WHITESUR_BLUE)"
 fi
 
@@ -139,10 +168,11 @@ fi
 # 7c. Icon-theme unify: GTK still pointed at WhiteSur icons while Qt/GTK4 use Nimbus — align all
 #     toolkits to one icon family.
 for ini in "$GTK3D/settings.ini" "$GTK4D/settings.ini"; do
-  if [ -f "$ini" ] && grep -q '^gtk-icon-theme-name=WhiteSur$' "$ini" 2>/dev/null; then
+  # match WhiteSur and its variants (WhiteSur-dark, WhiteSur-light, …), not only the bare name.
+  if [ -f "$ini" ] && grep -qE '^gtk-icon-theme-name=WhiteSur(-[A-Za-z]+)?$' "$ini" 2>/dev/null; then
     base="$(basename "$(dirname "$ini")")"
-    [ -f "$STATE/$base-settings.ini.preaurora" ] || cp "$ini" "$STATE/$base-settings.ini.preaurora"
-    sed -i 's/^gtk-icon-theme-name=WhiteSur$/gtk-icon-theme-name=Nimbus-dark-refined/' "$ini"
+    backup_once "$ini" "$STATE/$base-settings.ini.preaurora"
+    sed -i -E 's/^(gtk-icon-theme-name=)WhiteSur(-[A-Za-z]+)?$/\1Nimbus-dark-refined/' "$ini"
     echo "✓ ${base} icon-theme → Nimbus-dark-refined (was WhiteSur)"
   fi
 done
