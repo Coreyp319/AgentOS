@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # nimbus-3d-wallpaper — dispatcher for nimbus-aurora's 3-D engine Styles. Keeps the two
 # external wallpaper engines mutually exclusive: the bevy engine (nimbus-flux, styles
-# 9..13) and the AgentOS UE wallpaper (style 14). Called by interactive-bg/main.qml's
-# syncEngine() as a SINGLE command — Plasma's executable DataSource tokenizes via KShell,
-# which expands $HOME but aborts on shell meta-chars like ';', so the QML must never chain;
-# the chaining lives here in real bash instead.
+# 9..13) and the AgentOS UE wallpaper (styles 14 Indigo Channel, 15 Prism Field). Called
+# by interactive-bg/main.qml's syncEngine() as a SINGLE command — Plasma's executable
+# DataSource tokenizes via KShell, which expands $HOME but aborts on shell meta-chars like
+# ';', so the QML must never chain; the chaining lives here in real bash instead.
 #
-#   nimbus-3d-wallpaper ue   [--owner <id>]          # UE  (stops flux first)
+#   nimbus-3d-wallpaper ue   [scene] [--owner <id>]  # UE  (stops flux first); scene picks the map
 #   nimbus-3d-wallpaper flux <scene> [--owner <id>]  # bevy (stops UE first)
 #   nimbus-3d-wallpaper stop                          # stop both
+#
+# The ue [scene] (indigo|prismfield) is forwarded verbatim to nimbus-ue-wallpaper, which
+# maps it to the UE map. No scene == indigo (the Indigo Channel).
 set -u
 FLUX="$HOME/.local/bin/nimbus-flux-wallpaper"
 UE="$HOME/.local/bin/nimbus-ue-wallpaper"

@@ -283,57 +283,61 @@ def ensure_mpc():
 # streaks) and the r∓ca per-channel chromatic dispersion. UV is the disc's 0..1
 # coords; the corona sits at normalized radius Reach. Output FLOAT4 = (rim rgb, mask).
 _PRISM_HLSL = r"""
-// A glass ring read against a WHITE field: the ring must OCCLUDE the white (a dark
-// glassy band → opacity) AND carry a bright rainbow only on the thin rim crest
-// (→ emissive). Pure-additive emissive is invisible on white; the dark band is what
-// makes the ring legible, the dispersive crest is the prism. Output float4 =
-// (rim rainbow EMISSIVE rgb, band OPACITY a).
-float2 p = (UV - 0.5) * 2.0;            // -1..1 across the disc
+// A SWEPT IRIDESCENT ARC read against a WHITE field — the reference's warped-vinyl
+// swirls, NOT a flat dartboard ring. A soft glass body gently occludes the white into a
+// contour; a few crisp NESTED grooves (record lines) FADE along the sweep (long-exposure
+// streak); a DELICATE chromatic fringe rides the leading edges ONLY (thin r∓ca). The
+// quad's own roll/scale place + size each arc; Phase slowly turns the sweep. Output
+// float4 = (emissive rgb, opacity a). Inputs unchanged so the node wiring is reused.
+float2 p = (UV - 0.5) * 2.0;             // -1..1 across the quad
 float  r = length(p);
 float  ang = atan2(p.y, p.x);
 
-const float Reach    = 0.60;            // ring radius in normalized disc space
-const float Streaks  = 9.0;             // radiating streak count (gentle, not a gear)
-const float RimTight = 70.0;            // crest sharpness (per-channel split lives here)
-const float BodyTight= 16.0;            // the wider, softer glass BAND (the dark occluder)
+const float Reach   = 0.66;              // arc radius in normalized quad space
+const float ArcHalf = 1.75;             // LONG angular HALF-span (~100°) → reads as a sweep, not a lobe
 
-float spin = Phase;
-float streak = 0.5 + 0.5 * sin(ang * Streaks - spin * 3.0);
-float spike  = pow(saturate(streak), 1.3);
+// Seamless angular window centred on the (slowly spun) sweep dir — cos() dodges the
+// atan2 seam (the aurora-shader gotcha). Gentle fade (pow 0.5) so the arc stays LONG,
+// streaking out at the ends → the long-exposure motion feel.
+float c    = cos(ang - Phase * 0.5);
+float win  = saturate((c - cos(ArcHalf)) / (1.0 - cos(ArcHalf)));
+float along = pow(win, 0.5);
+// ASYMMETRIC sweep: weight one angular half brighter so the arc reads as a one-directional
+// streak (a spinning-disc sweep / comet), NOT a mirror-symmetric butterfly fan. The quad's
+// roll rotates this bias too, so different rolls = different sweep directions.
+float side  = sin(ang - Phase * 0.5);              // signed across the sweep
+along *= (0.28 + 0.72 * saturate(0.5 + 0.85 * side));
 
-float ca = max(Disp, 1e-4);             // dispersion width (incl. reactive Motion gain)
-float dr = r - Reach;
+float dr   = r - Reach;
 
-// the soft glass BAND (occludes the white field → the ring reads as a dark contour)
-float bodyBand = exp(-dr * dr * BodyTight);
-// the sharp rim CREST, sampled per-channel at r∓ca → chromatic dispersion fringe
-#define CREST(RR) exp(-((RR)-Reach)*((RR)-Reach)*RimTight)
-float iR = CREST(r - ca);
-float iG = CREST(r);
-float iB = CREST(r + ca);
-#undef CREST
-float crest = (iR + iG + iB) * (1.0/3.0);
+// HERO = a set of crisp NESTED grooves (warped-record lines) across a thin band, each
+// chromatically split (sampled per-channel at r∓ca) → fine ROYGBIV fringe on the edges,
+// white where the channels coincide. Crisp lines (not a fat blob) read as swept glass.
+float ca = max(Disp, 1e-4);
+float lW = 0.0, lR = 0.0, lB = 0.0;
+[unroll] for (int i = 0; i < 5; i++) {
+    float rr = Reach - 0.11 + 0.055 * float(i);       // 5 lines across a ~0.22 band
+    lW += exp(-(r      - rr) * (r      - rr) * 2400.0);
+    lR += exp(-(r - ca - rr) * (r - ca - rr) * 2400.0);
+    lB += exp(-(r + ca - rr) * (r + ca - rr) * 2400.0);
+}
+float  wcore  = min(lW, min(lR, lB));
+float3 fringe = saturate(float3(lR, lW, lB) - wcore);
+float3 themeCol  = lerp(TintA.rgb, TintB.rgb, saturate(0.5 + dr * 2.0));
+float3 fringeCol = lerp(fringe * themeCol * 1.4, fringe * 1.1, saturate(Spread));
 
-// TRUE CHROMATIC ABERRATION: where the three per-channel crests OVERLAP the ring is
-// WHITE; where they DIVERGE at the inner/outer edges they fan into prism colours
-// (red on the outer edge, blue on the inner) — exactly how white light disperses
-// through curved glass. A clean white-cored ring with iridescent edges, like the
-// reference — NOT a fully-saturated rainbow disc.
-float  wcore  = min(min(iR, iG), iB);                  // all 3 present → white core
-float3 fringe = saturate(float3(iR, iG, iB) - wcore);  // per-channel excess → the dispersion edges
-// optionally warm the fringe toward the theme palette; HueSpread = fringe vividness.
-float3 themeCol = lerp(TintA.rgb, TintB.rgb, saturate(0.5 + dr * 1.4));
-float3 fringeCol = lerp(fringe * themeCol * 1.8, fringe * 1.5, saturate(Spread));
-float3 emis = (wcore.xxx * 1.5 + fringeCol) * (0.5 + 0.5 * spike) * max(RimBright, 0.0);
+// a SUBTLE soft halo so the arc sits in light (a thin glaze, NOT the old fat blob)
+float band = exp(-dr * dr * 24.0) * along;
 
-// reactive: Desat (snag → calmer, never adds red), Warm (needs-you → dawn lift)
+float3 emis = ((lW * 1.0 + fringeCol) * along + band * 0.10) * max(RimBright, 0.0) * 0.5;
+
+// reactive: Desat (snag → calmer), Warm (needs-you → dawn lift)
 float luma = dot(emis, float3(0.299, 0.587, 0.114));
 emis = lerp(emis, luma.xxx, saturate(Desat));
-emis += saturate(Warm) * float3(0.10, 0.06, 0.025) * bodyBand;
+emis += saturate(Warm) * float3(0.10, 0.06, 0.025) * band;
 
-// OPACITY = the band + a touch of crest, so the ring occludes the white and the
-// crest edges are crisp. (The dark base color under this is what gives the contour.)
-float opac = saturate(bodyBand * 0.9 + crest * 0.6);
+// OPACITY: crisp lines occlude the white into thin contours; the glaze is a faint veil.
+float opac = saturate(lW * 0.55 * along + band * 0.28);
 return float4(emis, opac);
 """
 
@@ -458,12 +462,19 @@ def build_backdrop_material():
     mat = _assets.create_asset(BACKDROP_MAT_NAME, MAT_DIR, unreal.Material, unreal.MaterialFactoryNew())
     if mat is None:
         _FAIL.append("create_asset None for backdrop material"); return None
-    _try_set(mat, "shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
+    # DEFAULT_LIT white (lit by the bright key light) PLUS an emissive floor, so it reads
+    # white whether the render path honours emissive-only or needs a lit surface. (The
+    # all-emissive/unlit version rendered black in -game; lit is the proven-to-render path.)
+    _try_set(mat, "shading_model", unreal.MaterialShadingModel.MSM_DEFAULT_LIT)
     _try_set(mat, "two_sided", True)
     lvl = PRISM_BACKDROP
-    c = _expr(mat, unreal.MaterialExpressionConstant3Vector, -360, 0)
-    _try_set(c, "constant", unreal.LinearColor(lvl, lvl, lvl, 1.0))
-    _wire_prop(c, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    base = _expr(mat, unreal.MaterialExpressionConstant3Vector, -360, 0)
+    _try_set(base, "constant", unreal.LinearColor(0.92, 0.92, 0.95, 1.0))
+    _wire_prop(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    _wire_prop(_const(mat, 0.85, -360, 160), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    emis = _expr(mat, unreal.MaterialExpressionConstant3Vector, -360, 280)
+    _try_set(emis, "constant", unreal.LinearColor(lvl * 0.5, lvl * 0.5, lvl * 0.55, 1.0))
+    _wire_prop(emis, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
     MEL.recompile_material(mat)
     unreal.EditorAssetLibrary.save_asset(BACKDROP_MAT_PATH)
     log("backdrop material built (level={}) {}".format(lvl, BACKDROP_MAT_PATH))
@@ -480,9 +491,13 @@ def build_slab_material():
     mat = _assets.create_asset(SLAB_MAT_NAME, MAT_DIR, unreal.Material, unreal.MaterialFactoryNew())
     if mat is None:
         _FAIL.append("create_asset None for slab material"); return None
-    _try_set(mat, "shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
-    emis = _expr(mat, unreal.MaterialExpressionConstant3Vector, -360, 0)
-    _try_set(emis, "constant", unreal.LinearColor(0.015, 0.016, 0.028, 1.0))
+    _try_set(mat, "shading_model", unreal.MaterialShadingModel.MSM_DEFAULT_LIT)
+    base = _expr(mat, unreal.MaterialExpressionConstant3Vector, -360, 0)
+    _try_set(base, "constant", unreal.LinearColor(0.02, 0.02, 0.03, 1.0))
+    _wire_prop(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    _wire_prop(_const(mat, 0.5, -360, 160), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    emis = _expr(mat, unreal.MaterialExpressionConstant3Vector, -360, 280)
+    _try_set(emis, "constant", unreal.LinearColor(0.008, 0.010, 0.030, 1.0))
     _wire_prop(emis, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
     MEL.recompile_material(mat)
     unreal.EditorAssetLibrary.save_asset(SLAB_MAT_PATH)
@@ -563,74 +578,77 @@ def build_backdrop(mat):
     _label(a, "Backdrop")
 
 
-def build_center_form(mat):
-    a = _actor_subsys.spawn_actor_from_class(
-        unreal.StaticMeshActor, unreal.Vector(350.0, -140.0, 380.0),
-        unreal.Rotator(0.0, 0.0, 4.0))                   # slight lean
-    smc = a.static_mesh_component
-    smc.set_static_mesh(unreal.EditorAssetLibrary.load_asset(CUBE_ASSET))
-    a.set_actor_scale3d(unreal.Vector(0.55, 0.85, 9.2))  # thin, tall, tapered monolith
-    if mat:
-        smc.set_material(0, mat)
-    _try_set(smc, "cast_shadow", True)
-    _label(a, "CenterForm")
+SPHERE_ASSET = "/Engine/BasicShapes/Sphere.Sphere"
 
 
-# Corona = nested discs (radius via scale, depth-staggered for parallax). Each disc
-# faces the camera (normal -X) with a small per-disc tilt for elliptical variety.
-# (cx, cy, cz, base_x_depth) per corona; then per-ring (scale, dx, dz, tilt_roll, tilt_yaw).
-_CORONA_A = dict(centre=(560.0, 640.0, 560.0),
-                 rings=[(5.0, -60, 30, 6, -8), (6.4, 0, 0, -4, 5),
-                        (8.0, 60, -20, 8, -6), (9.6, 120, 10, -7, 10)])
-_CORONA_B = dict(centre=(980.0, -680.0, 470.0),
-                 rings=[(7.0, -50, 20, 5, -10), (9.0, 40, -10, -6, 8), (11.0, 110, 5, 9, -7)])
-
-
-def _build_corona(name, spec, mat):
-    cx, cy, cz = spec["centre"]
-    n = 0
-    for i, (scl, dx, dz, troll, tyaw) in enumerate(spec["rings"]):
+def build_dark_form(mat):
+    """An ORGANIC dark form (replaces the lifeless rectangle): a leaning, sinuous column
+    of overlapping stretched spheres — a soft abstract presence the arcs swirl around, NOT
+    a literal figure. Slightly screen-left at the base, tapering upward like a flame/dancer."""
+    # MINIMAL / SECONDARY (Corey's call): a SMALL, soft, smooth dark form low in the frame —
+    # a quiet anchor the swept arcs are the hero around, NOT the main event. Tight spacing
+    # (<< 2·radius) fuses the ovoids into a smooth little sprout rising from the lower third.
+    n = 8
+    sphere = unreal.EditorAssetLibrary.load_asset(SPHERE_ASSET)
+    for i in range(n):
+        t = i / float(n - 1)                                  # 0..1 base→top
+        z = -340.0 + t * 470.0                                # LOW: from below frame up into the lower third
+        y = -30.0 + 70.0 * math.sin(t * math.pi * 0.9)        # slight lean
+        x = 420.0 + 40.0 * math.sin(t * math.pi)              # gentle bow
+        s = 1.45 - 0.90 * t                                   # small, tapering to a soft tip
         a = _actor_subsys.spawn_actor_from_class(
-            unreal.StaticMeshActor, unreal.Vector(cx + dx, cy, cz + dz),
-            unreal.Rotator(float(troll), -90.0, float(tyaw)))   # (roll, pitch=-90 face cam, yaw)
+            unreal.StaticMeshActor, unreal.Vector(x, y, z), unreal.Rotator(0.0, 0.0, 0.0))
         smc = a.static_mesh_component
-        smc.set_static_mesh(unreal.EditorAssetLibrary.load_asset(PLANE_ASSET))
-        a.set_actor_scale3d(unreal.Vector(float(scl), float(scl), 1.0))
+        smc.set_static_mesh(sphere)
+        a.set_actor_scale3d(unreal.Vector(s * 0.80, s * 0.80, s * 1.75))   # smooth small column
         if mat:
             smc.set_material(0, mat)
         _try_set(smc, "cast_shadow", False)
-        _label(a, "{}_{}".format(name, i))
-        n += 1
-    log("corona {}: {} rings".format(name, n))
+        _label(a, "DarkForm_{}".format(i))
+    log("dark form: {} fused ovoids (small low anchor — arcs are the hero)".format(n))
 
 
-def build_ribbon(mat):
-    """A swirling vortex across the lower third: thin elongated segments on a
-    logarithmic spiral, each rotated to follow the tangent. (Robust stand-in for a
-    SplineMesh — true twist is a later upgrade.)"""
-    if not (PRISM_RIBBON and mat):
-        return
-    seg = 16
-    cube = unreal.EditorAssetLibrary.load_asset(CUBE_ASSET)
-    for i in range(seg):
-        t = i / float(seg - 1)                       # 0..1 along the spiral
-        ang = -2.4 + t * 4.6                         # sweep across the lower frame
-        rad = 1050.0 - 560.0 * t                     # spiral inward
-        y = math.cos(ang) * rad
-        z = -150.0 - 150.0 * t + math.sin(ang) * rad * 0.40   # ride the lower third
-        x = 560.0 + 300.0 * t                        # recede in depth
-        yaw = math.degrees(ang) + 90.0               # face along the tangent
-        a = _actor_subsys.spawn_actor_from_class(
-            unreal.StaticMeshActor, unreal.Vector(x, y, z),
-            unreal.Rotator(0.0, 14.0, yaw))
-        smc = a.static_mesh_component
-        smc.set_static_mesh(cube)
-        # long, wide, thin = a glassy ribbon segment (overlap into a continuous sweep)
-        a.set_actor_scale3d(unreal.Vector(3.8, 0.55, 0.06))
-        smc.set_material(0, mat)
-        _try_set(smc, "cast_shadow", False)
-        _label(a, "Ribbon_{}".format(i))
-    log("ribbon: {} segments".format(seg))
+# SWEPT-ARC clusters mirroring the reference's warped-vinyl swirls: two "hand swirls"
+# (upper-right + upper-left) and a big sweep across the lower third that wraps the form.
+# Each arc = a camera-facing quad; the material draws ONE soft streaked arc, the quad's
+# ROLL sets the sweep clock-position and SCALE its size. Nested arcs per cluster = the
+# record-groove layering. centre=(x,y,z screen-depth); arcs=[(scale, dy, dz, roll, yaw)].
+# BIG ASYMMETRIC sweeps (Corey's call) wrapping the small low form — like the reference's
+# spinning-disc swirls. Each cluster = nested arcs sweeping across ~half the frame; the
+# three clusters face DIFFERENT directions (varied rolls) so the composition is dynamic,
+# not a mirror pair. scale ~16–26 → arc radius ~530–860u at the arcs' depth.
+_ARC_CLUSTERS = [
+    # upper-right swirl, sweeping down toward the centre (over the form)
+    dict(name="SwirlR", centre=(720.0, 560.0, 520.0),
+         arcs=[(16.0, 0, 0, 158, -7), (20.0, 60, -40, 172, 6), (24.0, -50, 55, 142, -5)]),
+    # upper-left swirl, sweeping the other way — different angle, not a mirror
+    dict(name="SwirlL", centre=(820.0, -640.0, 540.0),
+         arcs=[(17.0, 0, 0, 28, 9), (21.0, -60, 35, 8, -7), (25.0, 55, -30, 48, 8)]),
+    # big lower sweep wrapping UNDER/around the form across the bottom third
+    dict(name="Sweep",  centre=(560.0, -40.0, -120.0),
+         arcs=[(20.0, -220, 0, 248, 13), (24.0, 120, 40, 262, -9), (28.0, 360, -30, 236, 15)]),
+]
+
+
+def build_arcs(mat):
+    """Place the swept-arc quads. Replaces the flat concentric-ring coronas + straight
+    spiral ribbon with one cohesive family of soft, streaked, edge-dispersive arcs."""
+    total = 0
+    for cl in _ARC_CLUSTERS:
+        cx, cy, cz = cl["centre"]
+        for i, (scl, dy, dz, roll, yaw) in enumerate(cl["arcs"]):
+            a = _actor_subsys.spawn_actor_from_class(
+                unreal.StaticMeshActor, unreal.Vector(cx, cy + dy, cz + dz),
+                unreal.Rotator(float(roll), -90.0, float(yaw)))   # roll=clock, pitch=-90 face cam, yaw=tilt
+            smc = a.static_mesh_component
+            smc.set_static_mesh(unreal.EditorAssetLibrary.load_asset(PLANE_ASSET))
+            a.set_actor_scale3d(unreal.Vector(float(scl), float(scl), 1.0))
+            if mat:
+                smc.set_material(0, mat)
+            _try_set(smc, "cast_shadow", False)
+            _label(a, "{}_{}".format(cl["name"], i))
+            total += 1
+    log("arcs: {} swept quads across {} clusters".format(total, len(_ARC_CLUSTERS)))
 
 
 def build_lighting():
@@ -641,39 +659,48 @@ def build_lighting():
     BODIES a faint shading gradient (it never errors; harmless if unused). No fog."""
     sun = _actor_subsys.spawn_actor_from_class(
         unreal.DirectionalLight, unreal.Vector(0.0, 0.0, 800.0),
-        unreal.Rotator(0.0, -32.0, 35.0))
+        unreal.Rotator(0.0, -12.0, 0.0))   # travels +X (from behind camera) → lights the front of the scene
     lc = sun.get_component_by_class(unreal.DirectionalLightComponent)
     if lc:
         _try_set(lc, "mobility", unreal.ComponentMobility.MOVABLE)
-        _try_set(lc, "intensity", 3.0)
-        _try_set(lc, "light_color", unreal.LinearColor(0.92, 0.95, 1.0, 1.0))  # cool white
+        _try_set(lc, "intensity", 5.0)
+        _try_set(lc, "light_color", unreal.LinearColor(0.95, 0.97, 1.0, 1.0))  # near-white
+        _try_set_first(lc, ("cast_shadows", "casts_dynamic_shadow"), True)
     _label(sun, "KeyLight")
-    log("lighting: unlit backdrop + emissive rings + one soft cool directional (no skylight, no GI)")
+    log("lighting: LIT white backdrop + bright frontal directional + emissive rings (Indigo-proven render path)")
 
 
 def build_post():
     ppv = _actor_subsys.spawn_actor_from_class(unreal.PostProcessVolume, unreal.Vector(0.0, 0.0, 0.0))
     ppv.set_editor_property("unbound", True)
     s = ppv.get_editor_property("settings")
-    # Pin GI + Reflections OFF: this is an UNLIT/EMISSIVE high-key scene that needs no
-    # dynamic GI, and Lumen errors on this project (no Mesh Distance Fields → "Lumen has
-    # no ray tracing data"). NONE preferred; fall back to SCREEN_SPACE (also no distance
-    # fields needed) — NEVER LUMEN here.
-    _gi = getattr(unreal.DynamicGlobalIlluminationMethod, "NONE",
-                  getattr(unreal.DynamicGlobalIlluminationMethod, "SCREEN_SPACE", None))
-    if _gi is not None:
-        _try_set(s, "override_dynamic_global_illumination_method", True)
-        _try_set(s, "dynamic_global_illumination_method", _gi)
-    _rf = getattr(unreal.ReflectionMethod, "NONE",
-                  getattr(unreal.ReflectionMethod, "SCREEN_SPACE", None))
-    if _rf is not None:
-        _try_set(s, "override_reflection_method", True)
-        _try_set(s, "reflection_method", _rf)
+    # Pin LUMEN GI + Reflections ON — exactly like the known-good Indigo scene (which
+    # renders in -game on this project). GI=NONE renders BLACK in the -game deferred view
+    # here even though the editor SceneCapture path is fine; matching Indigo's Lumen is the
+    # fix. (Unlit/emissive content still carries the look; Lumen GI bounce is a bonus.)
+    _try_set(s, "override_dynamic_global_illumination_method", True)
+    _try_set(s, "dynamic_global_illumination_method", unreal.DynamicGlobalIlluminationMethod.LUMEN)
+    _try_set(s, "override_reflection_method", True)
+    _try_set(s, "reflection_method", unreal.ReflectionMethod.LUMEN)
     # Manual exposure (auto "breathes" — fatal for calm). High-key sits near bias 0.
     _try_set(s, "override_auto_exposure_method", True)
     _try_set(s, "auto_exposure_method", unreal.AutoExposureMethod.AEM_MANUAL)
     _try_set(s, "override_auto_exposure_bias", True)
     _try_set(s, "auto_exposure_bias", PRISM_EXP_BIAS)
+    # *** THE "-game renders BLACK" FIX (root cause, verified against Scene.h) ***
+    # In AEM_MANUAL, "Apply Physical Camera Exposure" (default ON) makes the exposure
+    # use the player camera's PHYSICAL settings (f/2.8, 1/60s, ISO100 ≈ EV100 ~9),
+    # which crushes a high-key scene (emissive ~1.0) to BLACK in -game. A
+    # SceneCaptureComponent2D has NO physical camera, so the capture preview looked
+    # correctly WHITE — that asymmetry (capture white, -game black, SAME map) was the
+    # whole bug. Turn physical-camera exposure OFF so -game exposure == the proven
+    # capture exposure, and pin metering (manual ignores it, but mirrors capture_shot.py).
+    _try_set(s, "override_auto_exposure_apply_physical_camera_exposure", True)
+    _try_set(s, "auto_exposure_apply_physical_camera_exposure", False)
+    _try_set(s, "override_auto_exposure_min_brightness", True)
+    _try_set(s, "auto_exposure_min_brightness", 1.0)
+    _try_set(s, "override_auto_exposure_max_brightness", True)
+    _try_set(s, "auto_exposure_max_brightness", 1.0)
     # Bloom — the rim SHOULD bloom (half the reference read). Threshold 1.0 so only
     # the >1 emissive rim blooms, not the 0.9 white field.
     _try_set(s, "override_bloom_intensity", True)
@@ -684,7 +711,8 @@ def build_post():
     _try_set(s, "film_grain_intensity", 0.08)
     ppv.set_editor_property("settings", s)
     _label(ppv, "PostFX")
-    log("post: AEM_MANUAL bias={} lumen=on bloom={}".format(PRISM_EXP_BIAS, PRISM_BLOOM))
+    log("post: AEM_MANUAL bias={} physcam-exposure=OFF min=max=1.0 lumen=on bloom={}".format(
+        PRISM_EXP_BIAS, PRISM_BLOOM))
 
 
 CAM_LOC = unreal.Vector(-2200.0, 60.0, 300.0)
@@ -720,21 +748,24 @@ def main():
         _level_subsys.load_level(LEVEL_PATH)
         log("loaded existing level {}".format(LEVEL_PATH))
     else:
-        log("new_level({}) -> {}".format(LEVEL_PATH, _level_subsys.new_level(LEVEL_PATH)))
+        try:
+            created = _level_subsys.new_level(LEVEL_PATH, is_partitioned_world=False)
+        except TypeError:
+            created = _level_subsys.new_level(LEVEL_PATH)
+        log("new_level({}, non-partitioned) -> {}".format(LEVEL_PATH, created))
+        if not created:
+            _FAIL.append("new_level returned False — level not created")
 
     clear_prior()
 
     mpc        = ensure_mpc()
-    prism_mat  = build_prism_material(mpc)
+    prism_mat  = build_prism_material(mpc)   # now the SWEPT-ARC material
     back_mat   = build_backdrop_material()
     slab_mat   = build_slab_material()
-    ribbon_mat = build_ribbon_material(mpc) if PRISM_RIBBON else None
 
     build_backdrop(back_mat)
-    build_center_form(slab_mat)
-    _build_corona("CoronaA", _CORONA_A, prism_mat)
-    _build_corona("CoronaB", _CORONA_B, prism_mat)
-    build_ribbon(ribbon_mat)
+    build_dark_form(slab_mat)                # organic sphere column (was the rectangle)
+    build_arcs(prism_mat)                    # swirl clusters (was rings + ribbon)
     build_lighting()
     build_post()
     build_camera()

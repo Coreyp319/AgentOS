@@ -36,7 +36,13 @@ else
 	RC_EXEC=""
 fi
 echo "[wallpaper] launching UE -game (t.MaxFPS $MAXFPS${RC_EXEC:+, RC on :30010}) ..."
-"$UE" "$PROJ" "$MAP" -game -windowed -ResX=3440 -ResY=1440 -nosplash -nosound \
+# -unattended: the project's Source/*.Target.cs are at BuildSettingsVersion.V5, so a
+# NON-unattended UnrealEditor -game launch pops a MODAL "Target Upgrade Required" zenity
+# dialog and BLOCKS before the map ever loads — i.e. a permanently BLACK wallpaper window.
+# -unattended auto-dismisses it (cursor visibility comes from BP_WallpaperPC, not this flag).
+# Proper root fix = bump both Target.cs to BuildSettingsVersion.V7, but that forces a C++
+# rebuild — do that deliberately, not as a side effect of shipping the wallpaper.
+"$UE" "$PROJ" "$MAP" -game -unattended -windowed -ResX=3440 -ResY=1440 -nosplash -nosound \
 	-ExecCmds="t.MaxFPS $MAXFPS${RC_EXEC}" "${RC_ARGS[@]}" >/tmp/agentos-ue-wallpaper.log 2>&1 &
 UE_PID=$!
 echo "[wallpaper] UE pid=$UE_PID; waiting for the -game window ..."

@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# nimbus-ue-wallpaper — start/stop the AgentOS UE "Indigo Channel" (UE 5.8, Vulkan)
+# nimbus-ue-wallpaper — start/stop an AgentOS UE wallpaper scene (UE 5.8, Vulkan)
 # as a desktop wallpaper, mirroring nimbus-flux-wallpaper so the com.nimbus.aurora
 # wallpaper plugin can select it as a 3-D engine Style (ADR-0029 §A).
 #
-#   nimbus-ue-wallpaper [--owner <plugin-id>]   # start (default owner com.nimbus.aurora)
-#   nimbus-ue-wallpaper --stop                  # stop UE + watchdog
+#   nimbus-ue-wallpaper [scene] [--owner <plugin-id>]  # start (default owner com.nimbus.aurora)
+#   nimbus-ue-wallpaper --stop                         # stop UE + watchdog
+#
+# [scene] selects WHICH UE map loads as the wallpaper (one map per aurora 3-D Style):
+#   indigo     → /Game/AgentOS/CalmWallpaper  (the Indigo Channel; the default)
+#   prismfield → /Game/AgentOS/PrismField     (the dispersive-glass Prism Field)
+# No scene == indigo, preserving the original single-scene back-compat.
 #
 # UE is an external engine that renders its own window — exactly the nimbus-flux
 # pattern — so the integration is identical: launch on select, and a background
@@ -40,19 +45,28 @@ stop() {
     pkill -f "$UE_MATCH" 2>/dev/null      # UE -game window proc (launcher cmdline never contains this)
 }
 
-# Parse --stop / --owner (back-compat: no --owner => com.nimbus.aurora).
-OWNER="$PLUGIN_ID"; do_stop=0
+# Parse [scene] / --stop / --owner (back-compat: no scene => indigo, no --owner => com.nimbus.aurora).
+OWNER="$PLUGIN_ID"; do_stop=0; SCENE="indigo"
 while [ $# -gt 0 ]; do
     case "$1" in
         --stop)     do_stop=1 ;;
         --owner)    shift; OWNER="${1:-$PLUGIN_ID}" ;;
         --owner=*)  OWNER="${1#--owner=}" ;;
         --*)        : ;;                 # ignore unknown flags
+        *)          SCENE="$1" ;;        # bare positional = scene selector
     esac
     shift
 done
 PLUGIN_ID="$OWNER"
 if [ "$do_stop" = 1 ]; then stop; exit 0; fi
+
+# Scene → UE map. wallpaper_keepbelow.sh reads AGENTOS_WALLPAPER_MAP (it defaults to
+# CalmWallpaper), but we set it EXPLICITLY here so the launch is deterministic regardless
+# of any inherited env. An unknown scene falls back to the Indigo Channel.
+case "$SCENE" in
+    prism|prismfield|prism-field) export AGENTOS_WALLPAPER_MAP="/Game/AgentOS/PrismField" ;;
+    *)                            export AGENTOS_WALLPAPER_MAP="/Game/AgentOS/CalmWallpaper" ;;
+esac
 
 [ -x "$KEEPBELOW" ] || { echo "nimbus-ue-wallpaper: missing keep-below launcher $KEEPBELOW" >&2; exit 1; }
 

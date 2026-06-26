@@ -13,6 +13,28 @@ near-white field. Built toward `~/Downloads/personalized_listening__geshsqt82yeu
   centre = abstract dark form. See `creative-environment-pipeline-adr-0023` memory + the
   `ue-wallpaper-authoring` skill.
 
+## FIXED 2026-06-24 — "renders in capture, BLACK in `-game`"
+Root cause (verified against `Engine/Classes/Engine/Scene.h`): the PostProcessVolume used
+`AEM_MANUAL` exposure with **Apply Physical Camera Exposure left ON (the default)**. That
+property's own tooltip is *"Only affects Manual exposure mode"* — in manual mode it makes the
+exposure use the **player camera's physical settings** (f/2.8, 1/60s, ISO100 ≈ EV100 ~9),
+which crushes a high-key scene (emissive ~1.0) to **black in `-game`**. A `SceneCaptureComponent2D`
+has **no** physical camera, so the offscreen preview rendered correctly WHITE — that asymmetry
+(capture white, `-game` black, *same map*) was the entire bug. It was never the actors, the
+camera/view-target, GI, distance fields, or unlit-vs-lit (all ruled out by a `-game` probe that
+found 46 actors + the AgentOS_Camera correctly set as the view target, then a windowed capture
+that showed the scene rendering near-black).
+**Fix** (`prism_field_setup.py` `build_post`): `auto_exposure_apply_physical_camera_exposure=False`
++ pinned `min/max_brightness=1.0`, so `-game` exposure == the proven capture. Verified: the
+windowed `-game` mean brightness went 0.0 → 0.96 and the full composition renders (see the
+reference look). Diagnostic tool: `pf_game_diag.py` (the `-game`-safe world/actor/camera probe —
+editor subsystems are None in `-game`, so it grabs the world via `find_object`).
+
+**Second, separate gotcha** (also produced a black window): a NON-`-unattended` `UnrealEditor -game`
+launch pops a **modal "Target Upgrade Required" zenity dialog** (the project Target.cs are at
+`BuildSettingsVersion.V5`) and BLOCKS before the map loads. `wallpaper_keepbelow.sh` now passes
+`-unattended`. Proper root fix = bump both `Source/*.Target.cs` to `V7` (forces a C++ rebuild).
+
 ## How the dispersion works (the load-bearing idea)
 A single `MaterialExpressionCustom` HLSL node (minimal wire surface) ports `aurora.frag`'s
 `prismCorona` math. It samples the rim crest **per-channel at r∓ca** (the chromatic split);

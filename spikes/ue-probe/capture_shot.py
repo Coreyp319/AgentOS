@@ -43,7 +43,7 @@ CAM_LABEL = "AgentOS_Camera"
 PPV_LABEL = "AgentOS_PostFX"          # the manual-exposure PostProcessVolume from indigo_channel_setup.py
 RES_X = 1920
 RES_Y = 1080
-FOV = 75.0                            # matches indigo_channel_setup.py INDIGO_FOV default
+FOV = float(os.environ.get("CAPTURE_FOV", 75.0))   # indigo default 75; PrismField cam is 52 → CAPTURE_FOV=52
 CONVERGE_TICKS = 120                  # let Lumen GI + the volumetric-fog temporal history settle
 CAPTURE_REPEAT = 8                    # capture_scene() a few times so the fog temporal filter converges in the RT
 FLUSH_TICKS = 90                      # keep ticking after export so the PNG flushes to disk
