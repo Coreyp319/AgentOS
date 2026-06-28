@@ -778,6 +778,17 @@ fn fits_after_evict(free_mib: u64, victim_est: u64, reclaimable: bool, succ_est:
     admit(predicted, succ_est, headroom).granted()
 }
 
+/// Complete the preempt decision (ADR-0041 review — resource-safety [High]). A preempt is authorized by
+/// PRIORITY (`arbitrate`), but priority alone is not enough for a *non-interactive* request: if the
+/// successor won't fit even after evicting the victim, killing the victim is pure loss — a lower-tier job
+/// dies so a higher one can start-and-OOM, the exact predict-before-load violation the substrate exists
+/// to prevent (ADR-0010 §4). So a non-interactive preemptor proceeds ONLY when it's predicted to fit
+/// post-eviction; otherwise it denies and leaves the victim running. `Interactive` is exempt — it fails
+/// OPEN (it must always win; the gateway offloads to CPU, ADR-0003). Pure + tested.
+fn preempt_proceeds(req: Tier, fits_after_evict: bool) -> bool {
+    req == Tier::Interactive || fits_after_evict
+}
+
 /// GO-2 identity gate (ADR-0021): may `requester` release `token`? A *bound* (cooperative) holder —
 /// one whose token agentosd recorded against the acquiring bus name (`holder_peer`) — may be released
 /// ONLY by that same peer, so one agent behind the MCP act surface can't release another's lease. An
@@ -1129,6 +1140,64 @@ impl Coordinator {
             };
         }
 
+        // COMPLETE THE PREEMPT DECISION before installing/evicting anything (ADR-0041 review [High], H1).
+        // `arbitrate` would PREEMPT a strictly-lower holder on priority alone — but a *non-interactive*
+        // preempt that won't fit even after reclaiming the victim is pure loss: it SIGKILLs a lower-tier
+        // job so a higher one can start-and-OOM. Decide here, while the victim is still installed, so a
+        // deny leaves it RUNNING (no wasted kill). Interactive is exempt (fails OPEN — it must always win;
+        // the gateway offloads). VRAM-unreadable → a non-interactive preempt won't start blind (fail closed).
+        if let Some(htier) = prev_tier {
+            if tier > htier {
+                let reclaimable =
+                    inner.owned.as_ref().is_some_and(|j| j.token == inner.lease.holder_token());
+                let would_fit = match free_opt {
+                    Some(free) => fits_after_evict(free, prev_est, reclaimable, est, headroom),
+                    None => false,
+                };
+                if !preempt_proceeds(tier, would_fit) {
+                    // Honest reason per free-readability (review: none-case-deny-message-misattributes):
+                    // an unreadable NVML is a DISTINCT condition from "GPU full" — never fabricate a
+                    // free 0M / short 0M shortfall when the real cause is a read blip + fail-closed.
+                    let (msg, short) = match free_opt {
+                        None => (
+                            format!(
+                                "denied: VRAM unreadable — preempting {} fails closed \
+                                 (won't kill the victim blind); victim left running",
+                                htier.as_str()
+                            ),
+                            0,
+                        ),
+                        Some(free) => {
+                            let predicted =
+                                if reclaimable { free.saturating_add(prev_est) } else { free };
+                            let short = match admit(predicted, est, headroom) {
+                                Admission::Deny { short_mib, .. } => short_mib,
+                                _ => 0,
+                            };
+                            (
+                                format!(
+                                    "denied: preempting {} would not free enough — short {short}M after \
+                                     evict (free {free}M + reclaim {}M vs est {est}M + headroom {headroom}M); \
+                                     victim left running",
+                                    htier.as_str(),
+                                    if reclaimable { prev_est } else { 0 },
+                                ),
+                                short,
+                            )
+                        }
+                    };
+                    return AcquireOutcome {
+                        code: OutcomeCode::Denied,
+                        token: 0,
+                        tier_effective: tier.as_str().to_string(),
+                        msg,
+                        short_mib: short,
+                        retry_after_ms: 0,
+                    };
+                }
+            }
+        }
+
         // Fresh-grant admissibility, with fail-open per tier (ADR-0003): on an unreadable
         // GPU, interactive (top tier) grants anyway — never block live AI on a read blip —
         // while batch/best-effort fail *closed* (don't start a heavy job blind).
@@ -1256,9 +1325,12 @@ impl Coordinator {
         };
 
         // Install the holder's reclaim handle (under the lock). Cooperative: nothing to own (the caller
-        // runs its own process). Spawn: agentosd spawns + OWNS a child — on spawn failure roll the lease
-        // back (a lease without its process is worse than no lease) and reclaim any victim. AdoptScope:
-        // record the flatpak lane's pinned cgroup scope as the reclaim handle (ADR-0022 Phase 1).
+        // runs its own process). AdoptScope: record the flatpak lane's pinned cgroup scope (ADR-0022
+        // Phase 1) — the lane is ALREADY resident, so recording it allocates no new VRAM and is safe to do
+        // before the reclaim. Spawn: DEFERRED (ADR-0041 §8 over-admit fix) — launching the child allocates
+        // FRESH VRAM, so it must wait until the preempted victim's VRAM is CONFIRMED FREED by the off-lock
+        // reclaim below; spawning here (the old order) let the successor allocate into not-yet-freed VRAM
+        // (the cardinal-sin OOM: UE crashes, not degrades). We carry the argv out and spawn after reclaim.
         let mut owned_pid: Option<u32> = None;
         let bind_peer = !matches!(kind, AcquireKind::Spawn(_));
         let kind_note = match &kind {
@@ -1267,33 +1339,10 @@ impl Coordinator {
             }
             _ => None,
         };
+        let mut deferred_spawn: Option<Vec<String>> = None;
         match kind {
             AcquireKind::Cooperative => {}
-            AcquireKind::Spawn(args) => match spawn_owned(&args) {
-                Ok((child, pid)) => {
-                    owned_pid = Some(pid);
-                    inner.owned =
-                        Some(OwnedJob { token, label: args.join(" "), reclaim: Reclaim::Spawned { child, pid } });
-                }
-                Err(e) => {
-                    inner.lease.release(token);
-                    drop(inner);
-                    if let Some((label, reclaim, _)) = evicted {
-                        eprintln!("coordd: spawn failed after preempting `{}` — reclaiming it", short_label(&label));
-                        self.perform_reclaim(label, reclaim, "n/a", free_opt.unwrap_or(0)).await;
-                    }
-                    // Lease rolled back → publish "no contention" (off-lock; inner is dropped).
-                    write_lease_mirror(self.mirror.as_deref(), &Lease::default());
-                    return AcquireOutcome {
-                        code: OutcomeCode::Error,
-                        token: 0,
-                        tier_effective: tier.as_str().to_string(),
-                        msg: format!("spawn failed: {e}"),
-                        short_mib: 0,
-                        retry_after_ms: 0,
-                    };
-                }
-            },
+            AcquireKind::Spawn(args) => deferred_spawn = Some(args), // launched after the reclaim below
             AcquireKind::AdoptScope { handle, dir, lane_pid } => {
                 let label = handle.scope_unit.clone();
                 inner.owned =
@@ -1315,7 +1364,9 @@ impl Coordinator {
         inner.holder_ttl = Some(ttl);
         inner.holder_deadline = Some(Instant::now() + ttl);
 
-        let mirror_snap = lease_snapshot(&inner);
+        // The Spawn path re-snapshots after the deferred install below, so only snapshot here for the
+        // Cooperative/AdoptScope paths (avoid a wasted Lease alloc on the preempt-by-Spawn path).
+        let mirror_snap = if deferred_spawn.is_some() { None } else { Some(lease_snapshot(&inner)) };
         drop(inner);
 
         // Reclaim the evicted victim OFF the lock (review C5): a Spawned victim → group SIGKILL + reap;
@@ -1356,8 +1407,60 @@ impl Coordinator {
             );
         }
 
-        // Publish the new arbitration state to the keyhole mirror — OFF the lock (ADR-0012 §3).
-        write_lease_mirror(self.mirror.as_deref(), &mirror_snap);
+        // DEFERRED OWNED SPAWN (ADR-0041 §8): the victim's VRAM is now CONFIRMED FREED (the reclaim above
+        // awaited `confirm_spawned_reclaim`/`reclaim_scope`), so it is finally safe to launch the successor
+        // — it can no longer allocate into not-yet-freed VRAM. Re-take the lock to install the child.
+        //   * If we LOST the lease during the off-lock reclaim (a higher tier preempted our just-installed
+        //     holder — which found no owned job to reclaim, because we hadn't spawned yet), ABORT without
+        //     launching an orphan: the lease belongs to the preemptor now, so the caller retries.
+        //   * On spawn failure, roll the lease back (a lease without its process is worse than none). The
+        //     victim (if any) was already reclaimed above — nothing left to reclaim here.
+        if let Some(args) = deferred_spawn {
+            let mut inner = self.inner.lock().await;
+            if inner.lease.holder_token() != token {
+                drop(inner);
+                eprintln!(
+                    "coordd: lease re-taken during reclaim before spawn — not launching `{}` (retry)",
+                    short_label(&args.join(" "))
+                );
+                return AcquireOutcome {
+                    code: OutcomeCode::BusyRetry,
+                    token: 0,
+                    tier_effective: tier.as_str().to_string(),
+                    msg: "busy: lease preempted during reclaim before spawn — retry".into(),
+                    short_mib: 0,
+                    retry_after_ms: AGENT_BUSY_RETRY_HINT_MS,
+                };
+            }
+            match spawn_owned(&args) {
+                Ok((child, pid)) => {
+                    owned_pid = Some(pid);
+                    inner.owned =
+                        Some(OwnedJob { token, label: args.join(" "), reclaim: Reclaim::Spawned { child, pid } });
+                }
+                Err(e) => {
+                    inner.lease.release(token);
+                    drop(inner);
+                    // Lease rolled back → publish "no contention" (off-lock; inner is dropped).
+                    write_lease_mirror(self.mirror.as_deref(), &Lease::default());
+                    return AcquireOutcome {
+                        code: OutcomeCode::Error,
+                        token: 0,
+                        tier_effective: tier.as_str().to_string(),
+                        msg: format!("spawn failed: {e}"),
+                        short_mib: 0,
+                        retry_after_ms: 0,
+                    };
+                }
+            }
+            // Publish the FRESH snapshot now that the owned child is installed — OFF the lock (ADR-0012 §3).
+            let snap = lease_snapshot(&inner);
+            drop(inner);
+            write_lease_mirror(self.mirror.as_deref(), &snap);
+        } else if let Some(snap) = mirror_snap {
+            // Cooperative / AdoptScope: the holder is already installed; publish the snapshot taken above.
+            write_lease_mirror(self.mirror.as_deref(), &snap);
+        }
 
         let mut msg = match preempted {
             Some((victim, fit)) => {
@@ -1553,6 +1656,17 @@ impl Coordinator {
             return (false, 0, format!("spawn: unknown profile `{profile}` (allowed: {})", profile_names()));
         };
         argv.extend(params);
+        // An owned Spawn job (ComfyUI/batch) is a background GPU consumer — it must NEVER hold Interactive
+        // (the only non-preemptible tier). An Interactive OWNED child can't CPU-offload under pressure the
+        // way cooperative Hermes inference can, so the interactive fail-open exemption in `preempt_proceeds`
+        // (justified by "the gateway offloads") does NOT apply to it — yet the preempt path would still
+        // SIGKILL a victim and launch it into a won't-fit eviction. Clamp to ≤ Batch here, mirroring
+        // `adopt_scope` (do_acquire's `class.clamp` is a no-op for Trusted, so the ceiling lives at the verb).
+        // (ADR-0041 review: interactive-spawn-wontfit-launches-oom-child.)
+        let tier = match Tier::from_arg(&tier) {
+            Ok(t) => t.clamp_to(Tier::Batch).as_str().to_string(),
+            Err(e) => return (false, 0, format!("spawn: {e}")),
+        };
         let caller = hdr.sender().map(|s| s.to_string());
         self.do_acquire(caller, CallerClass::Trusted, tier, estimate_mib, AcquireKind::Spawn(argv))
             .await
@@ -2312,6 +2426,19 @@ mod tests {
         assert!(fits_after_evict(20_000, 0, false, 18_000, 512));
     }
 
+    #[test]
+    fn preempt_proceeds_denies_a_nonfitting_noninteractive_but_never_interactive() {
+        // ADR-0041 review [High]: a NON-interactive preempt that won't fit even after evicting the victim
+        // must DENY (killing a lower-tier job to start one that OOMs is pure loss) — so it proceeds only
+        // when the successor is predicted to fit.
+        assert!(!preempt_proceeds(Tier::Batch, false), "batch preempt that won't fit → deny (no wasted kill)");
+        assert!(preempt_proceeds(Tier::Batch, true), "batch preempt that fits → proceed");
+        assert!(!preempt_proceeds(Tier::BestEffort, false), "best-effort preempt that won't fit → deny");
+        // Interactive ALWAYS proceeds — it fails OPEN (must win; the gateway offloads to CPU, ADR-0003).
+        assert!(preempt_proceeds(Tier::Interactive, false), "interactive preempts even when it won't fit (fail-open)");
+        assert!(preempt_proceeds(Tier::Interactive, true));
+    }
+
     // --- ADR-0041 §5a: bounded reap = the over-admit-window confirm-free ---
 
     #[tokio::test]
@@ -2338,6 +2465,97 @@ mod tests {
         assert!(
             !reap_bounded(child, Duration::from_millis(50)).await,
             "a live child must not be falsely confirmed reaped within a 50ms budget (and must not hang)"
+        );
+    }
+
+    // --- ADR-0041 §8: the deferred-spawn reorder (reclaim-confirm BEFORE launching the successor) ---
+    //
+    // These drive the real `Coordinator::do_acquire` with `GpuBackend::None` (free reads None). An
+    // INTERACTIVE Spawn preemptor is used deliberately: it is exempt from BOTH the fresh-grant fail-closed
+    // and the new WONT-FIT deny, so it reaches the deferred-spawn block without a GPU or a fake free reading
+    // — letting us exercise the reclaim-then-install machinery (and its rollback) that is otherwise
+    // GPU-gated. Production clamps Spawn to ≤Batch (the `spawn` verb), so this exact tier/kind combo is
+    // test-only; the deferred-spawn machinery it exercises is tier-agnostic. (Temporal ordering — the child
+    // launched strictly AFTER the victim's VRAM frees — is the on-box e2e's job; here we guard the path's
+    // OUTCOME: the victim is reaped, the successor installed, and a failed spawn rolls the lease back.)
+
+    /// A `Coordinator` with no GPU sensing (free reads None) holding an installed owned **Spawned** victim
+    /// (a real `sleep` child in its own group). Returns `(coord, victim_pid)`.
+    async fn coord_with_spawned_victim(victim_tier: Tier) -> (Coordinator, u32) {
+        let mut inner = Inner::new();
+        let vtok = match inner.lease.acquire(victim_tier, &fits()) {
+            AcquireResult::Granted { token } => token,
+            other => panic!("victim install: expected Granted, got {other:?}"),
+        };
+        let (vchild, vpid) =
+            spawn_owned(&["/usr/bin/sleep".to_string(), "300".to_string()]).expect("spawn victim");
+        inner.owned = Some(OwnedJob {
+            token: vtok,
+            label: "victim".to_string(),
+            reclaim: Reclaim::Spawned { child: vchild, pid: vpid },
+        });
+        let coord = Coordinator {
+            inner: Arc::new(Mutex::new(inner)),
+            gpu: Arc::new(GpuBackend::None),
+            mirror: None,
+        };
+        (coord, vpid)
+    }
+
+    /// `kill(pid, 0)` == 0 → the pid still exists (alive or unreaped zombie); ESRCH → fully gone.
+    fn pid_is_alive(pid: u32) -> bool {
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+
+    #[tokio::test]
+    async fn deferred_spawn_preempt_reclaims_victim_then_installs_successor() {
+        let (coord, vpid) = coord_with_spawned_victim(Tier::BestEffort).await;
+        let out = coord
+            .do_acquire(
+                Some(":1.test".to_string()),
+                CallerClass::Trusted,
+                "interactive".to_string(),
+                1_000,
+                AcquireKind::Spawn(vec!["/usr/bin/sleep".to_string(), "300".to_string()]),
+            )
+            .await;
+        assert!(out.is_granted(), "interactive Spawn preempt should be granted, got {:?}", out.code);
+        let g = coord.inner.lock().await;
+        let owned = g.owned.as_ref().expect("a successor owned job must be installed");
+        let new_pid = match &owned.reclaim {
+            Reclaim::Spawned { pid, .. } => *pid,
+            Reclaim::Scope { .. } => panic!("expected a Spawned successor, got a Scope reclaim"),
+        };
+        assert_ne!(new_pid, vpid, "the successor must be a NEW child, not the reclaimed victim");
+        assert_eq!(owned.token, g.lease.holder_token(), "owned token must equal the lease holder token");
+        assert!(
+            !pid_is_alive(vpid),
+            "the preempted victim must be SIGKILLed + reaped (VRAM confirm-freed) before the grant returns"
+        );
+        assert!(pid_is_alive(new_pid), "the successor child is running");
+    }
+
+    #[tokio::test]
+    async fn deferred_spawn_failure_rolls_back_and_leaves_no_holder() {
+        let (coord, vpid) = coord_with_spawned_victim(Tier::BestEffort).await;
+        // A bare (no-slash) name passes the `looks_executable` pre-flight but fails the actual spawn, so the
+        // failure occurs in the DEFERRED block (AFTER the victim is reclaimed) — exercising that rollback.
+        let out = coord
+            .do_acquire(
+                Some(":1.test".to_string()),
+                CallerClass::Trusted,
+                "interactive".to_string(),
+                1_000,
+                AcquireKind::Spawn(vec!["agentosd-no-such-binary-xyz123".to_string()]),
+            )
+            .await;
+        assert!(matches!(out.code, OutcomeCode::Error), "a deferred spawn failure is an Error, got {:?}", out.code);
+        let g = coord.inner.lock().await;
+        assert!(g.lease.holder_tier().is_none(), "the lease must roll back to free on spawn failure");
+        assert!(g.owned.is_none(), "no owned job survives a failed spawn");
+        assert!(
+            !pid_is_alive(vpid),
+            "the victim was reclaimed before the (failed) spawn — the kill is not rolled back, only the lease"
         );
     }
 

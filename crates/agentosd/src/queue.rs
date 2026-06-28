@@ -19,9 +19,16 @@
 //! author a preempting tier, ADR-0021 GO-1); `seq` is a deterministic FIFO tiebreak. A `Waiter` has
 //! no ordered caller field, and `selection_ignores_est_and_conn` proves selection is invariant to the
 //! non-ordering fields — the Rust analog of ADR-0019's `_FORBIDDEN_ORDER_KEYS` `SystemExit` guard.
-//! (v1 has no cross-tier aging: on a single-user box higher-tier demand is finite, so a lower tier
-//! drains when the higher empties; bounded aging is the documented escape hatch if starvation is ever
-//! observed — see ADR-0041 §2.)
+//!
+//! ## Bounded age-promotion (ADR-0041 §2, resource-safety review [Medium])
+//! Strict tier order alone STARVES a lower tier when the higher one is near-continuous — and in this
+//! product `Batch` is exactly that (autonomous agents clamp to ≤Batch, dream generation is Batch, and the
+//! overnight pipeline is Batch), so a `BestEffort` preview can wait behind a Batch storm forever. So a
+//! waiter is PROMOTED by how long it has waited: one rank every `AGE_PROMOTE_QUANTUM_MS`, QUANTIZED
+//! against a single `now` snapshot (deterministic + replayable for a given `now` — the order can't
+//! reshuffle within a quantum), CAPPED strictly below `Interactive` (aging never lets a queued job seize
+//! the GPU from the desktop or a live human request), with `seq` (FIFO) the final tiebreak. The ordering
+//! is still `(effective tier, seq)` and NOTHING a caller supplies — age is mechanism, not an author knob.
 // The PURE core's `cancel`/`position_of`/`drop_conn` are API for the Phase-2 explicit-cancel/position
 // verbs (the v1 shell drives enqueue/select_next/remove + the RAII TicketGuard); allow until wired.
 #![allow(dead_code)]
@@ -30,7 +37,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
 
@@ -59,6 +66,23 @@ type ConnId = String;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ticket(u64);
 
+/// One rank of age-promotion per this many ms parked (ADR-0041 §2 bounded aging). A `BestEffort` waiter
+/// reaches the `Batch` band after this long, so a continuous Batch stream can starve it for at most ~this
+/// (then it competes by FIFO). Quantized: the order is stable within a quantum (deterministic for a given
+/// `now`). A const (not env) so the pure core stays clock-free + replayable; tune in one place if needed.
+const AGE_PROMOTE_QUANTUM_MS: u64 = 20_000;
+
+/// Numeric priority rank of a tier — higher serves first. Mirrors `Tier`'s `Ord` (Yielding<BestEffort<
+/// Batch<Interactive); kept explicit so age-promotion arithmetic (and its `Interactive` cap) is obvious.
+fn tier_rank(t: Tier) -> u64 {
+    match t {
+        Tier::Yielding => 0,
+        Tier::BestEffort => 1,
+        Tier::Batch => 2,
+        Tier::Interactive => 3,
+    }
+}
+
 /// A parked waiter. MECHANISM ONLY — no caller-supplied priority/weight/urgency (ADR-0041 §2).
 #[derive(Debug, Clone)]
 struct Waiter {
@@ -71,6 +95,27 @@ struct Waiter {
     est_mib: u64,
     /// The enqueuing connection — cancel-authz + the per-connection cap + the disconnect sweep.
     conn: ConnId,
+    /// Monotonic-ms stamp at enqueue (injected by the shell — the pure core holds NO clock). Drives
+    /// bounded age-promotion: compared against the `now` passed to selection (same monotonic clock).
+    enqueued_at_ms: u64,
+}
+
+impl Waiter {
+    /// This waiter's EFFECTIVE priority rank at `now` (ADR-0041 §2): its base tier rank promoted by one
+    /// step per `AGE_PROMOTE_QUANTUM_MS` waited, CAPPED strictly below `Interactive` so aging can never
+    /// let a queued job preempt the desktop or a live human request. An `Interactive` waiter is already
+    /// top and never demoted. Pure + deterministic for a given `now` (quantized division).
+    fn effective_rank(&self, now: u64) -> u64 {
+        let base = tier_rank(self.tier);
+        if base >= tier_rank(Tier::Interactive) {
+            return base; // already top — no promotion (and never demote)
+        }
+        let steps = now.saturating_sub(self.enqueued_at_ms) / AGE_PROMOTE_QUANTUM_MS;
+        // Cap: never reach Interactive by age. NB this caps at the Batch band for ALL sub-Interactive
+        // tiers, so a Yielding waiter would share BestEffort's ceiling — latent today (the UE wallpaper is
+        // owned and never calls WaitTurn, so no Yielding waiter is ever enqueued; revisit if it becomes one).
+        base.saturating_add(steps).min(tier_rank(Tier::Batch))
+    }
 }
 
 /// Why an enqueue was refused (ADR-0041 §6: bounded, reject-newest, never unbounded growth).
@@ -113,8 +158,15 @@ impl WaitQueue {
 
     /// Park a waiter. Bounded: rejects the NEWEST at the global ceiling (`QueueFull`) or the
     /// per-connection cap (`PerConnLimit`) — never grows unbounded, never evicts an already-waiting
-    /// peer. Returns the ticket on success.
-    pub fn enqueue(&mut self, tier: Tier, est_mib: u64, conn: ConnId) -> Result<Ticket, EnqueueError> {
+    /// peer. `at_ms` is the shell's monotonic-ms clock (injected — the pure core holds no clock), stamped
+    /// for age-promotion. Returns the ticket on success.
+    pub fn enqueue(
+        &mut self,
+        tier: Tier,
+        est_mib: u64,
+        conn: ConnId,
+        at_ms: u64,
+    ) -> Result<Ticket, EnqueueError> {
         if self.waiters.len() >= self.max_waiters {
             return Err(EnqueueError::QueueFull);
         }
@@ -125,36 +177,43 @@ impl WaitQueue {
         self.next_ticket += 1;
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.waiters.push(Waiter { ticket, tier, seq, est_mib, conn });
+        self.waiters.push(Waiter { ticket, tier, seq, est_mib, conn, enqueued_at_ms: at_ms });
         Ok(ticket)
     }
 
-    /// The next waiter to nominate when the lease frees: HIGHEST tier, then EARLIEST arrival (smallest
-    /// `seq`). PURE selection — a deterministic function of `(tier, seq)` ONLY, never `est_mib`/`conn`/
-    /// insertion order (the forbidden-keys invariant). Does NOT remove it (the shell removes on a
-    /// confirmed grant via `remove`). Returns the ticket + the est the daemon will `admit` against.
-    pub fn select_next(&self) -> Option<(Ticket, u64)> {
+    /// The next waiter to nominate when the lease frees: HIGHEST EFFECTIVE rank at `now` (base tier +
+    /// bounded age-promotion, ADR-0041 §2), then EARLIEST arrival (smallest `seq`). PURE selection — a
+    /// deterministic function of `(effective_rank(now), seq)` ONLY, never `est_mib`/`conn`/insertion order
+    /// (the forbidden-keys invariant). Does NOT remove it (the shell removes on a confirmed grant via
+    /// `remove`). Returns the ticket + the est the daemon will `admit` against.
+    pub fn select_next(&self, now: u64) -> Option<(Ticket, u64)> {
         self.waiters
             .iter()
-            .max_by_key(|w| (w.tier, Reverse(w.seq)))
+            .max_by_key(|w| (w.effective_rank(now), Reverse(w.seq)))
             .map(|w| (w.ticket, w.est_mib))
     }
 
-    /// All parked waiters in nomination order — HIGHEST tier first, then EARLIEST arrival (seq). Same
-    /// pure `(tier, seq)`-only ordering as `select_next`, just the full list. The watcher walks this to
-    /// offer each waiter a turn within a free episode (so a stuck/slow head can't starve the tail) while
-    /// still giving the highest-priority one the first shot at `Acquire`.
-    pub fn ordered(&self) -> Vec<(Ticket, u64)> {
+    /// All parked waiters in nomination order — HIGHEST EFFECTIVE rank at `now` first, then EARLIEST
+    /// arrival (seq). Same pure `(effective_rank(now), seq)` ordering as `select_next`, just the full list.
+    /// The watcher walks this to offer each waiter a turn within a free episode (so a stuck/slow head can't
+    /// starve the tail) while still giving the highest-priority one the first shot at `Acquire`.
+    pub fn ordered(&self, now: u64) -> Vec<(Ticket, u64)> {
         let mut v: Vec<&Waiter> = self.waiters.iter().collect();
-        v.sort_by_key(|w| (Reverse(w.tier), w.seq)); // tier DESC, then seq ASC (FIFO)
+        // Effective rank DESC, then seq ASC (FIFO). `now` ages each waiter against one snapshot.
+        v.sort_by_key(|w| (Reverse(w.effective_rank(now)), w.seq));
         v.into_iter().map(|w| (w.ticket, w.est_mib)).collect()
     }
 
     /// `(depth, next-tier)` for the keyhole mirror (ADR-0012/0041): how many workflows are waiting, and
-    /// the tier that will be nominated next (highest tier, earliest seq). NO-LEAK — a count + an
-    /// aggregate tier, never a waiter's identity/est/connection. Pure.
-    pub fn snapshot(&self) -> (usize, Option<Tier>) {
-        let head = self.waiters.iter().max_by_key(|w| (w.tier, Reverse(w.seq))).map(|w| w.tier);
+    /// the BASE tier of the one nominated next (highest effective rank at `now`, earliest seq). The label
+    /// is the head's TRUE tier (honest — an age-promoted best-effort still reads "best-effort"), not its
+    /// promoted rank. NO-LEAK — a count + an aggregate tier, never a waiter's identity/est/connection. Pure.
+    pub fn snapshot(&self, now: u64) -> (usize, Option<Tier>) {
+        let head = self
+            .waiters
+            .iter()
+            .max_by_key(|w| (w.effective_rank(now), Reverse(w.seq)))
+            .map(|w| w.tier);
         (self.waiters.len(), head)
     }
 
@@ -185,17 +244,20 @@ impl WaitQueue {
         before - self.waiters.len()
     }
 
-    /// A waiter's position = how many parked waiters would be nominated BEFORE it (0 = next up). NO-LEAK
-    /// (ADR-0041 §5b): a number derived from the public `(tier, seq)` ordering, NEVER another caller's
-    /// identity/est/conn. `None` if the ticket isn't parked.
-    pub fn position_of(&self, ticket: Ticket) -> Option<usize> {
+    /// A waiter's position = how many parked waiters would be nominated BEFORE it at `now` (0 = next up).
+    /// Uses the SAME `(effective_rank(now), seq)` ordering as `select_next`/`ordered` so the reported
+    /// position never contradicts the actual nomination order once a waiter is age-promoted. NO-LEAK
+    /// (ADR-0041 §5b): a number derived from the public ordering, NEVER another caller's identity/est/conn.
+    /// `None` if the ticket isn't parked.
+    pub fn position_of(&self, ticket: Ticket, now: u64) -> Option<usize> {
         let me = self.waiters.iter().find(|w| w.ticket == ticket)?;
+        let my_rank = me.effective_rank(now);
         let ahead = self
             .waiters
             .iter()
             .filter(|w| {
-                w.ticket != ticket
-                    && (w.tier > me.tier || (w.tier == me.tier && w.seq < me.seq))
+                let r = w.effective_rank(now);
+                w.ticket != ticket && (r > my_rank || (r == my_rank && w.seq < me.seq))
             })
             .count();
         Some(ahead)
@@ -222,9 +284,25 @@ const OBJ_PATH: &str = "/org/agentos/Queue1";
 /// Poll cadence for the `lease.json` drain-on-free watcher. v1 is poll-only (no inotify dependency);
 /// the `freed_seq` field is the future latency optimization — the poll IS the fail-open correctness path.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
-/// After notifying a nominee, wait this long before nominating again — gives the nominee time to return
-/// from `WaitTurn` and win the lease, so a freed lease doesn't wake a thundering herd of waiters at once.
-const NOMINATE_DWELL: Duration = Duration::from_millis(300);
+/// A nominated waiter gets an EXCLUSIVE shot at the free lease for up to this long before the watcher
+/// offers the NEXT waiter a turn (ADR-0041 §6, resource-safety review [Medium] — make `(tier, seq)`
+/// authoritative, not a 300ms race). Only ONE nominee is in flight at a time, so two QUEUED waiters can
+/// never race each other into a priority inversion: the highest-priority head wins, and if a lower tier
+/// does sneak in after the grace the daemon's `arbitrate` still lets a higher-tier queued waiter preempt
+/// it on `Acquire`. Long enough to cover a wake + D-Bus `Acquire` round-trip against a FREE lease (the
+/// free path does no reclaim → fast); the only cost of overshoot is the tail waits a touch longer.
+const NOMINATION_GRACE: Duration = Duration::from_millis(750);
+/// Sub-poll within a nominee's grace window: how often the watcher checks whether the lease was taken, so
+/// it ends the episode the instant a nominee wins rather than always sleeping the full grace.
+const NOMINATION_POLL: Duration = Duration::from_millis(50);
+
+/// Process-monotonic milliseconds — the single clock both age-promotion stamps (`WaitQueue::enqueue`) and
+/// selection (`select_next`/`ordered`/`snapshot`'s `now`) read, so a waiter's age is well-defined.
+/// Relative to first use (process start), never wall-clock; the pure core never reads it directly.
+fn monotonic_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
 
 /// How long `WaitTurn` blocks before returning `turn=false` (the caller falls back to self-retry). The
 /// queue can only make a caller faster-or-equal-to this, never slower (fail-open). Read ONCE at first
@@ -304,7 +382,7 @@ impl Arbiter {
         // Enqueue (bounded). On a cap rejection the caller falls back to direct Acquire / self-retry.
         let (ticket, notify) = {
             let mut s = lock_recover(&self.state);
-            let ticket = match s.q.enqueue(tier, est_mib as u64, conn) {
+            let ticket = match s.q.enqueue(tier, est_mib as u64, conn, monotonic_ms()) {
                 Ok(t) => t,
                 Err(EnqueueError::QueueFull) => return (false, "queue_full".to_string()),
                 Err(EnqueueError::PerConnLimit) => return (false, "per_conn_limit".to_string()),
@@ -371,14 +449,17 @@ impl Arbiter {
 }
 
 /// The `lease.json` poll watcher: when the lease is FREE, walk the parked waiters HIGHEST-PRIORITY-FIRST
-/// and fire each one's `Notify` (so its `WaitTurn` returns and it races `Acquire`), with a brief dwell
-/// between fires so the higher-priority waiter gets a head start — STOPPING as soon as one wins (the
-/// lease becomes held). Walking the whole order (rather than re-firing only the head) means a stuck or
-/// slow head can't starve the tail (review MAJOR-1): the head gets the first shot every episode, but if
-/// it can't take the lease the next waiter is offered a turn. Poll-only (the fail-open floor); `freed_seq`
-/// is a future inotify latency optimization. Fail-open: an unreadable/held mirror fires no one (waiters
-/// time out to self-retry), and the watcher NEVER calls the lease daemon — it only READS the mirror the
-/// daemon publishes (the decoupling seam: a queue bug can't reach the SIGKILL path).
+/// and offer each a turn — fire its `Notify` (so its `WaitTurn` returns and it races `Acquire`), then give
+/// it an EXCLUSIVE grace window (`NOMINATION_GRACE`) to win before offering the next waiter. Only ONE
+/// nominee is in flight at a time (resource-safety review [Medium]): that makes `(effective rank, seq)`
+/// authoritative — two QUEUED waiters can't race each other into a priority inversion the way the old
+/// fixed-300ms dwell allowed. STOPS as soon as one wins (lease becomes held). Walking the whole order
+/// (not just re-firing the head) means a stuck/slow/denied head can't starve the tail (review MAJOR-1):
+/// the head gets the first exclusive shot every episode, but if it can't take the lease within its grace
+/// the next waiter is offered one. Poll-only (the fail-open floor); `freed_seq` is a future inotify
+/// latency optimization. Fail-open: an unreadable/held mirror fires no one (waiters time out to
+/// self-retry), and the watcher NEVER calls the lease daemon — it only READS the mirror the daemon
+/// publishes (the decoupling seam: a queue bug can't reach the SIGKILL path).
 async fn watch_and_nominate(state: Arc<Mutex<QueueState>>) {
     // ADR-0041/0012: publish the queue depth to `queue.json` for the keyhole — on CHANGE, off the lock,
     // each tick (250ms granularity is ample for a 2s-polling tray). Decoupled, fail-open: a write hiccup
@@ -387,8 +468,11 @@ async fn watch_and_nominate(state: Arc<Mutex<QueueState>>) {
     let mut last_published: (usize, Option<Tier>) = (usize::MAX, None);
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
+        // One `now` per iteration so the keyhole's published next-tier and the actually-nominated head are
+        // aged against the SAME instant (no quantum-boundary skew between the snapshot and the walk).
+        let now = monotonic_ms();
         if let Some(qp) = &qpath {
-            let snap = lock_recover(&state).q.snapshot();
+            let snap = lock_recover(&state).q.snapshot(now);
             if snap != last_published {
                 write_queue_mirror(qp, snap.0, snap.1);
                 last_published = snap;
@@ -397,19 +481,26 @@ async fn watch_and_nominate(state: Arc<Mutex<QueueState>>) {
         if !lease_is_free() {
             continue; // held / unreadable → fire no one (never wake blind)
         }
-        // A free episode: snapshot the nomination order once, then offer each waiter a turn in priority
-        // order until one wins (the lease flips to held) or everyone has been offered this episode.
+        // A free episode: snapshot the nomination order (aged against one `now`), then offer each waiter a
+        // turn in priority order — ONE nominee in flight at a time. Each nominee gets an EXCLUSIVE grace
+        // window to win the lease before the next is offered, so two queued waiters never race each other.
         let order: Vec<Ticket> =
-            lock_recover(&state).q.ordered().into_iter().map(|(t, _)| t).collect();
+            lock_recover(&state).q.ordered(now).into_iter().map(|(t, _)| t).collect();
         for ticket in order {
             if !lease_is_free() {
                 break; // someone won the lease → stop offering turns this episode
             }
             // Fetch the notifier under a fresh poison-safe lock; if the waiter already left, skip it.
-            let notify = lock_recover(&state).notifiers.get(&ticket).cloned();
-            if let Some(n) = notify {
-                n.notify_one(); // idempotent: stores a permit if the waiter hasn't parked yet (no lost wakeup)
-                tokio::time::sleep(NOMINATE_DWELL).await; // head start for the higher-priority waiter
+            let Some(n) = lock_recover(&state).notifiers.get(&ticket).cloned() else { continue };
+            n.notify_one(); // idempotent: stores a permit if the waiter hasn't parked yet (no lost wakeup)
+            // EXCLUSIVE shot: wait until this nominee takes the lease (held) or its grace elapses — never
+            // fire the next waiter while this one is still racing `Acquire` (the inversion fix).
+            let deadline = Instant::now() + NOMINATION_GRACE;
+            while Instant::now() < deadline {
+                tokio::time::sleep(NOMINATION_POLL).await;
+                if !lease_is_free() {
+                    break; // nominee (or a direct higher-tier Acquire) took it → end this nominee's turn
+                }
             }
         }
     }
@@ -472,6 +563,19 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
     tokio::spawn(watch_and_nominate(Arc::clone(&state)));
+    // Aging needs a wait window longer than one promotion quantum, else a waiter times out before it can be
+    // promoted and anti-starvation aging is silently inert (ADR-0041 §2; review: aging-defeated-by-short-
+    // wait-timeout). Warn loudly rather than fail — the queue still works, just FIFO-by-tier under this config.
+    if (wait_turn_timeout().as_millis() as u64) <= AGE_PROMOTE_QUANTUM_MS {
+        eprintln!(
+            "agentosd queue — WARNING: AGENTOSD_QUEUE_WAIT_SECS ({:?}) <= age-promote quantum ({}ms) → a \
+             waiter times out before it can be age-promoted, so anti-starvation aging is effectively disabled. \
+             Raise the wait timeout above {}s to enable aging (ADR-0041 §2).",
+            wait_turn_timeout(),
+            AGE_PROMOTE_QUANTUM_MS,
+            AGE_PROMOTE_QUANTUM_MS / 1000,
+        );
+    }
     println!("agentosd queue — VRAM-demand arbiter serving {BUS_NAME} (ADR-0041 Layer 1)");
     println!("  wait (trusted): busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} WaitTurn su batch 8000  → (b,s) turn,reason");
     println!("  wait (agent)  : busctl --user call {BUS_NAME} {OBJ_PATH} {BUS_NAME} WaitTurnAgent su interactive 8000  (clamps to batch)");
@@ -492,10 +596,10 @@ mod tests {
         let mut q = WaitQueue::new();
         let tickets: Vec<Ticket> = entries
             .iter()
-            .map(|(tier, est, conn)| q.enqueue(*tier, *est, conn.to_string()).unwrap())
+            .map(|(tier, est, conn)| q.enqueue(*tier, *est, conn.to_string(), 0).unwrap())
             .collect();
         let mut order = Vec::new();
-        while let Some((t, _)) = q.select_next() {
+        while let Some((t, _)) = q.select_next(0) {
             order.push(tickets.iter().position(|x| *x == t).unwrap());
             assert!(q.remove(t), "select_next returned a ticket remove couldn't find");
         }
@@ -527,25 +631,37 @@ mod tests {
         // The watcher walks `ordered()` to offer each waiter a turn; it must be the SAME (tier desc,
         // seq asc) order as `select_next`, just the whole list — and its head must equal select_next.
         let mut q = WaitQueue::new();
-        let t_batch0 = q.enqueue(Tier::Batch, 1, "a".into()).unwrap();
-        let _be = q.enqueue(Tier::BestEffort, 1, "b".into()).unwrap();
-        let t_batch1 = q.enqueue(Tier::Batch, 1, "c".into()).unwrap();
-        let t_inter = q.enqueue(Tier::Interactive, 1, "d".into()).unwrap();
-        let order: Vec<Ticket> = q.ordered().into_iter().map(|(t, _)| t).collect();
+        let t_batch0 = q.enqueue(Tier::Batch, 1, "a".into(), 0).unwrap();
+        let _be = q.enqueue(Tier::BestEffort, 1, "b".into(), 0).unwrap();
+        let t_batch1 = q.enqueue(Tier::Batch, 1, "c".into(), 0).unwrap();
+        let t_inter = q.enqueue(Tier::Interactive, 1, "d".into(), 0).unwrap();
+        let order: Vec<Ticket> = q.ordered(0).into_iter().map(|(t, _)| t).collect();
         // Interactive, then the two Batch in FIFO (batch0 before batch1), then BestEffort.
         assert_eq!(order, vec![t_inter, t_batch0, t_batch1, _be]);
-        assert_eq!(q.ordered().first().map(|(t, _)| *t), q.select_next().map(|(t, _)| t));
-        assert_eq!(q.ordered().len(), 4);
+        assert_eq!(q.ordered(0).first().map(|(t, _)| *t), q.select_next(0).map(|(t, _)| t));
+        assert_eq!(q.ordered(0).len(), 4);
+    }
+
+    #[test]
+    fn tier_rank_matches_tier_ord() {
+        // tier_rank is a hand-maintained second copy of Tier's declaration order — pin it to Tier's Ord so
+        // a future tier reorder can't silently desync the aging arithmetic from arbitration.
+        let ladder = [Tier::Yielding, Tier::BestEffort, Tier::Batch, Tier::Interactive];
+        for pair in ladder.windows(2) {
+            assert!(pair[0] < pair[1], "Tier Ord must be ascending in declaration order");
+            assert!(tier_rank(pair[0]) < tier_rank(pair[1]), "tier_rank must be monotonic with Tier Ord");
+        }
+        assert_eq!(tier_rank(Tier::Interactive), 3, "Interactive is the top rank the aging cap stays below");
     }
 
     #[test]
     fn snapshot_reports_depth_and_next_tier_no_leak() {
         // The keyhole mirror datum: a COUNT + the highest waiting tier, never a waiter's identity.
         let mut q = WaitQueue::new();
-        assert_eq!(q.snapshot(), (0, None), "empty → no depth, no next-tier");
-        q.enqueue(Tier::BestEffort, 1, "a".into()).unwrap();
-        q.enqueue(Tier::Batch, 999, "b".into()).unwrap(); // higher tier ⇒ served next
-        assert_eq!(q.snapshot(), (2, Some(Tier::Batch)), "depth=2, next-tier=batch (highest)");
+        assert_eq!(q.snapshot(0), (0, None), "empty → no depth, no next-tier");
+        q.enqueue(Tier::BestEffort, 1, "a".into(), 0).unwrap();
+        q.enqueue(Tier::Batch, 999, "b".into(), 0).unwrap(); // higher tier ⇒ served next
+        assert_eq!(q.snapshot(0), (2, Some(Tier::Batch)), "depth=2, next-tier=batch (highest)");
     }
 
     #[test]
@@ -567,20 +683,68 @@ mod tests {
     }
 
     #[test]
+    fn age_promotes_a_starved_lower_tier_but_never_above_interactive() {
+        // ADR-0041 §2 bounded aging (resource-safety review [Medium]). A BestEffort waiter and a Batch
+        // waiter, both parked at t=0: strict tier order serves Batch first, but once BestEffort has aged a
+        // full quantum it is promoted into the Batch BAND and — being the earlier arrival (smaller seq) —
+        // is nominated FIRST. That's the starvation escape hatch (Batch is near-continuous in this product).
+        let mut q = WaitQueue::new();
+        let be = q.enqueue(Tier::BestEffort, 1, "a".into(), 0).unwrap();
+        let batch = q.enqueue(Tier::Batch, 1, "b".into(), 0).unwrap();
+
+        // Fresh (now == enqueue time): no aging → strict tier order, Batch outranks BestEffort.
+        assert_eq!(
+            q.select_next(0).map(|(t, _)| t),
+            Some(batch),
+            "no aging yet → Batch outranks BestEffort"
+        );
+        // BOUNDARY: one tick before a full quantum is still NOT a promotion (quantized division floors).
+        assert_eq!(
+            q.select_next(AGE_PROMOTE_QUANTUM_MS - 1).map(|(t, _)| t),
+            Some(batch),
+            "sub-quantum wait must NOT promote (quantization floor)"
+        );
+
+        // After a full quantum the BestEffort waiter reaches the Batch band; FIFO (earlier seq) then puts
+        // it AHEAD of the later-seq Batch waiter.
+        let aged = AGE_PROMOTE_QUANTUM_MS;
+        assert_eq!(
+            q.ordered(aged).into_iter().map(|(t, _)| t).collect::<Vec<_>>(),
+            vec![be, batch],
+            "an aged best-effort reaches the batch band and wins on FIFO"
+        );
+        // CROSS-SELECTOR AGREEMENT at the same aged `now`: select_next == ordered().first, and snapshot's
+        // next-tier is the HEAD's honest BASE tier (best-effort, even though it's promoted to the batch band).
+        assert_eq!(q.select_next(aged).map(|(t, _)| t), q.ordered(aged).first().map(|(t, _)| *t));
+        assert_eq!(q.select_next(aged).map(|(t, _)| t), Some(be));
+        assert_eq!(q.snapshot(aged), (2, Some(Tier::BestEffort)), "snapshot reports the head's BASE tier honestly");
+
+        // CAP: aging never reaches Interactive. Even after an absurd wait, a later-arriving Interactive
+        // waiter still outranks the aged best-effort — a queued job can't seize the desktop/live-human GPU.
+        let inter = q.enqueue(Tier::Interactive, 1, "c".into(), aged).unwrap();
+        let far_future = AGE_PROMOTE_QUANTUM_MS * 1_000;
+        assert_eq!(
+            q.select_next(far_future).map(|(t, _)| t),
+            Some(inter),
+            "age never promotes a waiter to Interactive — that tier is unreachable by aging"
+        );
+    }
+
+    #[test]
     fn caps_reject_newest_globally_and_per_connection() {
         // Per-connection cap: a single connection can hold at most max_per_conn slots; the next is
         // refused (fairness), but a DIFFERENT connection still gets in.
         let mut q = WaitQueue::with_caps(16, 2);
-        assert!(q.enqueue(Tier::Batch, 1, "c1".into()).is_ok());
-        assert!(q.enqueue(Tier::Batch, 1, "c1".into()).is_ok());
-        assert_eq!(q.enqueue(Tier::Batch, 1, "c1".into()), Err(EnqueueError::PerConnLimit));
-        assert!(q.enqueue(Tier::Batch, 1, "c2".into()).is_ok(), "a different conn is unaffected");
+        assert!(q.enqueue(Tier::Batch, 1, "c1".into(), 0).is_ok());
+        assert!(q.enqueue(Tier::Batch, 1, "c1".into(), 0).is_ok());
+        assert_eq!(q.enqueue(Tier::Batch, 1, "c1".into(), 0), Err(EnqueueError::PerConnLimit));
+        assert!(q.enqueue(Tier::Batch, 1, "c2".into(), 0).is_ok(), "a different conn is unaffected");
 
         // Global cap: reject-NEWEST at the ceiling (never evict an already-waiting peer).
         let mut q = WaitQueue::with_caps(2, 16);
-        let first = q.enqueue(Tier::Batch, 1, "a".into()).unwrap();
-        assert!(q.enqueue(Tier::Batch, 1, "b".into()).is_ok());
-        assert_eq!(q.enqueue(Tier::Batch, 1, "c".into()), Err(EnqueueError::QueueFull));
+        let first = q.enqueue(Tier::Batch, 1, "a".into(), 0).unwrap();
+        assert!(q.enqueue(Tier::Batch, 1, "b".into(), 0).is_ok());
+        assert_eq!(q.enqueue(Tier::Batch, 1, "c".into(), 0), Err(EnqueueError::QueueFull));
         assert_eq!(q.len(), 2);
         assert!(q.remove(first), "the first waiter is still parked (newest was rejected, not it)");
     }
@@ -588,7 +752,7 @@ mod tests {
     #[test]
     fn cancel_is_identity_bound_to_the_enqueuing_connection() {
         let mut q = WaitQueue::new();
-        let mine = q.enqueue(Tier::Batch, 1, ":1.owner".into()).unwrap();
+        let mine = q.enqueue(Tier::Batch, 1, ":1.owner".into(), 0).unwrap();
         // A foreign connection cannot cancel my waiter...
         assert!(!q.cancel(mine, ":1.attacker"), "a foreign conn must not cancel another's waiter");
         assert_eq!(q.len(), 1);
@@ -602,28 +766,35 @@ mod tests {
     #[test]
     fn drop_conn_reclaims_only_a_disconnected_peers_waiters() {
         let mut q = WaitQueue::new();
-        q.enqueue(Tier::Batch, 1, ":1.gone".into()).unwrap();
-        q.enqueue(Tier::Batch, 1, ":1.gone".into()).unwrap();
-        let kept = q.enqueue(Tier::Batch, 1, ":1.live".into()).unwrap();
+        q.enqueue(Tier::Batch, 1, ":1.gone".into(), 0).unwrap();
+        q.enqueue(Tier::Batch, 1, ":1.gone".into(), 0).unwrap();
+        let kept = q.enqueue(Tier::Batch, 1, ":1.live".into(), 0).unwrap();
         assert_eq!(q.drop_conn(":1.gone"), 2, "both of the gone peer's waiters are reclaimed");
         assert_eq!(q.len(), 1);
-        assert_eq!(q.select_next().map(|(t, _)| t), Some(kept), "the live peer's waiter remains");
+        assert_eq!(q.select_next(0).map(|(t, _)| t), Some(kept), "the live peer's waiter remains");
         assert_eq!(q.drop_conn(":1.nobody"), 0, "dropping an unknown conn is a no-op");
     }
 
     #[test]
     fn position_is_a_count_ahead_and_carries_no_identity() {
         let mut q = WaitQueue::new();
-        let t_batch_0 = q.enqueue(Tier::Batch, 1, "a".into()).unwrap();
-        let t_be = q.enqueue(Tier::BestEffort, 1, "b".into()).unwrap();
-        let t_batch_1 = q.enqueue(Tier::Batch, 1, "c".into()).unwrap();
-        let t_inter = q.enqueue(Tier::Interactive, 1, "d".into()).unwrap();
-        // Nomination order is Interactive(0 ahead), Batch#0(1), Batch#1(2), BestEffort(3).
-        assert_eq!(q.position_of(t_inter), Some(0));
-        assert_eq!(q.position_of(t_batch_0), Some(1));
-        assert_eq!(q.position_of(t_batch_1), Some(2));
-        assert_eq!(q.position_of(t_be), Some(3));
-        assert_eq!(q.position_of(Ticket(99_999)), None, "an unknown ticket has no position");
+        let t_batch_0 = q.enqueue(Tier::Batch, 1, "a".into(), 0).unwrap();
+        let t_be = q.enqueue(Tier::BestEffort, 1, "b".into(), 0).unwrap();
+        let t_batch_1 = q.enqueue(Tier::Batch, 1, "c".into(), 0).unwrap();
+        let t_inter = q.enqueue(Tier::Interactive, 1, "d".into(), 0).unwrap();
+        // Nomination order is Interactive(0 ahead), Batch#0(1), Batch#1(2), BestEffort(3) at now=0.
+        assert_eq!(q.position_of(t_inter, 0), Some(0));
+        assert_eq!(q.position_of(t_batch_0, 0), Some(1));
+        assert_eq!(q.position_of(t_batch_1, 0), Some(2));
+        assert_eq!(q.position_of(t_be, 0), Some(3));
+        assert_eq!(q.position_of(Ticket(99_999), 0), None, "an unknown ticket has no position");
+        // CONSISTENCY UNDER AGING: position_of must agree with ordered()'s index at the SAME now, even once a
+        // lower tier is age-promoted (regression guard — position_of and ordered must not diverge).
+        let aged = AGE_PROMOTE_QUANTUM_MS;
+        let order: Vec<Ticket> = q.ordered(aged).into_iter().map(|(t, _)| t).collect();
+        for (idx, t) in order.iter().enumerate() {
+            assert_eq!(q.position_of(*t, aged), Some(idx), "position_of must match ordered() index at the same now");
+        }
         // No-leak is structural: position_of returns a usize — there is no field through which another
         // caller's identity/est could be returned.
     }
@@ -632,9 +803,9 @@ mod tests {
     fn empty_and_remove_semantics() {
         let mut q = WaitQueue::new();
         assert!(q.is_empty());
-        assert_eq!(q.select_next(), None);
-        let t = q.enqueue(Tier::Batch, 7, "a".into()).unwrap();
-        assert_eq!(q.select_next(), Some((t, 7)), "select carries the waiter's est for the daemon admit");
+        assert_eq!(q.select_next(0), None);
+        let t = q.enqueue(Tier::Batch, 7, "a".into(), 0).unwrap();
+        assert_eq!(q.select_next(0), Some((t, 7)), "select carries the waiter's est for the daemon admit");
         assert!(q.remove(t));
         assert!(!q.remove(t), "removing an already-removed ticket is a harmless false");
         assert!(q.is_empty());
@@ -648,7 +819,7 @@ mod tests {
         // client cancel, or peer disconnect → zbus drops the method future), both the queue slot and
         // the per-ticket notifier are reclaimed — no orphan tickets, no separate disconnect sweep.
         let state = Arc::new(Mutex::new(QueueState::new()));
-        let ticket = state.lock().unwrap().q.enqueue(Tier::Batch, 1, ":1.caller".into()).unwrap();
+        let ticket = state.lock().unwrap().q.enqueue(Tier::Batch, 1, ":1.caller".into(), 0).unwrap();
         state.lock().unwrap().notifiers.insert(ticket, Arc::new(Notify::new()));
         assert_eq!(state.lock().unwrap().q.len(), 1);
         {

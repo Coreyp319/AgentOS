@@ -16,6 +16,27 @@
   process** — the safest realization of the user's steer (resource-safety scored it 9/10 vs 4/10
   for the in-daemon variant), and the one that protects the trust property that *is* the moat: a
   queue bug must never be able to freeze the desktop.
+- **Amendment (2026-06-28) — resource-safety hardening pass EXECUTED.** A fan-out state review found no
+  Accepted ADR awaiting execution, so we revisited the queueing strategy; a resource-safety lens surfaced
+  four issues, all now BUILT + tested (231 tests, clippy clean) in `crates/agentosd/src/{lease,queue}.rs`:
+  1. **§8 over-admit residual CLOSED.** A `Spawn` successor preempting a `Spawned` victim now confirm-frees
+     the victim BEFORE launching the child — the spawn is DEFERRED past the off-lock reclaim, then installs
+     under a re-taken lock (and aborts fail-safe if the lease was re-preempted meanwhile). This was the last
+     reachable path where the safety layer itself could OOM the desktop.
+  2. **A non-interactive WONT-FIT preempt now DENIES** instead of evict-then-OOM (`preempt_proceeds`): a
+     Batch/BestEffort preempt that won't fit even after eviction leaves the victim running. `Interactive`
+     stays fail-open (it must win; the gateway offloads).
+  3. **Nomination is now authoritative.** The watcher keeps ONE nominee in flight, giving the
+     highest-`(effective rank, seq)` head an EXCLUSIVE grace window before offering the next waiter, so two
+     queued waiters can no longer race each other into a priority inversion (the old fixed-300 ms dwell
+     could). Done WITHOUT coupling the daemon to arbiter state — the decoupling seam (the arbiter only reads
+     `lease.json`; the daemon never reads the arbiter) is preserved; a daemon-honored nomination token was
+     considered and REJECTED precisely because it would invert that dependency.
+  4. **Bounded age-promotion is ON** (§2's escape hatch), because the deferral premise — "higher-tier
+     demand is finite" — does NOT hold here: agents (≤Batch), dreams (Batch), and the overnight pipeline
+     (Batch) all feed Batch, so BestEffort previews would starve. One rank per `AGE_PROMOTE_QUANTUM_MS`,
+     quantized against a single `now`, capped strictly below `Interactive`, `seq` the final tiebreak.
+  Owed: on-box e2e on the 4090 (a real Spawn-preempts-Spawn overlap; a starvation/aging demo).
 - Date: 2026-06-22
 - Deciders: Corey (binding product steer — see Status), design synthesis from three architecture
   proposals + four critic lenses (resource-safety, determinism-safety, market-differentiation,
@@ -89,16 +110,18 @@ structurally, not by prose:** the arbiter's `Waiter` carries only `{tier, seq, e
 ordered caller field exists — and a test proves selection is invariant to `est_mib`/`conn` (the Rust
 analog of ADR-0019's `_FORBIDDEN_ORDER_KEYS` `SystemExit` guard).
 
-**v1 is strict tier + FIFO-by-seq; cross-tier anti-starvation aging is deferred (not built).** The
-two critics split: one proposed bounded wall-clock-age promotion across bands (capped below
-Interactive) to stop a low tier starving behind a stream of higher arrivals; determinism warned that
-cross-tier promotion edges toward intent and must stay quantized + single-snapshot if ever added.
-For a single-user box the simpler rule is correct: higher-tier demand is *finite* (your own overnight/
-agent jobs), so a lower tier drains as soon as the higher tier empties — true starvation needs an
-unbounded same-uid producer, which the per-connection + global caps already bound and which is
-self-inflicted. So v1 selects on `(tier desc, seq asc)` only; age is not a selection input. Bounded
-cross-tier promotion (quantized against a single `now` snapshot, intra-tier-then-band, never
-synthesizing Interactive) is the documented escape hatch, gated on *observing* real starvation.
+**Ordering is `(effective tier, seq)`: strict tier, FIFO-by-seq, plus bounded age-promotion (built
+2026-06-28 — see the amendment).** The two critics split: one proposed bounded wall-clock-age promotion
+across bands (capped below Interactive) to stop a low tier starving behind a stream of higher arrivals;
+determinism warned that cross-tier promotion edges toward intent and must stay quantized + single-snapshot.
+v1 shipped *without* aging on the premise that higher-tier demand is finite on a single-user box — but the
+resource-safety re-review showed that premise FAILS for this product: agents clamp to ≤Batch, dream
+generation is Batch, and the overnight pipeline is Batch, so `Batch` is near-continuous and a `BestEffort`
+preview starves behind it. So the documented escape hatch is now built exactly as fenced: one rank per
+`AGE_PROMOTE_QUANTUM_MS`, **quantized against a single `now` snapshot** (stable within a quantum,
+replayable), **intra-tier-then-band**, **capped strictly below `Interactive`** (aging never lets a queued
+job seize the desktop/live-human GPU), with `seq` the final tiebreak. Age is mechanism, never a caller knob
+— `selection_ignores_est_and_conn` still holds, and the only new input is monotonic wait time.
 
 ## 3. Decision — a layered architecture; the queue is a separate AgentOS process
 
@@ -208,10 +231,15 @@ per access (no select-then-relock race); `spawn = true` pinned explicitly; the t
 
 ## 6. Determinism + fail-open invariants (must hold by construction)
 
-- **Selection is a pure function of `(tier, seq)`** (v1) — `seq` is the total final tiebreak (never
-  container/task-wake order), so selection is deterministic and replayable from a log. (If cross-tier
-  aging is ever added it must quantize against a single `now` snapshot, never synthesize `Interactive`,
-  and keep `seq` the final tiebreak — see §2.)
+- **Selection is a pure function of `(effective rank, seq)`** — `effective rank` is the base tier plus
+  bounded age-promotion (2026-06-28), computed from a single injected `now` so the whole selection is still
+  deterministic and replayable from a log; `seq` is the total final tiebreak (never container/task-wake
+  order). Cross-tier aging quantizes against that single `now` snapshot, never synthesizes `Interactive`,
+  and keeps `seq` the final tiebreak — see §2.
+- **Nomination is authoritative, not a race** — the watcher keeps ONE nominee in flight per free episode
+  (an exclusive grace window before the next is offered), so the `(effective rank, seq)` head genuinely
+  wins rather than losing a sub-second dwell race to a lower-priority waiter. The daemon's `admit` is still
+  the sole disposer; the arbiter still never reads-back from the daemon beyond `lease.json` (decoupling).
 - **The arbiter never grants.** It nominates; the daemon's `admit` against live NVML is the sole
   disposer of grant/deny/preempt/kill. No model output reaches selection or admission.
 - **Every waiter has a hard deadline** (caller `timeout_ms`, daemon/arbiter clamped) — there is no
@@ -255,11 +283,59 @@ per access (no select-then-relock race); `spawn = true` pinned explicitly; the t
   it holds no destructive primitive and degrades to today's behavior on crash.
 - The daemon stays small and as-hardened as today; its only new code is the two Phase-0 fixes, both of
   which also fix latent bugs.
-- A known residual to revisit: a *Spawn* successor preempting a *Spawned* victim spawns its child
-  under the lock *before* the victim's reclaim confirms (the over-admit fix covers the cooperative/
-  adopt successor and the caller-then-allocates case — which is the entire arbiter path, since the
-  arbiter nominates only on a free lease — but not this narrower preempt-by-a-Spawn-successor case).
-  Tracked for a follow-up reorder (reclaim-confirm-then-spawn).
+- ~~A known residual to revisit: a *Spawn* successor preempting a *Spawned* victim spawns its child
+  under the lock *before* the victim's reclaim confirms.~~ **FIXED 2026-06-28** (see the amendment): the
+  preempt path now reclaim-confirms-then-spawns — the successor child is launched only after the victim's
+  VRAM is confirmed freed, and the launch aborts fail-safe if the lease was re-preempted during the reclaim.
+  This closes the last over-admit path the §5a/§8 fixes hadn't yet covered.
+
+## 8b. Post-hardening adversarial review (2026-06-28)
+
+The hardening pass was put through a multi-lens adversarial review (over-admit reorder, WONT-FIT deny,
+async/race, determinism+aging+decoupling, test-adequacy), each finding independently verified
+(real-vs-refuted, introduced-here-vs-pre-existing) plus a completeness critic — 30 findings, 24 confirmed,
+1 must-fix. The confirmed-safe results worth recording: the deferred-spawn **held-but-ownerless window**
+(lease installed, `inner.owned == None` for the ≤~3.15 s reclaim) is **safe** — supervise step-1 no-ops on
+`owned==None`, B4 can't fire (`holder_peer=None` for Spawn), B5 TTL can't fire (≥90 s ≫ window), and the
+wallpaper-restore stays suppressed (`holder_tier()` is `Some`).
+
+**Also fixed in this pass (review-driven):** the must-fix — GPU-free `#[tokio::test]`s for the reorder
+(reclaim-then-install happy path + spawn-fail rollback, seeding a real `Spawned` victim);
+**`Spawn` clamped to ≤Batch** in the `spawn` verb (mirroring `adopt_scope` — an owned child can't CPU-offload,
+so the Interactive fail-open exemption must not reach it); an honest **"VRAM unreadable, fails closed"**
+deny message (no fabricated `short 0M`); **`position_of` made aging-aware** (no divergence from
+`select_next`/`ordered`); one `now` read per watcher iteration; a `tier_rank`↔`Tier::Ord` consistency test;
+a lazy `mirror_snap` on the spawn path; and a **startup warning when `AGENTOSD_QUEUE_WAIT_SECS` ≤ the
+age-promote quantum** (aging would otherwise be silently inert). 234 tests, clippy clean.
+
+**Documented follow-ups (not commit-blocking; all Low/nit, mostly pre-existing):**
+- **The deny predicate inherits the undercount/offload blindspot.** `fits_after_evict` predicts post-evict
+  free from the victim's *admitted estimate* (`holder_est`), not its actual resident VRAM; a `prev_est >
+  actual-freed` skew could authorize a kill whose successor still won't fit. Bounded (reclaimable only for
+  owned Spawn/Scope, which don't CPU-offload like Ollama; cooperative victims contribute 0) and strictly
+  better than the pre-change no-fit-check preempt — but the predicate would be more honest reading resident
+  VRAM. Revisit if per-process attribution lands (ADR-0048 Phase 3).
+- **Aging tracks per-`WaitTurn` parked time, not total wait** — each re-enqueue restamps `enqueued_at_ms`, so
+  a waiter that times out + re-parks restarts its age. At the default 30 s timeout a genuinely-starving
+  waiter (blocked in one `WaitTurn`) still promotes at 20 s; the deeper cure is a per-conn first-seen stamp
+  carried across re-enqueues (or a `waiting_since` token). The startup warning covers the sub-quantum-timeout
+  footgun in the meantime.
+- **Worst-case free-episode nomination walk ~12 s** (16 waiters × 750 ms grace) when *nothing* is admittable;
+  during it the `queue.json` depth isn't republished and a mid-walk higher-tier arrival waits for the next
+  episode. Common case is *more* responsive than the old 300 ms dwell (≤50 ms early break). Follow-up: cap
+  the episode, publish depth inside the walk, re-snapshot `ordered(now)` when a grace window expires.
+- **Spawn-fail rollback diverges from the other two release paths** (writes `Lease::default()`, doesn't bump
+  `freed_seq`, leaves `holder_deadline`/`ttl`/`last_preempt` stale). Inert today (the arbiter reads `tier`,
+  not `freed_seq`); route all three releases through one helper before any `freed_seq`-consuming arbiter —
+  reversibility-tx-reviewer's lane.
+- **`spawn_owned` runs a synchronous fork/exec under the tokio `Inner` lock** (pre-existing; the reorder made
+  the window *shorter*). Move to `spawn_blocking` if exec latency ever bites. Same change widened the H3
+  check-to-spawn TOCTOU window (a binary valid at pre-flight but deleted during the ~3 s reclaim → kill-for-
+  nothing rollback) — bounded, rare.
+- **Temporal ordering of the reorder** (child launched strictly *after* the victim's VRAM frees) is asserted
+  by the owed **on-box e2e**, not the unit tests (which guard the path's outcome + rollback): successor PID
+  start-time after the "post-evict free Δ reclaimed" log; no successor CUDA-OOM; `lease.json` never shows
+  victim+successor co-resident; a concurrent Interactive Acquire during reclaim leaves zero orphans.
 
 ## 9. Alternatives considered (the three proposals, ranked by the panel)
 
