@@ -104,8 +104,8 @@ Item {
                 aurora: full.glyphAurora
                 busy:  full.model ? full.model.busy : 0
                 snag:  full.model ? full.model.snag : 0
+                music: full.model ? full.model.music : 0
                 energy: full.model ? full.model.auroraEnergyFor(full.model.effectiveState, full.model.busy) : 0.95
-                dawnPalette: full.model ? full.model.auroraPalette : undefined
                 ringIntensity: full.model ? full.model.ringIntensityFor(full.model.effectiveState, full.model.busy) : 0
                 breathing: full.model ? full.model.breathingFor(full.model.effectiveState) : false
                 reducedMotion: full.reducedMotion

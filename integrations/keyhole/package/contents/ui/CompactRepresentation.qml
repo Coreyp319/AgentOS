@@ -49,12 +49,13 @@ Item {
         glyph: compact.model ? compact.model.glyphFor(compact.model.effectiveState) : "—"
         glyphColor: "#ECEFF6"     // always a light ink; state is carried by shape + aurora mood (a11y)
         hovered: clickArea.containsMouse
-        // the porthole shares the wallpaper palette + the same live floats, so the
-        // keyhole and the nimbus-aurora wallpaper move together.
-        dawnPalette: compact.model ? compact.model.auroraPalette : undefined
+        // the porthole corona wears the active wallpaper ramp (via the skin) + the same
+        // live floats, so the glyph matches the wallpaper theme and moves with the desktop.
+        themeStops: compact.skin.portholeStops
         busy:  compact.model ? compact.model.busy : 0
         warm:  compact.model ? compact.model.warmFor(compact.model.effectiveState, compact.model.warm) : 0
         snag:  compact.model ? compact.model.snag : 0
+        music: compact.model ? compact.model.music : 0
         unknownState: (compact.model ? compact.model.effectiveState : "unknown") === "unknown"
         energy: compact.model ? compact.model.auroraEnergyFor(compact.model.effectiveState, compact.model.busy) : 0.95
         bloom:  compact.model ? compact.model.ringIntensityFor(compact.model.effectiveState, compact.model.busy) : 0.0

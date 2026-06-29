@@ -75,11 +75,95 @@ PlasmoidItem {
             }
         })
     }
+
+    // --- wallpaper palette: the porthole wears the active nimbus-aurora theme ---------
+    // ~/.config/plasma-org.kde.plasma.desktop-appletsrc, resolved like _kdeglobals.
+    readonly property string _appletsrc:
+        StandardPaths.writableLocation(StandardPaths.GenericConfigLocation).toString()
+            .replace(/^file:\/\//, "") + "/plasma-org.kde.plasma.desktop-appletsrc"
+    // The 5 stops (dark→bright) each wallpaper Theme applies — ported verbatim from the
+    // wallpaper's config.qml themePalettes so the porthole matches what it paints. Index
+    // 9 (Custom) is filled live from the config's Color0..4; 0..8 are the presets.
+    readonly property var _themePalettes: [
+        ["#0d0f29","#1c2e73","#4552b8","#8f5cb8","#fa8c73"], // 0 Big Sur
+        ["#0a1733","#126185","#3385c7","#9e70bd","#f5a8b8"], // 1 Monterey
+        ["#12141a","#292e38","#525966","#8c94a3","#d1d9e6"], // 2 Graphite
+        ["#1a0d2e","#591a4d","#b83861","#f27347","#ffcc73"], // 3 Sunset
+        ["#2e3340","#3b4252","#5e82ab","#87bfd1","#d9dee8"], // 4 Nord
+        ["#120a1f","#29144d","#8c29b3","#f259bd","#38e6eb"], // 5 Laserwave
+        ["#1f1238","#613d8f","#bd6bf2","#ff73cc","#66e0fa"], // 6 Vaporwave
+        ["#05050d","#0a243d","#0094c2","#ff298f","#faeb33"], // 7 Cyberpunk
+        ["#0d0529","#330f66","#d9268c","#ff6b4d","#ffdb4d"]  // 8 Outrun
+    ]
+    // Read the first nimbus-aurora wallpaper group from the appletsrc (same INI-cat path
+    // as the colour scheme — no kreadconfig6) and hand the porthole its 5 stops. A preset
+    // Theme uses the table; Theme 9 (Custom) uses the group's own Color0..4.
+    function readWallpaper() {
+        fileReader.read(root._appletsrc, function(txt) {
+            var lines = String(txt).split("\n")
+            var inGrp = false, found = false, theme = 0, mreact = 0.30
+            var custom = ["#0d0f29","#1c2e73","#4552b8","#8f5cb8","#fa8c73"]  // Color0..4 defaults
+            for (var i = 0; i < lines.length; i++) {
+                var ln = lines[i].trim()
+                if (ln.length === 0) continue
+                if (ln.charAt(0) === "[") {
+                    if (inGrp) break   // reached the end of the group; stop
+                    inGrp = /\[Wallpaper\]\[com\.nimbus\.aurora\]\[General\]$/.test(ln)
+                    if (inGrp) found = true
+                    continue
+                }
+                if (!inGrp) continue
+                var eq = ln.indexOf("="); if (eq < 0) continue
+                var key = ln.substring(0, eq).trim(), val = ln.substring(eq + 1).trim()
+                if (key === "Theme") { var t = parseInt(val); if (!isNaN(t)) theme = t }
+                else if (key === "MusicReact") { var m = parseFloat(val); if (!isNaN(m)) mreact = m }
+                else if (key.length === 6 && key.substring(0, 5) === "Color") {
+                    var idx = parseInt(key.charAt(5))
+                    if (!isNaN(idx) && idx >= 0 && idx <= 4) custom[idx] = val
+                }
+            }
+            if (!found) { root.musicReact = 0.0; return }  // no aurora wallpaper → no shimmer
+            instSkin.portholeStops = (theme === 9) ? custom
+                : (theme >= 0 && theme < root._themePalettes.length) ? root._themePalettes[theme]
+                : root._themePalettes[0]
+            root.musicReact = mreact
+        })
+    }
+
+    // --- music shimmer: the porthole borrows the wallpaper's audio bridge -------------
+    // The SAME audio.json the wallpaper reads (pw-cat→FFT systemd service), in the runtime
+    // dir beside keyhole.json. We take level+beat (NOT the 32-bin spectrum — too busy at
+    // icon scale), gate by the wallpaper's MusicReact, and hand the porthole ONE pre-gated
+    // shimmer scalar. Polled adaptively: brisk while sound is present, lazy when silent.
+    property real musicReact: 0.30
+    property bool _audioHot: false
+    readonly property string _audioPath:
+        StandardPaths.writableLocation(StandardPaths.RuntimeLocation).toString()
+            .replace(/^file:\/\//, "") + "/nimbus-aurora/audio.json"
+    function pollAudio() {
+        if (model.reducedMotion || root.musicReact <= 0.0) { model.music = 0; root._audioHot = false; return }
+        fileReader.read(root._audioPath, function(txt) {
+            if (!txt || txt.length === 0) { model.music = 0; root._audioHot = false; return }
+            var lvl = 0, beat = 0
+            try { var d = JSON.parse(txt); lvl = +d.level || 0; beat = +d.beat || 0 } catch (e) { return }
+            var gate = Math.min(1.0, root.musicReact * 3.0)      // 0.33+ → full; subtle below
+            model.music = gate * Math.min(1.5, lvl * 0.5 + beat * 1.0)
+            root._audioHot = (lvl > 0.02 || beat > 0.02)
+        })
+    }
+    // Brisk (~7Hz) while sound is present so kicks land; lazy (~1.4Hz) when silent so the
+    // tray instrument stays calm at rest. Stops entirely under reduced-motion / MusicReact 0.
+    Timer {
+        interval: root._audioHot ? 140 : 700
+        running: root.musicReact > 0.0 && !model.reducedMotion
+        repeat: true
+        onTriggered: root.pollAudio()
+    }
     // Re-read on a calm cadence so a toggle is picked up within a few seconds, plus
     // immediately at load and whenever the popup opens.
     Timer {
         interval: 3000; running: true; repeat: true; triggeredOnStart: true
-        onTriggered: root.readScheme()
+        onTriggered: { root.readScheme(); root.readWallpaper() }
     }
 
     KeyholeModel {
@@ -137,9 +221,9 @@ PlasmoidItem {
     // Prime the board ONCE at load so its rows (and thus the popup's measured height)
     // exist before the popup is first shown — otherwise the popup measures itself while
     // the board is still empty, locks in a short height, and clips when data arrives.
-    Component.onCompleted: { services.poll(); readScheme() }
+    Component.onCompleted: { services.poll(); readScheme(); readWallpaper() }
     // Reopening fetches fresh immediately (don't wait for the first interval).
-    onExpandedChanged: if (root.expanded) { services.poll(); readScheme() }
+    onExpandedChanged: if (root.expanded) { services.poll(); readScheme(); readWallpaper() }
 
     // --- Tray idle-vanish: byte-identical-to-baseline at true idle ----------
     Plasmoid.status: {

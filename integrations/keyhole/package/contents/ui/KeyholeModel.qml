@@ -116,6 +116,9 @@ Item {
     // stops, sky→base) overrides the default ramp when the host samples a static-image
     // wallpaper; null → the nimbus-aurora ramp (which matches the com.nimbus.aurora shader).
     property var wallpaperPalette: null
+    // SECONDARY music-shimmer level for the porthole (level+beat, pre-gated by the
+    // wallpaper's MusicReact). main.qml polls audio.json and sets it; 0 when silent/off.
+    property real music: 0.0
     readonly property var auroraPalette: (wallpaperPalette && wallpaperPalette.length === 5)
         ? wallpaperPalette
         : [ Qt.rgba(0.05,0.06,0.13,1), Qt.rgba(0.30,0.26,0.46,1), Qt.rgba(0.20,0.31,0.64,1),
