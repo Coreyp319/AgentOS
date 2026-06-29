@@ -33,6 +33,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import setup  # noqa: E402
 import policy  # noqa: E402  — ADR-0049 family/safety gate (shared with setup.py)
+import agent_targets  # noqa: E402  — ADR-0049 Phase 2 Hermes adapter (propose() is read-only/dry-run)
 
 WIZARD = HERE / "wizard.html"
 ASSETS = HERE / "assets"                         # preview thumbnails for the Desktop section (/img/<name>)
@@ -566,6 +567,20 @@ class Handler(BaseHTTPRequestHandler):
                 return
             res = setup.revert_action(str(self._body().get("id", "")).strip())
             self._json(200 if res.get("ok") else 409, res)
+        elif path == "/api/hermes_propose":          # ADR-0049 Phase 2 (DRY RUN): preview a default change
+            if not self._guard():                    # writes NOTHING — diff + a static fit estimate only.
+                return
+            ref = str(self._body().get("ref", "")).strip()
+            if not ref:
+                self._json(400, {"error": "no ref"})
+                return
+            ok, why = setup.permits_ref(setup.load_registry(), ref)   # denied/blocked refs are flagged, not previewed as live
+            a = agent_targets.HermesAdapter()
+            prop = a.propose(ref)
+            prop["fit"] = a.estimate_fit(ref)
+            prop["permitted"] = ok
+            prop["permit_reason"] = why
+            self._json(200, prop)
         else:
             self._send(404, b"not found", "text/plain")
 
