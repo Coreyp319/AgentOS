@@ -71,7 +71,8 @@
 
   /* ── card + numbered step head ── */
   .card{background:var(--glass);border:1px solid var(--line);border-radius:var(--radius);
-    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);padding:18px;margin-top:14px}
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);padding:18px;margin-top:14px;
+    box-shadow:0 14px 38px -30px rgba(0,0,0,.7)}
   .shead{display:flex;align-items:baseline;gap:11px;margin-bottom:12px}
   .shead .no{font-family:var(--mono);font-size:.74rem;font-variant-numeric:tabular-nums;letter-spacing:.14em;color:var(--faint);flex:none}
   .shead h2{font-family:var(--display);font-size:1.12rem;font-weight:600;margin:0;letter-spacing:.2px}
@@ -213,7 +214,7 @@
 
   /* ── 04: extras disclosure ── */
   .optsec{margin-top:14px;background:color-mix(in srgb,var(--bg-1) 76%,transparent);border:1px solid var(--line);
-    border-radius:var(--radius);overflow:hidden}
+    border-radius:var(--radius);overflow:hidden;box-shadow:0 14px 38px -30px rgba(0,0,0,.7)}
   .optsec[open]{background:var(--glass)}
   .optsec > summary{cursor:pointer;list-style:none;display:flex;gap:13px;align-items:center;padding:15px 18px}
   .optsec > summary::-webkit-details-marker{display:none}
@@ -285,11 +286,27 @@
   .foot{color:var(--faint);font-size:.74rem;margin-top:30px;line-height:1.8}
   .foot .stored{color:var(--muted)} .foot .lnk{font-size:.72rem}
 
+  /* ── finish pass: cohesive interaction motion + earned glow (all auto-disabled under reduced-motion) ── */
+  .btn,.lnk,.ready-chip,.matoggle button,.optsec>summary,.door,.creds input,.creds select{
+    transition:background .16s ease,border-color .16s ease,color .16s ease,box-shadow .18s ease,transform .12s ease}
+  .btn:active:not(:disabled){transform:translateY(1px)}
+  .door:hover{border-color:var(--line-hi);transform:translateY(-1px);box-shadow:0 16px 34px -26px rgba(0,0,0,.7)}
+  /* the warm hue is reserved for the ready/done beat — so the final CTA earns a soft warm glow on hover */
+  .btn.warm:hover{box-shadow:0 0 20px -6px color-mix(in srgb,var(--warm) 50%,transparent)}
+  /* a calm "you landed here" cue when a section-jump scrolls into place (one-shot violet ring) */
+  .flash{position:relative}
+  .flash::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    box-shadow:0 0 0 2px var(--blue) inset;animation:land 1.15s ease both}
+  @keyframes land{0%{opacity:0}22%{opacity:.6}100%{opacity:0}}
+
   /* one calm first-paint stagger (idle is sacred — runs once, then stillness) */
   @keyframes rise{from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none}}
-  body.first .card{animation:rise .35s ease both}
+  body.first .card,body.first .optsec{animation:rise .35s ease both}
   body.first .card:nth-of-type(2){animation-delay:.04s}
   body.first .card:nth-of-type(3){animation-delay:.08s}
+  body.first .card:nth-of-type(4){animation-delay:.12s}
+  body.first .optsec{animation-delay:.16s}
+  body.first .card:nth-of-type(5){animation-delay:.20s}
 
   /* ── ACCESSIBILITY: reduced motion AND reduced transparency ── */
   @media (prefers-reduced-motion: reduce){
@@ -311,7 +328,7 @@
     .brow{flex-wrap:wrap} .brow .meta{flex:1 1 calc(100% - 46px)} .brow .act{align-items:flex-start;margin-left:46px}
     .drow{flex-wrap:wrap} .drow .meta{flex:1 1 100%}
     .creds .row{flex-wrap:wrap} .creds .row > div{flex:1 1 100%}
-    .handoff .right{min-width:0;flex:1 1 100%}
+    .handoff .doors{min-width:0;flex:1 1 100%}
     .expo li{flex-wrap:wrap} .expo .port{min-width:0}
   }
 </style>
@@ -372,18 +389,25 @@
 
   <!-- 03 — what to make -->
   <section class="card" aria-labelledby="h-make">
-    <div class="shead"><span class="no">03</span><h2 id="h-make">What do you want to make?</h2><span class="aside" id="laneCount"></span></div>
+    <div class="shead"><span class="no">03</span><h2 id="h-make">What do you want to make with AI?</h2><span class="aside" id="laneCount"></span></div>
     <p class="lede" style="margin-top:0">Start with text — it's quick and writes your prompts. Image &amp; video need the ComfyUI runtime — set it up under <b>Advanced setup</b> below.</p>
     <div id="bundles"><div class="brow"><div class="meta"><div class="dsc">checking what's installed…</div></div></div></div>
     <div id="progress" role="status" aria-live="polite" aria-atomic="false"></div>
     <div class="matoggle"><button id="matBtn" type="button" aria-expanded="false">Show the 18+ video lanes <span aria-hidden="true">›</span></button></div>
   </section>
 
-  <!-- 04 — extras -->
+  <!-- 04 — make it yours (desktop: wallpaper, look, ambient, agent wiring) -->
+  <section class="card" aria-labelledby="h-desktop">
+    <div class="shead"><span class="no">04</span><h2 id="h-desktop">Make it yours</h2><span class="aside">optional</span></div>
+    <p class="lede" style="margin-top:0">The live wallpaper, the Aurora look, ambient instruments &amp; agent wiring — including the GPU keyhole. Adopt what you want into your desktop session; remove any of it later.</p>
+    <div id="desktop"><div class="dsc" style="color:var(--muted);margin-top:10px">checking what's installed…</div></div>
+  </section>
+
+  <!-- 05 — advanced setup -->
   <details id="extras-sec" class="optsec">
     <summary>
       <span class="osi" aria-hidden="true"><svg class="gi"><use href="#i-key"/></svg></span>
-      <span class="ost"><span class="t">04 · Advanced setup</span><span class="d">Engine, models, accounts, desktop &amp; remote access — all optional</span></span>
+      <span class="ost"><span class="t">05 · Advanced setup</span><span class="d">Engine, models, accounts &amp; remote access — all optional</span></span>
       <span class="chev" id="echev" aria-hidden="true">show ▾</span>
     </summary>
     <div class="optbody">
@@ -439,10 +463,6 @@
         <div id="credMsg" role="status" aria-live="polite"></div>
       </div>
 
-      <h3 class="ssub">Desktop components</h3>
-      <p class="dsc" style="color:var(--muted);font-size:.8rem;margin:2px 0 0">Adopt the AgentOS look, ambient instruments &amp; agent wiring — including the GPU keyhole — into your desktop session.</p>
-      <div id="desktop"><div class="dsc" style="color:var(--muted);margin-top:10px">checking what's installed…</div></div>
-
       <h3 class="ssub">Remote access</h3>
       <p class="dsc" style="color:var(--muted);font-size:.8rem;margin:2px 0 8px">Reach these UIs from your phone over Tailscale — the wizard never runs anything here.</p>
       <div class="twarn">
@@ -482,7 +502,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
   <!-- 05 — the Lucid section: where you make a dream, and where it lives -->
   <section class="card handoff" aria-labelledby="h-ready">
     <div class="left">
-      <div class="shead" style="margin-bottom:6px"><span class="no">05</span><h2 id="h-ready">When you're ready</h2></div>
+      <div class="shead" style="margin-bottom:6px"><span class="no">06</span><h2 id="h-ready">When you're ready</h2></div>
       <p class="prompt" id="handoffPrompt">Your first dream is yours to write.</p>
       <div class="pcap" id="handoffCap"></div>
       <p class="flow">Make it in <b>Lucid</b> — it lands in your <b>Atrium</b>, where you can revisit and download it later.</p>
@@ -806,15 +826,15 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
       html=`<div class="khrow"><button class="btn" id="khAdd">Add the keyhole</button>
         <button class="btn ghost" id="khSkip">Not now</button></div>`;
     } else if(reachable && KH && KH.row){
-      html=`<div class="khrow"><button class="btn ghost" id="khJump" type="button">Set up in Extras ↓</button></div>`;
+      html=`<div class="khrow"><button class="btn ghost" id="khJump" type="button">Set it up below ↓</button></div>`;
     } else {
-      // FAIL-OPEN: panel down / keyhole not surfaced → calm pointer into Extras, never a dead button
-      html=`<p class="khskip">The desktop panel isn't reachable right now, so this can't switch on from here. <button class="lnk" id="khJump" type="button">Open Extras to set it up ↓</button></p>`;
+      // FAIL-OPEN: panel down / keyhole not surfaced → calm pointer to the Desktop section, never a dead button
+      html=`<p class="khskip">The desktop panel isn't reachable right now, so this can't switch on from here. <button class="lnk" id="khJump" type="button">Set it up below ↓</button></p>`;
     }
     if(html!==_khHTML){ _khHTML=html; el.innerHTML=html; }
   }
   document.getElementById("khState").addEventListener("click",async e=>{
-    if(e.target.id==="khJump"){ openExtras(); return; }
+    if(e.target.id==="khJump"){ openDesktop(); return; }
     if(e.target.id==="khSkip"){
       const el=document.getElementById("khState");
       el.innerHTML=`<p class="khskip">Skipped — add it any time. <button class="lnk" id="khAddBack" type="button">Add the keyhole</button></p>`;
@@ -1023,7 +1043,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
 
   // ── 04 extras: desktop adopt engine (proxy of :9123 /adopt) ──
   const DGROUPS=[
-    ["ambient","Ambient layer","Your desktop reflects the fleet — the wallpaper carries the mood, the keyhole tray the exact fact, your own window-drags the wind."],
+    ["ambient","Ambient layer","Your desktop reflects the fleet — a calm wallpaper carries the mood, and a window-drag sends a gust of wind rippling across it."],
     ["look","Look","Aurora — one violet accent across the shell, windows, and notifications."],
     ["agents","Agents","Wire Hermes to the GPU lease so live AI work yields the dream — and the desktop can fix a down service."],
     ["integrations","Integrations","Right-click niceties and notification plumbing."],
@@ -1038,6 +1058,12 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     "hermes-plugins":"Restarts the Hermes gateway.",
   };
   const LOOKIDS=new Set(["aurora-theme","aurora-panel","aurora-notifications"]);
+  // The Aurora look is ONE feature (Apply all / Remove all). Apply order = theme→panel→notifications;
+  // remove = the reverse (notifications restores its chrome first, then panel repoints the shell back).
+  const AURORA_IDS=["aurora-theme","aurora-panel","aurora-notifications"];
+  const AURORA_NAMES={"aurora-theme":"theme & colours","aurora-panel":"panel & tray","aurora-notifications":"notifications"};
+  let auroraBatch=null, auroraErr=null;
+  const _sleep=ms=>new Promise(r=>setTimeout(r,ms));
   const DGLYPH={"dolphin-create":"i-cursor","browser-host":"i-globe","hermes-plugins":"i-plug","gpu-coordinator":"i-bolt"};
   const GGLYPH={ambient:"i-ambient",look:"i-look",agents:"i-plug",integrations:"i-runtime"};
   let DESKTOP={reachable:false}, CJOBS={}, dbusy={};
@@ -1064,6 +1090,70 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     return `<div class="drow" data-drow="${esc(id)}">${dthumb(c)}
       <div class="meta"><div class="nm">${esc(c.name||id)}</div><div class="dsc">${esc(c.desc||"")}</div>${eff}${post}${failed}</div>${right}</div>`;
   }
+  // ── the Aurora look: three coupled components rendered + driven as ONE feature ──
+  function auroraSet(comps){ return AURORA_IDS.map(id=>(comps||[]).find(c=>c.id===id)).filter(Boolean); }
+  function auroraRow(comps){
+    const set=auroraSet(comps);
+    if(!set.length) return "";                              // panel didn't surface the look components
+    const n=set.length, on=set.filter(c=>c.state==="adopted").length;
+    const adoptable=set.every(c=>c.adoptable);
+    const busy=!!auroraBatch || AURORA_IDS.some(id=>dbusy[id]);
+    const swatch=`<div class="swatch" aria-hidden="true"><i style="background:#765CC4"></i><i style="background:#9b82e0"></i><i style="background:#161a28"></i></div>`;
+    let right="", sub="";
+    if(busy){
+      const b=auroraBatch, verb=(b&&b.action==="unadopt")?"Removing":"Applying", done=b?b.done.length:0;
+      const cur=(b&&b.current)?(AURORA_NAMES[b.current]||b.current):"";
+      right=`<span class="state busy">${verb}… ${done}/${n}</span>`;
+      sub=cur?`<div class="eff">${verb} the ${esc(cur)}…</div>`:"";
+    } else if(on===n){
+      right=`<span class="don">✓ on</span> <button class="btn ghost" data-aurora="remove">Remove all</button>`;
+    } else if(on===0){
+      right=`<button class="btn" data-aurora="apply"${adoptable?"":" disabled"}>Apply all</button>`;
+    } else {
+      right=`<button class="btn" data-aurora="apply">Apply all</button> <button class="btn ghost" data-aurora="remove">Remove all</button>`;
+      sub=`<div class="eff">${on} of ${n} on — Apply all to finish, or Remove all to undo.</div>`;
+    }
+    const err=auroraErr?`<div class="err">${esc(AURORA_NAMES[auroraErr.id]||auroraErr.id)}: ${esc(auroraErr.error)}</div>`:"";
+    return `<div class="drow" data-drow="aurora">${swatch}
+      <div class="meta"><div class="nm">The Aurora look</div>
+      <div class="dsc">A violet light &amp; dark scheme across your apps — plus the panel, tray &amp; notification popups. Restyles your session at next login; fully reversible.</div>
+      ${sub}${err}</div>${right}</div>`;
+  }
+  async function runAuroraBatch(action){
+    if(auroraBatch) return;                                 // one batch at a time
+    auroraErr=null;
+    const ids = action==="adopt" ? AURORA_IDS.slice() : AURORA_IDS.slice().reverse();
+    auroraBatch={action, total:ids.length, current:null, done:[]};
+    renderDesktop();
+    for(const id of ids){
+      const c0=(DESKTOP.components||[]).find(x=>x.id===id);
+      const inTarget = action==="adopt" ? (c0&&c0.state==="adopted") : (c0&&c0.state==="available");
+      if(inTarget){ auroraBatch.done.push(id); renderDesktop(); continue; }   // already where we want it
+      auroraBatch.current=id; dbusy[id]=action; renderDesktop();
+      const r=await post("/api/component",{id,action});
+      if(r && r.error && !/already|queued|working|just ran|give it a moment/i.test(r.error)){
+        delete dbusy[id]; auroraErr={id,error:r.error}; break;                // hard stop — surface honestly
+      }
+      const res=await auroraAwait(id, action);
+      delete dbusy[id];
+      if(!res.ok){ auroraErr={id,error:res.error}; break; }
+      auroraBatch.done.push(id); auroraBatch.current=null; renderDesktop();
+    }
+    auroraBatch=null; renderDesktop(); refreshComponentJobs();
+  }
+  async function auroraAwait(id, action){
+    const want = action==="adopt" ? "adopted" : "available";
+    for(let i=0;i<160;i++){                                 // ~160 × 1.3s ≈ 3.5 min ceiling per step
+      await _sleep(1300);
+      await refreshComponentJobs();                         // refreshes DESKTOP + CJOBS (newest job per comp)
+      const job=CJOBS[id], c=(DESKTOP.components||[]).find(x=>x.id===id);
+      if(job && job.status==="failed") return {ok:false, error:job.outcome||"that step didn't finish"};
+      if(job && (job.status==="adopted"||job.status==="available"))
+        return job.status===want ? {ok:true} : {ok:false, error:"unexpected result — see the status panel"};
+      if(!job && c && c.state===want) return {ok:true};     // fallback if the ledger entry already pruned
+    }
+    return {ok:false, error:"timed out waiting for that step"};
+  }
   function renderDesktop(){
     const el=document.getElementById("desktop"); if(!el) return;
     if(!DESKTOP.reachable){
@@ -1077,9 +1167,15 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     if(DESKTOP.enabled===false){
       el.innerHTML=`<div class="dsc" style="color:var(--muted);margin-top:10px">Feature adoption is switched off on this box (AGENTOS_ADOPT=0).</div>`; return;
     }
-    const comps=DESKTOP.components||[];
+    const comps=(DESKTOP.components||[]).filter(c=>c.id!=="keyhole");   // keyhole has its own section (02)
     let h="";
     for(const [key,label,lede] of DGROUPS){
+      if(key==="look"){                                  // collapse the three aurora-* into one feature
+        const arow=auroraRow(comps);
+        const extra=comps.filter(c=>c.group==="look" && !AURORA_IDS.includes(c.id)).map(drow).join("");
+        if(arow||extra) h+=`<div class="dgroup"><div class="ghd">${esc(label)}</div><div class="gld">${esc(lede)}</div>${arow}${extra}</div>`;
+        continue;
+      }
       const rows=comps.filter(c=>c.group===key);
       if(!rows.length) continue;
       h+=`<div class="dgroup"><div class="ghd">${esc(label)}</div><div class="gld">${esc(lede)}</div>`+rows.map(drow).join("")+`</div>`;
@@ -1088,7 +1184,11 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
   }
   function syncBusyFromJobs(d,j){
     CJOBS={};
-    for(const job of (j.jobs||[])){ if(job.comp && !CJOBS[job.comp]) CJOBS[job.comp]=job; }
+    for(const job of (j.jobs||[])){                        // keep the NEWEST job per component (batch tracking relies on this)
+      if(!job.comp) continue;
+      const prev=CJOBS[job.comp];
+      if(!prev || (job.updated||0) >= (prev.updated||0)) CJOBS[job.comp]=job;
+    }
     for(const id of Object.keys(dbusy)){
       const c=(d.components||[]).find(x=>x.id===id), job=CJOBS[id];
       const reached = c && (dbusy[id]==="adopt" ? c.state==="adopted" : c.state!=="adopted");
@@ -1105,15 +1205,12 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
       DESKTOP=d; KH=d.reachable?{reachable:true,row:(d.components||[]).find(c=>c.id==="keyhole")||null}:{reachable:false,why:d.why};
       syncBusyFromJobs(d,j);
       _khHTML=""; renderKeyhole();
-      if(document.getElementById("extras-sec").open) renderDesktop();
+      renderDesktop();                                   // top-level section — always rendered
     }catch(_){}
   }
-  async function refreshDesktop(){
-    const sec=document.getElementById("extras-sec");
-    if(!sec||!sec.open) return;                          // idle is sacred — only poll the full catalog while open
-    refreshComponentJobs();
-  }
   document.getElementById("desktop").addEventListener("click",async e=>{
+    const ab=e.target.closest("button[data-aurora]");
+    if(ab){ runAuroraBatch(ab.dataset.aurora==="remove"?"unadopt":"adopt"); return; }
     const b=e.target.closest("button[data-comp]"); if(!b) return;
     const id=b.dataset.comp, act=b.dataset.act;
     dbusy[id]=act; renderDesktop(); if(id==="keyhole"){ _khHTML=""; renderKeyhole(); }
@@ -1126,16 +1223,28 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     refreshComponentJobs();
   });
 
+  function _flash(el){                                    // one-shot "you landed here" ring (reduced-motion no-ops the anim)
+    if(!el) return;
+    el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+    setTimeout(()=>el.classList.remove("flash"),1300);
+  }
   function openExtras(){
     const s=document.getElementById("extras-sec"); if(!s) return;
     s.open=true;
     const rm=matchMedia("(prefers-reduced-motion: reduce)").matches;
     s.scrollIntoView({behavior:rm?"auto":"smooth",block:"start"});
+    _flash(s);
+  }
+  function openDesktop(){                                 // jump to the top-level "Make it yours" section
+    const h=document.getElementById("h-desktop"); if(!h) return;
+    const rm=matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const card=h.closest(".card")||h;
+    card.scrollIntoView({behavior:rm?"auto":"smooth",block:"start"});
+    _flash(card);
   }
   document.getElementById("extras-sec").addEventListener("toggle",()=>{
     const s=document.getElementById("extras-sec");
     document.getElementById("echev").textContent = s.open?"hide ▴":"show ▾";
-    if(s.open) refreshDesktop();
   });
 
   // ── remote access: pure copy-don't-execute ──

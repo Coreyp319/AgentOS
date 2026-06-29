@@ -385,8 +385,9 @@ class WizardStructure(unittest.TestCase):
         cls.low = cls.html.lower()
 
     def test_numbered_steps_present(self):
-        for n in ("01", "02", "03", "05"):
+        for n in ("01", "02", "03", "04", "06"):           # 04 = Make it yours, 06 = When you're ready
             self.assertIn(f'class="no">{n}', self.html)
+        self.assertIn('class="t">05', self.html)           # 05 = Advanced setup (a <details> summary)
 
     def test_ready_chip_reflects_real_readiness(self):
         self.assertIn('id="ready-chip"', self.html)
