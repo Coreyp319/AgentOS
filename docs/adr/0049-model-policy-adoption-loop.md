@@ -123,12 +123,35 @@ Two hard constraints shape the answer:
   the registry; structured + validated research; **adopt-into-registry** reversibly; the "Models & policy"
   wizard section; a **read-only** view of the current Hermes default. No live config write; no dangerous
   allow-any behavior; no fan-out.
-- **Phase 2 (designed, gated):** `HermesAdapter` live `model.default` write behind the measured canary +
-  evict + `fallback_model` + surgical per-key reversible edit + honest restart. Must pass
-  `reversibility-tx-reviewer` (per-key inverse), `security-reviewer` (atomic write / 0600 / concurrent
-  writer), `resource-safety-reviewer` (canary + evict + fallback) before ship. **Verify first** whether
-  Hermes hot-reloads `config.yaml`, takes it next-turn, or needs a restart — that determines whether a
-  revert reaches the *running* session.
+- **Phase 2 (BUILT):** `HermesAdapter` live `model.default` write — a surgical single-key edit under the
+  config lock, the per-key inverse (the **exact prior literal**, quotes preserved) recorded *before* the
+  write and rolled back on failure, atomic temp+fsync(+dir)+rename. Gated by `/api/hermes_apply`:
+  `permits_ref` (safety/policy, **never force-past**) → a **measured canary** (`measured_canary`: load via
+  Ollama, read `/api/ps` `size_vram`/`size` + tok/s, PASS only if ~fully on GPU and ≥ the tok/s floor;
+  with **predict-before-load admission** — refuse to even load if it won't fit current free VRAM, so we
+  never OOM a standing graphics holder) → `set_default`. Applied by an is-active-guarded
+  `systemctl --user restart hermes-gateway.service` (mirrors gpu-coordinator); **never mid-turn, never
+  auto** — and the restart honestly says it drops any in-flight turn. `force` can override **only** the
+  `too-slow` verdict, never `cpu-offload`/`not-present`/`insufficient-free-vram`. Reviewed by
+  `reversibility-tx` + `security` + `resource-safety`; their must-fixes applied (inverse-first + lock +
+  byte-exact prior + ref-charset validation + admission + force-scope + single-flight + `/api/token` guard).
+  **Confirmed** (not assumed): Hermes is a systemd user service, restart-to-apply (no hot-reload relied on),
+  so a revert reaches the running session only after a restart — surfaced honestly in the UI.
+  **Deliberate Phase-2 scope notes:** (a) **no `fallback_model` write** — Hermes' `fallback_model` triggers
+  on the *primary being unavailable* (429/503/connection), not on a slow local model, so it does not address
+  the CPU-thrash mode; the canary (refuse) + one-click revert are the protection. Tracked as optional
+  hardening for the runtime-OOM case. (b) The canary admits against *current* free VRAM, not yet the full
+  `Spawn(batch)` lease — the lease integration (serialize the canary load against ComfyUI/dream jobs) is the
+  remaining hardening; until then a busy GPU yields an honest `insufficient-free-vram` refuse, never a load.
+  **Reviewer-confirmed non-blocking residuals (tracked, not gates):** (i) a sub-second TOCTOU between the
+  free-VRAM read and the load — `_apply_lock` single-flights the wizard's own apply but does not coordinate
+  with a gpu-coordinator `Spawn` firing in that window (the `cpu-offload` tripwire backstops a partial load);
+  the `Spawn(batch)` lease closes it. (ii) the admission footprint is a flat `size×1.3` — it does not scale
+  with `OLLAMA_NUM_PARALLEL`/64K-context KV, so admission can under-refuse (asymmetric-safe: the measured
+  tripwire catches the undercount post-load). (iii) `already_resident` matches on base name, so a different
+  quant/tag of a resident model skips admission. (iv) no §6 hash-guard against an out-of-band gpu-coordinator
+  edit of `model.default` (different code path, doesn't share the lock) — our own inverse stays correct
+  because the prior is read under the lock; this is defense-in-depth only.
 - **Phase 3 (designed):** hardened `allow_any_ollama` (arbitrary-host pulling behind host-pinning +
   Modelfile inspection + 18+ affirmation); on-box research path; the adapter contract realized for a real
   second agent.

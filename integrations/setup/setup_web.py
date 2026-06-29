@@ -46,6 +46,7 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost", ""}
 
 _jobs: dict[str, dict] = {}                     # job_id → {bundle, mature, proc, log, started, ...}
 _jobs_lock = threading.Lock()
+_apply_lock = threading.Lock()                  # single-flight for the Hermes canary+apply (loads a model)
 
 
 def _runtime_dir() -> Path:
@@ -395,6 +396,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/state":
             self._json(200, build_state())
         elif path == "/api/token":
+            if not self._is_local():                 # the anti-CSRF token must never leave the box
+                self._json(403, {"error": "this machine only"})
+                return
             self._json(200, {"token": TOKEN})
         elif path == "/api/jobs":
             self._json(200, {"jobs": jobs_view(setup.load_registry())})
@@ -581,6 +585,42 @@ class Handler(BaseHTTPRequestHandler):
             prop["permitted"] = ok
             prop["permit_reason"] = why
             self._json(200, prop)
+        elif path == "/api/hermes_apply":           # ADR-0049 Phase 2b: the LIVE default write (gated)
+            if not self._guard():
+                return
+            body = self._body()
+            ref = str(body.get("ref", "")).strip()
+            if not ref or not agent_targets._REF_RE.fullmatch(ref):   # fullmatch: reject anything that could inject YAML
+                self._json(400, {"error": "bad ref"})
+                return
+            ok, why = setup.permits_ref(setup.load_registry(), ref)   # safety/policy gate — NEVER force-past
+            if not ok:
+                self._json(409, {"error": "not-permitted", "reason": why})
+                return
+            if not _apply_lock.acquire(blocking=False):               # single-flight: one canary/apply at a time
+                self._json(409, {"error": "busy", "reason": "another fit-check/apply is already running"})
+                return
+            try:
+                canary = agent_targets.measured_canary(ref)
+                # `force` may ONLY override a degraded-but-real SLOW verdict — never cpu-offload / not-present /
+                # insufficient-vram / load-failed (those re-open the wedge or write a broken default).
+                force_ok = bool(body.get("force")) and canary.get("reason") == "too-slow"
+                if not canary.get("pass") and not force_ok:
+                    self._json(409, {"error": "canary-failed", "canary": canary})
+                    return
+                res = agent_targets.HermesAdapter().set_default(ref)
+                res["canary"] = canary
+                self._json(200 if res.get("ok") else 409, res)
+            finally:
+                _apply_lock.release()
+        elif path == "/api/hermes_revert":          # undo the last live default change (restore prior scalar)
+            if not self._guard():
+                return
+            self._json(200, agent_targets.HermesAdapter().revert())
+        elif path == "/api/hermes_restart":         # apply a pending change by restarting the gateway (explicit)
+            if not self._guard():
+                return
+            self._json(200, agent_targets.HermesAdapter().restart())
         else:
             self._send(404, b"not found", "text/plain")
 

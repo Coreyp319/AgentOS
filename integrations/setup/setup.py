@@ -858,6 +858,12 @@ def _atomic_write_json(path: Path, data: dict, mode: int = 0o644) -> bool:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, path)
+            try:                              # fsync the dir so the rename is durable — the inverse (manifest)
+                dfd = os.open(str(path.parent), os.O_DIRECTORY)   # must land before the config change it guards
+                os.fsync(dfd)
+                os.close(dfd)
+            except OSError:
+                pass
             return True
         finally:
             if os.path.exists(tmp):

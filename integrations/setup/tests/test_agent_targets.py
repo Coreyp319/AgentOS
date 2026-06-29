@@ -126,6 +126,34 @@ class HermesAdapterTests(unittest.TestCase):
     def test_revert_with_nothing_to_revert(self):
         self.assertFalse(self.a.revert()["ok"])
 
+    def test_rejects_injection_ref(self):                    # security: no newline/YAML injection into config
+        before = self.cfg.read_text()
+        res = self.a.set_default("ok:tag\n  evil_key: pwned")
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "bad-ref")
+        self.assertEqual(self.cfg.read_text(), before)       # nothing written
+        self.assertEqual(self.a.set_default("qwen\n")["reason"], "bad-ref")   # fullmatch rejects trailing \n too
+
+    def test_quoted_default_reverts_byte_exact(self):        # reversibility: prior literal restored verbatim
+        self.cfg.write_text('model:\n  default: "old:tag"\n  provider: custom\n')
+        original = self.cfg.read_text()
+        self.assertTrue(self.a.set_default("new:tag")["ok"])
+        self.assertIn("  default: new:tag", self.cfg.read_text())
+        self.assertTrue(self.a.revert()["ok"])
+        self.assertEqual(self.cfg.read_text(), original)     # the quotes came back exactly
+
+    def test_inverse_recorded_before_write_blocks_on_ledger_failure(self):
+        before = self.cfg.read_text()
+        orig = setup.record_action
+        setup.record_action = lambda *a, **k: False          # simulate a manifest write failure
+        try:
+            res = self.a.set_default("gemma4-26b-64k")
+        finally:
+            setup.record_action = orig
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "ledger-write-failed")
+        self.assertEqual(self.cfg.read_text(), before)       # config NOT changed without a durable inverse
+
     def test_estimate_fit_honest_and_unmeasured(self):
         setup._OLLAMA_LIST_CACHE = ["gemma4-26b-64k:latest"]
         try:
@@ -139,6 +167,64 @@ class HermesAdapterTests(unittest.TestCase):
         self.assertIn("hermes", agent_targets.ADAPTERS)
         self.assertIsInstance(agent_targets.get_adapter("hermes", self.cfg), agent_targets.HermesAdapter)
         self.assertIsNone(agent_targets.get_adapter("openclaw"))   # no framework for a non-existent agent
+
+
+class CanaryTests(unittest.TestCase):
+    """The measured canary (ADR-0049 Phase 2b) — never loads real Ollama; generate/ps are injected."""
+    def setUp(self):
+        self._cache = setup._OLLAMA_LIST_CACHE
+        setup._OLLAMA_LIST_CACHE = ["m:tag"]
+
+    def tearDown(self):
+        setup._OLLAMA_LIST_CACHE = self._cache
+
+    def test_pass_on_gpu_and_fast(self):
+        gen = lambda ref: {"eval_count": 160, "eval_duration": 2_000_000_000}     # 80 tok/s
+        ps = lambda: [{"name": "m:tag", "size": 1000, "size_vram": 1000}]         # 100% on GPU
+        c = agent_targets.measured_canary("m:tag", generate=gen, ps=ps, run=lambda *a, **k: _R(0), stop_after=False)
+        self.assertTrue(c["pass"])
+        self.assertEqual(c["reason"], "ok")
+
+    def test_cpu_offload_fails(self):
+        gen = lambda ref: {"eval_count": 160, "eval_duration": 2_000_000_000}
+        ps = lambda: [{"name": "m:tag", "size": 1000, "size_vram": 300}]          # 30% on GPU → thrash
+        c = agent_targets.measured_canary("m:tag", generate=gen, ps=ps, run=lambda *a, **k: _R(0))
+        self.assertFalse(c["pass"])
+        self.assertEqual(c["reason"], "cpu-offload")
+
+    def test_too_slow_fails(self):
+        gen = lambda ref: {"eval_count": 2, "eval_duration": 2_000_000_000}       # 1 tok/s
+        ps = lambda: [{"name": "m:tag", "size": 1000, "size_vram": 1000}]
+        c = agent_targets.measured_canary("m:tag", generate=gen, ps=ps, run=lambda *a, **k: _R(0))
+        self.assertFalse(c["pass"])
+        self.assertEqual(c["reason"], "too-slow")
+
+    def test_not_present(self):
+        setup._OLLAMA_LIST_CACHE = []
+        c = agent_targets.measured_canary("absent:1b")
+        self.assertFalse(c["pass"])
+        self.assertEqual(c["reason"], "not-present")
+
+    def test_load_failed_is_caught(self):
+        def boom(ref):
+            raise RuntimeError("connection refused")
+        c = agent_targets.measured_canary("m:tag", generate=boom, ps=lambda: [], run=lambda *a, **k: _R(0))
+        self.assertFalse(c["pass"])
+        self.assertIn("load-failed", c["reason"])
+
+    def test_admission_refuses_before_loading_when_vram_insufficient(self):
+        # predict-before-load: a candidate that won't fit current free VRAM is refused WITHOUT loading it.
+        orig = agent_targets._ollama_size_gb
+        agent_targets._ollama_size_gb = lambda ref: 20.0
+        loaded = []
+        try:
+            c = agent_targets.measured_canary("m:tag", generate=lambda r: loaded.append(1) or {},
+                                              ps=lambda: [], hw={"vram_free_mib": 4096}, run=lambda *a, **k: _R(0))
+        finally:
+            agent_targets._ollama_size_gb = orig
+        self.assertFalse(c["pass"])
+        self.assertEqual(c["reason"], "insufficient-free-vram")
+        self.assertEqual(loaded, [])                         # generate() was never called — no blind load
 
 
 if __name__ == "__main__":

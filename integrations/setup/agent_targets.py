@@ -27,17 +27,28 @@ UI action only after the dry-run is reviewed on-box; and it should run behind a 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import subprocess
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 import setup  # reuse: hermes path, hardware probe, ollama presence, the manifest ledger + lock
 
+OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+# canary thresholds — a candidate must run ~entirely on the GPU and at a usable speed, or it's refused.
+# (the 2026-06-19 incident the canary exists to prevent: a capable 27B at 87% on CPU → 1.5 tok/s.)
+CANARY_ON_GPU = float(os.environ.get("AGENTOS_CANARY_ON_GPU", "0.95"))   # size_vram/size floor
+CANARY_TOK_S = float(os.environ.get("AGENTOS_CANARY_TOK_S", "8.0"))       # generation tok/s floor
+
 # the model.default scalar, capturing (prefix)(value)(trailing comment/space) so we replace ONLY value.
 _DEFAULT_RE = re.compile(r"^(\s*default\s*:\s*)(\"[^\"]*\"|'[^']*'|\S+)(.*)$")
+# a safe single-line model ref — no whitespace/newline/quotes, so it can't inject YAML structure into
+# config.yaml (security review). Applied to user-supplied refs before any write.
+_REF_RE = re.compile(r"^[A-Za-z0-9._:/+@-]{1,200}$")
 
 # the command that applies a config change (mirrors integrations/hermes/gpu-coordinator/DEPLOY.md).
 HERMES_RESTART = ("systemctl", "--user", "restart", "hermes-gateway.service")
@@ -80,12 +91,91 @@ def _atomic_write_text(path: Path, text: str) -> tuple[bool, str]:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, path)
+            try:                                 # fsync the dir so the rename is durable (ordering vs the inverse)
+                dfd = os.open(str(path.parent), os.O_DIRECTORY)
+                os.fsync(dfd)
+                os.close(dfd)
+            except OSError:
+                pass
             return True, ""
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
     except Exception as e:                       # pragma: no cover
         return False, f"write-failed: {e}"
+
+
+# ── the measured canary (ADR-0024 §3 / ADR-0049 Phase 2b) ────────────────────────────────────────
+def _ollama_ps() -> list[dict]:
+    """Ollama's currently-resident models (/api/ps): each carries `size` (total) + `size_vram`."""
+    try:
+        with urllib.request.urlopen(OLLAMA + "/api/ps", timeout=5) as r:
+            return json.load(r).get("models", [])
+    except Exception:
+        return []
+
+
+def _ollama_generate(ref: str, prompt: str = "Say OK.", num_predict: int = 16,
+                     keep_alive: str = "30s", timeout: int = 240) -> dict:
+    """One tiny generation — forces the model resident and yields eval timing for the tok/s measure."""
+    body = json.dumps({"model": ref, "prompt": prompt, "stream": False,
+                       "options": {"num_predict": num_predict}, "keep_alive": keep_alive}).encode()
+    req = urllib.request.Request(OLLAMA + "/api/generate", data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def measured_canary(ref: str, *, run=subprocess.run, generate=None, ps=None, hw=None,
+                    stop_after: bool = True) -> dict:
+    """MEASURE that `ref` actually runs on the GPU under the live load — the go/no-go before a live
+    default change. Loads the model via Ollama, reads `/api/ps` (`size_vram` vs `size`) and the
+    generation tok/s, and PASSES only if it is ~entirely on the GPU AND above the tok/s floor. A model
+    that offloads to CPU (the 2026-06-19 thrash) or OOMs is REFUSED no matter how capable. Read-only
+    w.r.t. config; frees the model afterward (so the canary doesn't leave it resident) unless it is the
+    one the gateway is already using. Returns a verdict dict (never raises)."""
+    generate = generate or _ollama_generate
+    ps = ps or _ollama_ps
+    if not setup._ollama_has(ref):
+        return {"pass": False, "reason": "not-present", "measured": True}
+    already_resident = any((m.get("name") or m.get("model") or "").split(":")[0] == ref.split(":")[0]
+                           for m in ps())
+    # PREDICT-BEFORE-LOAD (ADR-0024 §4): refuse to even load the candidate if it won't fit CURRENT free
+    # VRAM — never OOM a standing graphics holder (ComfyUI's allocation is invisible to Ollama's own fit
+    # math) or stack two big LLMs. Fail-closed; the user frees the GPU (or it ages out) and retries.
+    # (Full Spawn(batch)-lease admission is the remaining hardening — noted in ADR-0049 §Phase-2b.)
+    if not already_resident:
+        hw = hw or setup.detect_hardware()
+        free_gb = round((hw.get("vram_free_mib") or 0) / 1024, 1)
+        foot = round((_ollama_size_gb(ref) or 0) * 1.3, 1)        # weights + KV/context headroom
+        if foot and free_gb and foot > free_gb - 1.0:             # 1 GB desktop headroom
+            return {"pass": False, "reason": "insufficient-free-vram", "needed_gb": foot,
+                    "free_gb": free_gb, "measured": True}
+    try:
+        d = generate(ref)
+    except Exception as e:
+        return {"pass": False, "reason": f"load-failed: {e}", "measured": True}
+    ec, ed = d.get("eval_count") or 0, d.get("eval_duration") or 0
+    tok_s = round(ec / (ed / 1e9), 1) if ec and ed else 0.0
+    size = size_vram = 0
+    for m in ps():
+        nm = m.get("name") or m.get("model") or ""
+        if nm == ref or nm.split(":")[0] == ref.split(":")[0]:
+            size, size_vram = m.get("size") or 0, m.get("size_vram") or 0
+            break
+    frac = round(size_vram / size, 3) if size else 0.0
+    on_gpu = frac >= CANARY_ON_GPU
+    fast = tok_s >= CANARY_TOK_S
+    ok = on_gpu and fast
+    reason = "ok" if ok else ("cpu-offload" if not on_gpu else "too-slow")
+    # free it — UNLESS it was already resident (it may be the model the gateway is serving; don't evict that).
+    if stop_after and not already_resident:
+        try:
+            run(["ollama", "stop", ref], capture_output=True, timeout=20, check=False)
+        except Exception:
+            pass
+    return {"pass": ok, "on_gpu_frac": frac, "tok_s": tok_s, "size_gb": round(size / 1024**3, 1),
+            "size_vram_gb": round(size_vram / 1024**3, 1), "reason": reason, "measured": True}
 
 
 class HermesAdapter:
@@ -146,52 +236,80 @@ class HermesAdapter:
                 "measured": False,
                 "note": "estimate only — a measured canary (load + on-GPU check) runs before the live write"}
 
-    # ── the real, reversible write (Phase 2 — built + tested; wired live only after on-box review) ──
-    def _write_default(self, ref: str) -> tuple[bool, str]:
+    # ── the real, reversible write (Phase 2b) ──
+    def _do_write(self, value: str) -> tuple[bool, str, str | None]:
+        """Locate the single model.default and replace its value verbatim → (ok, reason, prior_literal).
+        MUST be called inside `setup._file_lock(self.path)`. `value` is written as-is (caller validates)."""
         try:
             text = self.path.read_text()
         except Exception:
-            return False, "no-config"
+            return False, "no-config", None
         idxs, lines = self._default_lines(text)
         if len(idxs) != 1:                                   # 0 or >1 → refuse; never guess which to edit
-            return False, f"expected exactly one model.default, found {len(idxs)}"
+            return False, f"expected exactly one model.default, found {len(idxs)}", None
         m = _DEFAULT_RE.match(lines[idxs[0]])
         if not m:
-            return False, "unparseable default line"
-        lines[idxs[0]] = m.group(1) + ref + m.group(3)       # replace ONLY the value; keep indent + comment
-        return _atomic_write_text(self.path, "\n".join(lines))
+            return False, "unparseable default line", None
+        prior_literal = m.group(2)                            # the EXACT bytes we overwrite (quotes incl.)
+        lines[idxs[0]] = m.group(1) + value + m.group(3)      # replace ONLY the value; keep indent + comment
+        ok, why = _atomic_write_text(self.path, "\n".join(lines))
+        return ok, why, prior_literal
 
     def set_default(self, ref: str, *, record: bool = True) -> dict:
-        """Surgically set model.default → ref, reversibly. Records a PER-KEY inverse (the prior scalar) in
-        the setup-manifest so revert() restores it exactly. Idempotent. Does NOT restart Hermes — returns
-        the restart hint; applying is an explicit, separate step (never mid-turn)."""
-        cur = self.current()
-        if cur == ref:
-            return {"ok": True, "skipped": "already-default", "current": cur}
-        ok, reason = self._write_default(ref)
-        if not ok:
-            return {"ok": False, "reason": reason}
-        if record:
+        """Surgically set model.default → ref, reversibly, under the config lock. The PER-KEY inverse (the
+        EXACT prior literal, quotes preserved) is recorded BEFORE the write and rolled back if the write
+        fails — so an apply never leaves config.yaml changed with no way to Revert. Does NOT restart
+        Hermes (returns the hint; applying is an explicit, separate, never-mid-turn step)."""
+        if not _REF_RE.fullmatch(ref or ""):                  # fullmatch: reject even a trailing newline (no YAML injection)
+            return {"ok": False, "reason": "bad-ref"}
+        with setup._file_lock(self.path):                     # serialize concurrent applies (ThreadingHTTPServer)
+            try:
+                text = self.path.read_text()
+            except Exception:
+                return {"ok": False, "reason": "no-config"}
+            idxs, lines = self._default_lines(text)
+            if len(idxs) != 1:
+                return {"ok": False, "reason": f"expected exactly one model.default, found {len(idxs)}"}
+            m = _DEFAULT_RE.match(lines[idxs[0]])
+            if not m:
+                return {"ok": False, "reason": "unparseable default line"}
+            prior_literal = m.group(2)
+            cur_val = prior_literal.strip('"').strip("'")
+            if cur_val == ref:
+                return {"ok": True, "skipped": "already-default", "current": cur_val}
             aid = "setdefault-" + self.agent + "-" + hashlib.sha1(
-                f"{cur}>{ref}>{time.time()}".encode("utf-8", "replace")).hexdigest()[:8]
-            setup.record_action({"kind": "set-default", "agent": self.agent, "id": aid,
-                                 "prior": cur, "new": ref, "path": str(self.path),
-                                 "at": time.strftime("%Y-%m-%d %H:%M:%S")})
-        return {"ok": True, "prior": cur, "new": ref, "restart_cmd": list(HERMES_RESTART),
+                f"{prior_literal}>{ref}>{time.time()}".encode("utf-8", "replace")).hexdigest()[:8]
+            action = {"kind": "set-default", "agent": self.agent, "id": aid, "prior": prior_literal,
+                      "new": ref, "path": str(self.path), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            if record and not setup.record_action(action):    # inverse FIRST + durable, else abort (no write)
+                return {"ok": False, "reason": "ledger-write-failed"}
+            lines[idxs[0]] = m.group(1) + ref + m.group(3)
+            ok, why = _atomic_write_text(self.path, "\n".join(lines))
+            if not ok:
+                if record:
+                    setup.remove_action(aid, kind="set-default")   # roll back the inverse — no orphan entry
+                return {"ok": False, "reason": why or "write-failed"}
+        return {"ok": True, "prior": cur_val, "new": ref, "restart_cmd": list(HERMES_RESTART),
                 "restart_hint": "restart Hermes to apply: " + " ".join(HERMES_RESTART)}
 
     def revert(self) -> dict:
-        """Undo the most recent set-default for this agent: restore the prior scalar + drop the action."""
+        """Undo the most recent set-default for this agent: restore the EXACT prior literal (so quoted/
+        commented defaults round-trip byte-for-byte) under the lock, then drop the action. Idempotent."""
         acts = [a for a in setup.manifest_actions()
                 if a.get("kind") == "set-default" and a.get("agent") == self.agent]
         if not acts:
             return {"ok": False, "reason": "no-set-default-to-revert"}
         last = acts[-1]
-        ok, reason = self._write_default(last.get("prior") or "")
+        prior_literal = last.get("prior")
+        if prior_literal is None:
+            return {"ok": False, "reason": "no-prior-recorded"}
+        with setup._file_lock(self.path):
+            ok, why, _ = self._do_write(prior_literal)        # write the exact prior literal back, verbatim
         if not ok:
-            return {"ok": False, "reason": reason}
+            return {"ok": False, "reason": why or "write-failed"}
         setup.remove_action(last["id"], kind="set-default")
-        return {"ok": True, "restored": last.get("prior"), "restart_hint": "restart Hermes to apply"}
+        return {"ok": True, "restored": prior_literal.strip('"').strip("'"),
+                "restart_cmd": list(HERMES_RESTART), "restart_hint": "restart Hermes to apply"}
 
     def restart(self, run=subprocess.run) -> dict:
         """Apply a pending change by restarting the gateway — only if it's actually active (mirrors the
