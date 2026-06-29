@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import setup  # noqa: E402
+import policy  # noqa: E402  — ADR-0049 family/safety gate (shared with setup.py)
 
 WIZARD = HERE / "wizard.html"
 ASSETS = HERE / "assets"                         # preview thumbnails for the Desktop section (/img/<name>)
@@ -148,6 +149,48 @@ def start_research(modality: str, spawn=subprocess.Popen) -> dict | None:
                          f"latest {modality} models", spawn=spawn)
 
 
+def start_research_models(modality: str, spawn=subprocess.Popen) -> dict | None:
+    """ADR-0049: STRUCTURED research — spawn `setup.py research-json` writing a candidates artifact the
+    job then parses (NOT a screen-scraped log tail; the council's must-fix). One at a time."""
+    modality = modality if modality in ("text", "image", "video") else "text"
+    with _jobs_lock:
+        if any(j["kind"] == "research-json" and j["proc"] and j["proc"].poll() is None for j in _jobs.values()):
+            return None
+    jid = secrets.token_hex(8)
+    art = _runtime_dir() / f"candidates-{jid}.json"
+    log = _runtime_dir() / f"research-json-{jid}.log"
+    fh = open(log, "w")
+    argv = ["python3", str(HERE / "setup.py"), "research-json", modality, "--out", str(art)]
+    proc = spawn(argv, stdout=fh, stderr=subprocess.STDOUT)
+    job = {"id": jid, "kind": "research-json", "label": f"latest {modality} models", "proc": proc,
+           "log": str(log), "artifact": str(art), "started": time.time()}
+    with _jobs_lock:
+        _jobs[jid] = job
+    return job
+
+
+def set_policy(body: dict) -> tuple[dict | None, str]:
+    """Apply a policy change from the wizard. Sanitized by policy.normalize_policy on save. Enabling
+    allow-any opens the uncensored surface, so it requires a one-time 18+ affirmation (D5) — persisted
+    as mature_affirmed_at; once set it is not re-prompted. Returns (new_policy|None, error_code)."""
+    cur = policy.load_policy()
+    allow_any = bool(body.get("allow_any_ollama"))
+    new = {
+        "allow_any_ollama": allow_any,
+        "family_allow": body.get("family_allow") if isinstance(body.get("family_allow"), list) else cur["family_allow"],
+        "family_block": body.get("family_block") if isinstance(body.get("family_block"), list) else cur["family_block"],
+        "mature_affirmed_at": cur.get("mature_affirmed_at"),
+    }
+    if allow_any and not new["mature_affirmed_at"]:
+        if body.get("affirm_mature"):
+            new["mature_affirmed_at"] = time.time()
+        else:
+            return None, "affirm-required"
+    if not policy.save_policy(new):
+        return None, "save-failed"
+    return policy.load_policy(), ""
+
+
 def _toast(title: str, body: str) -> None:
     """One calm ambient ping when a long unattended job finishes (T5). Default-on, disable with
     AGENTOS_SETUP_NOTIFY=0; no-ops without notify-send."""
@@ -181,6 +224,8 @@ def job_view(reg: dict, job: dict) -> dict:
             total = len(plan["rows"])
     elif kind == "comfyui":
         present, total = (1, 1) if setup.comfyui_present() else (0, 1)
+    elif kind == "research-json":
+        present, total = (1, 1) if rc == 0 else (0, 1)
     status = "running" if rc is None else ("done" if rc == 0 else "failed")
     n = 30 if kind == "research" else 6              # research's result IS its output — show more
     tail = ""
@@ -188,8 +233,17 @@ def job_view(reg: dict, job: dict) -> dict:
         tail = "\n".join(Path(job["log"]).read_text(errors="replace").splitlines()[-n:])
     except Exception:
         pass
-    return {"id": job["id"], "kind": kind, "label": job.get("label", job.get("bundle", "")),
-            "status": status, "present": present, "total": total, "tail": tail}
+    out = {"id": job["id"], "kind": kind, "label": job.get("label", job.get("bundle", "")),
+           "status": status, "present": present, "total": total, "tail": tail}
+    if kind == "research-json" and rc is not None:   # parse the JSON artifact, re-validate at READ time
+        try:
+            res = json.loads(Path(job["artifact"]).read_text())
+            if res.get("ok"):
+                res["candidates"] = setup.validate_candidates(reg, res.get("candidates", []))
+            out["result"] = res
+        except Exception:
+            out["result"] = {"ok": False, "error": "no candidates produced — is `claude` authenticated?"}
+    return out
 
 
 def jobs_view(reg: dict) -> list[dict]:
@@ -349,6 +403,15 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"prompt": setup.suggest_opening_prompt(mod if mod in ("image", "video") else "image")})
         elif path == "/api/stored":
             self._json(200, {"fetched": setup.read_manifest().get("fetched", [])})
+        elif path == "/api/policy":                  # ADR-0049: policy + families + live Hermes default + ledger
+            if not self._is_local():                 # the family policy is a sensitive taste profile (0600) —
+                self._json(403, {"error": "this machine only"})   # don't disclose it to a non-loopback caller
+                return
+            self._json(200, {"policy": policy.load_policy(),
+                             "known_families": list(policy.KNOWN_FAMILIES),
+                             "precedence": "safety-denylist > family_block > allow_any > family_allow",
+                             "hermes_default": setup.hermes_current_default(),
+                             "adopted": setup.manifest_actions()})
         elif path == "/api/desktop":
             self._json(200, _desktop_state())
         elif path == "/api/component_jobs":
@@ -474,6 +537,35 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(503, {"error": why or "couldn't reach the status panel"})
                 return
             self._json(code, obj if obj is not None else {"error": "panel error"})
+        elif path == "/api/policy":                  # ADR-0049: set the family/safety policy
+            if not self._guard():
+                return
+            new, err = set_policy(self._body())
+            if not new:
+                self._json(400 if err == "affirm-required" else 500, {"error": err})
+                return
+            self._json(200, {"ok": True, "policy": new})
+        elif path == "/api/research_models":         # ADR-0049: structured research → candidates artifact
+            if not self._guard():
+                return
+            job = start_research_models(str(self._body().get("modality", "text")))
+            self._json(202 if job else 409,
+                       {"id": job["id"], "status": "started"} if job else {"error": "already researching"})
+        elif path == "/api/adopt":                   # ADR-0049: adopt a present, permitted ref (re-validated)
+            if not self._guard():
+                return
+            body = self._body()
+            reg = setup.load_registry()
+            res = setup.adopt_candidate(reg, str(body.get("ref", "")).strip(),
+                                        name=(str(body.get("name") or "") or None),
+                                        modality=str(body.get("modality") or "text"),
+                                        affirmed=bool(body.get("affirmed")))
+            self._json(200 if res.get("ok") else 409, res)
+        elif path == "/api/revert":                  # ADR-0049: undo an adopt by id
+            if not self._guard():
+                return
+            res = setup.revert_action(str(self._body().get("id", "")).strip())
+            self._json(200 if res.get("ok") else 409, res)
         else:
             self._send(404, b"not found", "text/plain")
 

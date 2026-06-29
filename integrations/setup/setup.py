@@ -25,16 +25,27 @@ CLI:
   setup.py fetch <bundle> [--yes] download the gap (real). --mature to include the mature lane.
   setup.py creds set|clear <svc>  store/clear a HuggingFace/Civitai token in the OS keyring
   setup.py onboard                interactive: pick → plan → confirm → fetch → ready
+  setup.py policy                 show the model family/safety policy + the live Hermes default (ADR-0049)
+  setup.py research-json [text]   research the latest models → STRICT JSON candidates (--out PATH)
+  setup.py adopt <ref> [--yes-mature]   adopt a present, permitted ollama ref into the registry (reversible)
+  setup.py revert <id>            undo an adopt by id
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
+
+import policy  # ADR-0049 — the family/safety gate; shares the canonical DENYLIST
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")     # strip terminal control (ollama leaks cursor moves)
 
@@ -43,7 +54,8 @@ REGISTRY = HERE.parent / "models" / "registry.json"
 
 # Hard exclusions — CSAM / non-consensual-real-likeness repos are categorically off-limits, never
 # fetched regardless of bundle or token (the local-video-gen skill's denylist; ADR-0008 red line).
-DENYLIST = ("deadman44",)
+# The canonical list lives in policy.py (ADR-0049) so the gate + onboarding share ONE source of truth.
+DENYLIST = policy.DENYLIST
 
 HF_RESOLVE = "https://huggingface.co/{repo}/resolve/main/{file}"
 CIVITAI_DL = "https://civitai.com/api/download/models/{version_id}"
@@ -310,8 +322,7 @@ def research_models(modality: str = "video", hw: dict | None = None, run=subproc
         return {"ok": False, "error": "the `claude` CLI isn't installed — needed to research models"}
     prompt = (
         f"You are AgentOS's model-currency scout. Recommend the BEST current local, open-weights "
-        f"{modality}-generation model(s) for a single GPU with {hw.get('vram_gb')} GB VRAM and "
-        f"{hw.get('ram_gb')} GB system RAM, runnable locally via "
+        f"{modality}-generation model(s) for a single GPU in the {vram_bucket(hw)} VRAM class, runnable via "
         f"{'ComfyUI' if modality in ('image', 'video') else 'Ollama'} as of today. Give 2-3 concrete "
         f"picks: name, HuggingFace repo (or Ollama ref), approx size/quant that fits this VRAM, and a "
         f"one-line why. Prefer permissive licenses. Exclude any minor-targeted or non-consensual "
@@ -361,8 +372,8 @@ def model_status(model: dict) -> dict:
 
 # ── denylist + auth ──────────────────────────────────────────────────────────────────────────
 def is_denied(art: dict) -> bool:
-    blob = " ".join(str(art.get(k, "")) for k in ("repo", "ref", "version_id", "file", "dest")).lower()
-    return any(d in blob for d in DENYLIST)
+    blob = " ".join(str(art.get(k, "")) for k in ("repo", "ref", "version_id", "file", "dest"))
+    return policy.is_denied_ref(blob)        # ADR-0049: the bare-ref form, shared with the policy gate
 
 
 def artifact_auth(art: dict) -> str:
@@ -563,12 +574,19 @@ def resolve_bundle(reg: dict, bundle: dict, hw: dict | None = None) -> list[dict
     return select_models(reg, bundle, hw)[0]
 
 
-def plan_bundle(reg: dict, bundle: dict, include_mature: bool = False, hw: dict | None = None) -> dict:
+def plan_bundle(reg: dict, bundle: dict, include_mature: bool = False, hw: dict | None = None,
+                pol: dict | None = None) -> dict:
     """Reconcile a bundle against the box: which models are present, which need fetching, what
     auth/size that implies. The mature lane is excluded unless include_mature. With hw, hero-tier
     models that don't fit this GPU are deferred (not fetched) and reported under `deferred` — so a
-    small-VRAM box gets the fitting set, with the heavy upgrade surfaced rather than silently pulled."""
+    small-VRAM box gets the fitting set, with the heavy upgrade surfaced rather than silently pulled.
+    ADR-0049: models whose `family` is on the user's blocklist are filtered out of the gap and surfaced
+    under `blocked` (the default policy blocks nothing, so the shipped behavior is unchanged)."""
     use, deferred = select_models(reg, bundle, hw)
+    pol = pol if pol is not None else policy.load_policy()
+    block = set(pol.get("family_block", []))
+    blocked = [{"id": m["id"], "family": m.get("family")} for m in use if m.get("family") in block]
+    use = [m for m in use if m.get("family") not in block]
     rows, gap_arts, need_auth, denied = [], [], set(), []
     total_gb = 0.0
     for m in use:
@@ -589,7 +607,7 @@ def plan_bundle(reg: dict, bundle: dict, include_mature: bool = False, hw: dict 
         if st["state"] != "have":
             total_gb += float(m.get("size_gb", 0) or 0)
     return {"bundle": bundle["id"], "rows": rows, "gap": gap_arts, "needs_auth": sorted(need_auth),
-            "approx_gb": round(total_gb, 1), "denied": denied,
+            "approx_gb": round(total_gb, 1), "denied": denied, "blocked": blocked,
             "deferred": [{"id": m["id"], "name": m.get("role") or m["id"], "vram_gb": model_vram_gb(m)}
                          for m in deferred]}
 
@@ -606,6 +624,351 @@ def fetch_plan(plan: dict, tokens: dict | None = None, run=subprocess.run, dry: 
         res["artifact"] = art.get("dest") or art.get("ref")
         results.append(res)
     return results
+
+
+# ── policy + research→adoption loop (ADR-0049) ─────────────────────────────────────────────────
+# Closes the loop that used to dead-end at "printed suggestions → hand-edit registry.json": research
+# returns STRUCTURED candidates, code re-derives every load-bearing field, the family/safety policy
+# gates them, and a reviewed candidate is adopted into the registry reversibly. The LIVE Hermes-default
+# write is ADR-0049 Phase 2 (gated on a measured canary); here we only READ the current default.
+
+def _ref_of(model: dict) -> str:
+    """A registry model's primary ref: its ollama artifact ref if any, else its `model` field."""
+    for a in artifacts(model):
+        if a.get("via") == "ollama" and a.get("ref"):
+            return a["ref"]
+    return model.get("model", "") or model.get("id", "")
+
+
+def registry_match(reg: dict, ref: str) -> dict | None:
+    """The registry model a ref names (by `model`, ollama ref, or any artifact ref), or None."""
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    for m in models(reg):
+        if m.get("model") == ref or _ref_of(m) == ref or any(a.get("ref") == ref for a in artifacts(m)):
+            return m
+    return None
+
+
+def permits_ref(reg: dict, ref: str, pol: dict | None = None) -> tuple[bool, str]:
+    """policy.permits for a ref, resolving in_registry + the authoritative family from the registry."""
+    m = registry_match(reg, ref)
+    fam = m.get("family") if m else None
+    return policy.permits(ref, in_registry=bool(m), family=fam, pol=pol)
+
+
+# ── read-only: the live Hermes inference default (config.yaml is the source of truth) ────────────
+def hermes_config_path() -> Path:
+    return Path(os.environ.get("HERMES_CONFIG") or (Path.home() / ".hermes" / "config.yaml"))
+
+
+def hermes_current_default(path: Path | None = None) -> str | None:
+    """Read the LIVE Hermes inference default from ~/.hermes/config.yaml (the top-level model: block's
+    `default:`). READ-ONLY, stdlib line-parse (no yaml dep, no write). Returns None if absent — an honest
+    'unknown', never a guess. The LIVE write is ADR-0049 Phase 2 (the HermesAdapter)."""
+    p = path or hermes_config_path()
+    try:
+        lines = p.read_text().splitlines()
+    except Exception:
+        return None
+    in_model = False
+    for ln in lines:
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        if ln[:1] not in (" ", "\t"):                      # a top-level key — (re)decide if we're in model:
+            in_model = (ln.split(":", 1)[0].strip() == "model")
+            continue
+        if in_model and ln.strip().split(":", 1)[0].strip() == "default":
+            return (ln.split(":", 1)[1].strip().strip('"').strip("'") or None)
+    return None
+
+
+# ── structured research (model PROPOSES; code re-derives + disposes) ─────────────────────────────
+_VRAM_BUCKETS = ((24, "≥24 GB"), (16, "16–24 GB"), (8, "8–16 GB"), (1, "<8 GB"))
+
+
+def vram_bucket(hw: dict) -> str:
+    """A COARSE VRAM class — the ONLY hardware fact the research prompt may carry off-box (never the
+    exact card, the installed-model inventory, or the family policy; ADR-0049 §4)."""
+    g = hw.get("vram_gb") or 0
+    for floor, label in _VRAM_BUCKETS:
+        if g >= floor:
+            return label
+    return "unknown"
+
+
+def _num(v) -> float:
+    try:
+        return round(float(v), 1)
+    except Exception:
+        return 0.0
+
+
+def _parse_candidates(text: str) -> list[dict]:
+    """Tolerantly extract a JSON array of candidate objects from model output (handles a ```json fence
+    and surrounding prose). Returns normalized {name, ref, approx_gb, license, why}; [] on junk — never
+    raises. A model-supplied `family` is IGNORED here (family is derived in code at validation)."""
+    s = (text or "").strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", s, re.S)     # unwrap a markdown fence if present
+    if m:
+        s = m.group(1).strip()
+    start, depth, arr = s.find("["), 0, None                # first balanced [...] array
+    if start != -1:
+        for i in range(start, len(s)):
+            depth += 1 if s[i] == "[" else (-1 if s[i] == "]" else 0)
+            if depth == 0:
+                arr = s[start:i + 1]
+                break
+    try:
+        data = json.loads(arr) if arr else []
+    except Exception:
+        data = []
+    out = []
+    for it in (data if isinstance(data, list) else []):
+        if not isinstance(it, dict):
+            continue
+        ref = str(it.get("ref", "")).strip()
+        if not ref:
+            continue
+        out.append({"name": str(it.get("name", "") or ref)[:120], "ref": ref[:200],
+                    "approx_gb": _num(it.get("approx_gb")), "license": str(it.get("license", "") or "")[:60],
+                    "why": str(it.get("why", "") or "")[:240]})
+    return out
+
+
+def research_candidates(modality: str = "text", hw: dict | None = None, run=subprocess.run,
+                        timeout: int = 200, claude: str | None = None) -> dict:
+    """Ask a research agent for the latest local, open-weights models for THIS GPU as a STRICT JSON
+    array. Privacy (ADR-0049 §4): only the modality + a COARSE VRAM bucket leave the box — never the
+    installed-model inventory, never the family policy. The result is a PROPOSAL; every field is
+    re-derived/re-checked in code (validate_candidates) before anything can be adopted."""
+    hw = hw or detect_hardware()
+    claude = claude or shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+    if not Path(claude).exists():
+        return {"ok": False, "error": "the `claude` CLI isn't installed — needed to research models"}
+    bucket = vram_bucket(hw)
+    runner = "Ollama" if modality == "text" else "ComfyUI"
+    prompt = (
+        "You are AgentOS's model-currency scout. Recommend the 3-5 best CURRENT local, open-weights "
+        f"{modality} models runnable via {runner} on a single GPU in the {bucket} VRAM class, as of today. "
+        "Reply with ONLY a JSON array (no prose, no markdown fence) of objects with EXACTLY these keys: "
+        '"name" (str), "ref" (the exact Ollama ref or HuggingFace repo[:quant]), "approx_gb" (number — the '
+        'runnable quant that fits this VRAM class), "license" (SPDX-ish str), "why" (one short sentence). '
+        "Prefer permissive licenses. Exclude any minor-targeted or non-consensual real-person-likeness model."
+    )
+    cmd = [claude, "-p", prompt, "--model", os.environ.get("AGENTOS_RESEARCH_MODEL", "claude-sonnet-4-6"),
+           "--allowedTools", "WebSearch WebFetch", "--output-format", "text"]   # one arg — separate args drop WebFetch
+    try:
+        r = run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except Exception as e:
+        return {"ok": False, "error": f"research failed: {e}"}
+    out = (r.stdout or "").strip()
+    if not out:
+        return {"ok": False, "error": "no output — is `claude` authenticated?"}
+    return {"ok": True, "modality": modality, "vram_bucket": bucket, "disclosed": True,
+            "candidates": _parse_candidates(out), "raw": out[:4000]}
+
+
+def validate_candidates(reg: dict, candidates: list[dict], pol: dict | None = None) -> list[dict]:
+    """Re-derive `family` in CODE and run the gate — denylist FIRST, then policy — plus a present-check on
+    each model-PROPOSED candidate. Marks adoptable | rejected(reason); a model-supplied field NEVER gates.
+    Junk in → [] out, never an exception (the degrade-to-idle discipline)."""
+    pol = pol if pol is not None else policy.load_policy()
+    out = []
+    for c in (candidates or []):
+        if not isinstance(c, dict):
+            continue                                          # tolerate junk — never raise (degrade-to-idle)
+        ref = str(c.get("ref", "")).strip()
+        if not ref:
+            continue
+        m = registry_match(reg, ref)
+        fam = m.get("family") if m else policy.derive_family(ref)         # authoritative tag, else derived
+        ok, reason = policy.permits(ref, in_registry=bool(m), family=fam, pol=pol)
+        present = _ollama_has(ref)
+        adoptable = bool(ok and present and not m)
+        if not ok:
+            pass                                              # keep the policy/safety reason
+        elif m:
+            reason = "already-registered"
+        elif not present:
+            reason = "not-present"                            # permitted but not pulled (phase-1: pull first)
+        else:
+            reason = "ok"
+        out.append({**c, "family": fam, "in_registry": bool(m), "present": present,
+                    "denied": policy.is_denied_ref(ref), "permitted": ok, "adoptable": adoptable,
+                    "reason": reason, "overridable": reason in policy.OVERRIDABLE_REASONS})
+    return out
+
+
+# ── adopt-into-registry (the first reversible mutation) ──────────────────────────────────────────
+def _slug(s: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+    return base or "model"
+
+
+def _new_model_entry(ref: str, *, name: str | None = None, modality: str = "text",
+                     why: str | None = None) -> dict:
+    fam = policy.derive_family(ref)
+    short = ref.split("/")[-1].split(":")[0]
+    # the id carries a short hash of the FULL ref so two distinct refs that share a trailing name
+    # (gemma4:latest vs huihui_ai/gemma4:q8) never collide into one entry (a false "adopted").
+    h = hashlib.sha1(ref.encode("utf-8", "replace")).hexdigest()[:6]
+    rating = "mature" if policy.is_mature_marker(ref) else "sfw"
+    return {"id": "adopted-" + _slug(name or short) + "-" + h, "family": fam,
+            "role": ((name or ref)[:120]) + " (adopted)",
+            "purpose": (why or f"Adopted via the ADR-0049 research loop. Family: {fam}.")[:280],
+            "model": ref, "runtime": "ollama", "size_gb": 0,
+            "source": f"ollama (local): {ref}", "local": True, "safety_critical": False,
+            "used_by": [], "modality": modality, "rating": rating, "tier": "hero",
+            "notes": "Adopted from model-currency research (ADR-0049). Edit/remove here, or Revert in the wizard.",
+            "fetch": [{"via": "ollama", "ref": ref}], "adopted": True}
+
+
+@contextlib.contextmanager
+def _file_lock(path: Path):
+    """Serialize a read-modify-write on a JSON file across the wizard's threads (ThreadingHTTPServer) via
+    an flock on a sidecar `.lock` — so two concurrent adopts/reverts can't lose a write or drop an inverse."""
+    lock = Path(str(path) + ".lock")
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    fd = os.open(str(lock), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _atomic_write_json(path: Path, data: dict, mode: int = 0o644) -> bool:
+    """Durable atomic write: a UNIQUE temp (never a shared *.tmp two writers would clobber), fsync, rename."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + ".", suffix=".tmp")
+        try:
+            os.fchmod(fd, mode)
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            return True
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+    except Exception:
+        return False
+
+
+def add_registry_model(registry_path: Path, entry: dict) -> bool:
+    """Append a model entry (idempotent on id; the whole read-modify-write is under the registry lock)."""
+    registry_path = Path(registry_path)
+    with _file_lock(registry_path):
+        try:
+            reg = json.loads(registry_path.read_text())
+        except Exception:
+            return False
+        if any(m.get("id") == entry.get("id") for m in reg.get("models", [])):
+            return True                                       # idempotent
+        reg.setdefault("models", []).append(entry)
+        return _atomic_write_json(registry_path, reg)
+
+
+def remove_registry_model(registry_path: Path, model_id: str) -> bool:
+    """Drop a model entry by id (idempotent — removing an absent entry is a success; under the lock)."""
+    registry_path = Path(registry_path)
+    with _file_lock(registry_path):
+        try:
+            reg = json.loads(registry_path.read_text())
+        except Exception:
+            return False
+        kept = [m for m in reg.get("models", []) if m.get("id") != model_id]
+        if len(kept) == len(reg.get("models", [])):
+            return True                                       # already gone
+        reg["models"] = kept
+        return _atomic_write_json(registry_path, reg)
+
+
+# ── reversibility ledger (the inverse records, alongside record_fetch's `fetched`) ───────────────
+def _write_manifest(data: dict) -> bool:
+    return _atomic_write_json(manifest_path(), data, mode=0o600)
+
+
+def record_action(action: dict) -> bool:
+    """Append a reversible action (the inverse of an adopt) to the manifest. Locked + atomic; returns ok."""
+    with _file_lock(manifest_path()):
+        data = read_manifest()
+        data.setdefault("actions", []).append(action)
+        return _write_manifest(data)
+
+
+def remove_action(action_id: str, kind: str = "adopt-model") -> bool:
+    """Drop a recorded action by id (locked + atomic; idempotent)."""
+    with _file_lock(manifest_path()):
+        data = read_manifest()
+        data["actions"] = [a for a in data.get("actions", [])
+                           if not (a.get("id") == action_id and a.get("kind") == kind)]
+        return _write_manifest(data)
+
+
+def manifest_actions() -> list[dict]:
+    return read_manifest().get("actions", [])
+
+
+def adopt_candidate(reg: dict, ref: str, *, name: str | None = None, modality: str = "text",
+                    why: str | None = None, registry_path: Path | None = None,
+                    pol: dict | None = None, affirmed: bool = False) -> dict:
+    """Adopt a PRESENT, PERMITTED ollama ref into the registry, reversibly (ADR-0049 Phase 1). Re-validates
+    server-side — denylist FIRST, then policy, then present-check — so a stale client can't slip a bad ref
+    past the gate. NEVER pulls (phase-1). The inverse is recorded BEFORE the registry write (and rolled
+    back if the write fails) so we never leave a registry entry with no way to Revert it."""
+    pol = pol if pol is not None else policy.load_policy()
+    registry_path = Path(registry_path) if registry_path else REGISTRY
+    ref = (ref or "").strip()
+    if not ref:
+        return {"ok": False, "reason": "no-ref"}
+    if policy.is_denied_ref(ref):                              # 1 — the red line, first + unconditional
+        return {"ok": False, "reason": "safety-denied"}
+    existing = registry_match(reg, ref)
+    if existing:
+        return {"ok": True, "skipped": "already-registered", "id": existing.get("id")}
+    ok, reason = policy.permits(ref, in_registry=False, family=policy.derive_family(ref), pol=pol)
+    if not ok:                                                # 2 — the family/curation policy
+        return {"ok": False, "reason": reason}
+    if policy.requires_mature_affirm(ref, pol) and not (affirmed or policy.is_affirmed(pol)):
+        return {"ok": False, "reason": "needs-affirm"}
+    if not _ollama_has(ref):                                  # 3 — present-check (no arbitrary pull, phase-1)
+        return {"ok": False, "reason": "not-present"}
+    entry = _new_model_entry(ref, name=name, modality=modality, why=why)
+    # inverse FIRST: an orphan inverse (action with no entry) is harmless — Revert is idempotent — but an
+    # orphan entry (no inverse) would be un-revertable. So record, then write, and roll back on write failure.
+    action = {"kind": "adopt-model", "id": entry["id"], "ref": ref,
+              "registry": str(registry_path), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    if not record_action(action):
+        return {"ok": False, "reason": "write-failed"}
+    if not add_registry_model(registry_path, entry):
+        remove_action(entry["id"])                            # roll back the inverse — no orphan ledger row
+        return {"ok": False, "reason": "write-failed"}
+    return {"ok": True, "id": entry["id"], "family": entry["family"]}
+
+
+def revert_action(action_id: str) -> dict:
+    """Revert an adopt by id: remove the registry entry, THEN drop the manifest action. Idempotent — a
+    leftover action with no entry (if the second step failed) is harmlessly re-revertable."""
+    act = next((a for a in manifest_actions()
+                if a.get("id") == action_id and a.get("kind") == "adopt-model"), None)
+    if not act:
+        return {"ok": False, "reason": "no-such-action"}
+    if not remove_registry_model(Path(act.get("registry") or REGISTRY), action_id):
+        return {"ok": False, "reason": "write-failed"}
+    remove_action(action_id)
+    return {"ok": True, "id": action_id}
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────────────────────
@@ -804,6 +1167,60 @@ def _cmd_onboard(reg: dict) -> int:
     return 0
 
 
+def _cmd_policy(reg: dict) -> int:
+    pol = policy.load_policy()
+    print(f"Model policy (ADR-0049) — {policy.policy_path()}")
+    print(f"  allow any Ollama model: {'yes' if pol['allow_any_ollama'] else 'no (curated only)'}")
+    print(f"  family allowlist: {', '.join(pol['family_allow']) or '(empty = all families)'}")
+    print(f"  family blocklist: {', '.join(pol['family_block']) or '(none)'}")
+    print(f"  known families:   {', '.join(policy.KNOWN_FAMILIES)}")
+    print("  precedence: safety-denylist > family_block > allow_any > family_allow")
+    print(f"\n  live Hermes inference default: {hermes_current_default() or 'unknown'}  "
+          "(config.yaml is the source of truth)")
+    return 0
+
+
+def _cmd_research_json(reg: dict, modality: str, out_path: str | None = None) -> int:
+    res = research_candidates(modality, detect_hardware())
+    if res.get("ok"):
+        res["candidates"] = validate_candidates(reg, res.get("candidates", []))
+    blob = json.dumps(res)
+    if out_path:
+        try:
+            Path(out_path).write_text(blob)
+        except Exception as e:
+            print(f"! could not write {out_path}: {e}", file=sys.stderr)
+            return 1
+    else:
+        print(blob)
+    return 0 if res.get("ok") else 1
+
+
+def _cmd_adopt(reg: dict, ref: str, yes_mature: bool) -> int:
+    res = adopt_candidate(reg, ref, affirmed=yes_mature)
+    if res.get("ok"):
+        if res.get("skipped"):
+            print(f"· {ref} is already registered ({res.get('id')}) — nothing to do.")
+        else:
+            print(f"✓ adopted {ref} as '{res['id']}' (family: {res['family']}). "
+                  f"Revert with: setup.py revert {res['id']}")
+        return 0
+    reason = res.get("reason", "rejected")
+    msg = {"safety-denied": "refused by the safety red line — cannot be overridden by any setting",
+           "needs-affirm": "needs an 18+ affirmation (mature/uncensored, or allow-any is on) — re-run with --yes-mature",
+           "not-present": "not pulled yet — `ollama pull` it first (phase-1 never pulls arbitrary refs)",
+           }.get(reason, policy.REASON_TEXT.get(reason, reason))
+    print(f"✗ not adopted: {msg}", file=sys.stderr)
+    return 1
+
+
+def _cmd_revert(action_id: str) -> int:
+    res = revert_action(action_id)
+    print(f"{'✓ reverted' if res.get('ok') else '! could not revert'} {action_id}"
+          + ("" if res.get("ok") else f" ({res.get('reason')})"))
+    return 0 if res.get("ok") else 1
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         argv = ["onboard"]
@@ -811,7 +1228,14 @@ def main(argv: list[str]) -> int:
     mature = "--mature" in rest
     yes = "--yes" in rest or "-y" in rest
     full = "--full" in rest                          # opt out of the GPU-aware downselect (fetch every model)
-    pos = [a for a in rest if not a.startswith("-")]
+    yes_mature = "--yes-mature" in rest              # ADR-0049: affirm 18+ for a mature/uncensored adopt
+    rest2 = list(rest)
+    out_path = None
+    if "--out" in rest2:                             # ADR-0049: research-json writes its JSON array here
+        i = rest2.index("--out")
+        out_path = rest2[i + 1] if i + 1 < len(rest2) else None
+        del rest2[i:i + 2]
+    pos = [a for a in rest2 if not a.startswith("-")]
     reg = load_registry()
     if cmd == "onboard":
         return _cmd_onboard(reg)
@@ -832,6 +1256,17 @@ def main(argv: list[str]) -> int:
     if cmd == "creds":
         return _cmd_creds(pos[1] if len(pos) > 1 else (pos[0] if pos else ""),
                           pos[0] if pos and pos[0] in ("set", "clear") else "set")
+    if cmd == "policy":
+        return _cmd_policy(reg)
+    if cmd == "research-json":
+        return _cmd_research_json(reg, pos[0] if pos and pos[0] in ("text", "image", "video") else "text", out_path)
+    if cmd == "adopt":
+        return _cmd_adopt(reg, pos[0] if pos else "", yes_mature)
+    if cmd == "revert":
+        return _cmd_revert(pos[0] if pos else "")
+    if cmd == "hermes-default":
+        print(hermes_current_default() or "unknown")
+        return 0
     print(__doc__)
     return 0 if cmd in ("-h", "--help", "help") else 2
 

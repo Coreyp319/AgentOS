@@ -507,5 +507,181 @@ class ResearchArgv(unittest.TestCase):
         self.assertEqual(cap["cmd"][i + 1], "WebSearch WebFetch")   # one arg — separate args drop WebFetch
 
 
+class Adr0049PolicyAdoption(unittest.TestCase):
+    """The research→adoption loop + policy gating (ADR-0049). No network, no real keyring/registry."""
+    # allow-any with the one-time 18+ affirmation already given (D5: enabling allow-any affirms once,
+    # persisted as mature_affirmed_at — individual SFW adopts then proceed without re-prompting).
+    _ALLOW_ANY = {"allow_any_ollama": True, "family_allow": [], "family_block": [], "mature_affirmed_at": 1.0}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="agentos-adopt-")
+        self.reg_path = Path(self.tmp) / "registry.json"
+        self.reg_path.write_text(Path(setup.REGISTRY).read_text())
+        self.reg = json.loads(self.reg_path.read_text())
+        self._cache = setup._OLLAMA_LIST_CACHE
+        setup._OLLAMA_LIST_CACHE = ["gemma4:latest", "qwen3.6-27b-64k:latest", "dolphin3.0-mistral-24b:latest"]
+        self._xdg = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = self.tmp        # isolate the setup-manifest (the inverse ledger)
+
+    def tearDown(self):
+        setup._OLLAMA_LIST_CACHE = self._cache
+        if self._xdg is None:
+            os.environ.pop("XDG_STATE_HOME", None)
+        else:
+            os.environ["XDG_STATE_HOME"] = self._xdg
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # ── adopt ──
+    def test_adopt_then_revert_roundtrip(self):
+        res = setup.adopt_candidate(self.reg, "gemma4:latest", pol=self._ALLOW_ANY, registry_path=self.reg_path)
+        self.assertTrue(res["ok"])
+        mid = res["id"]
+        self.assertTrue(mid.startswith("adopted-gemma4-"))                             # ref-unique (hash suffix)
+        after = json.loads(self.reg_path.read_text())
+        self.assertIn(mid, [m["id"] for m in after["models"]])
+        self.assertIn(mid, [a["id"] for a in setup.manifest_actions()])                # inverse recorded
+        rev = setup.revert_action(mid)
+        self.assertTrue(rev["ok"])
+        back = json.loads(self.reg_path.read_text())
+        self.assertNotIn(mid, [m["id"] for m in back["models"]])                        # entry gone
+        self.assertEqual(setup.manifest_actions(), [])                                  # ledger cleared
+
+    def test_adopt_distinct_refs_same_short_name_do_not_collide(self):
+        # the id-collision fix: two refs sharing a trailing 'gemma4' must become two distinct entries.
+        setup._OLLAMA_LIST_CACHE = ["gemma4:latest", "huihui_ai/gemma4:q8"]
+        r1 = setup.adopt_candidate(self.reg, "gemma4:latest", pol=self._ALLOW_ANY, registry_path=self.reg_path)
+        reg2 = json.loads(self.reg_path.read_text())
+        r2 = setup.adopt_candidate(reg2, "huihui_ai/gemma4:q8", pol=self._ALLOW_ANY, registry_path=self.reg_path)
+        self.assertTrue(r1["ok"] and r2["ok"])
+        self.assertNotEqual(r1["id"], r2["id"])
+        ids = [m["id"] for m in json.loads(self.reg_path.read_text())["models"]]
+        self.assertIn(r1["id"], ids)
+        self.assertIn(r2["id"], ids)
+
+    def test_concurrent_adopts_no_lost_writes(self):
+        # the lock fix: 5 threads adopting distinct refs must all persist + registry stays valid JSON.
+        import threading
+        refs = ["gemma4:latest", "qwen3:8b", "llama3.1:8b", "mistral:7b", "phi4:latest"]
+        setup._OLLAMA_LIST_CACHE = list(refs)
+        errs = []
+
+        def worker(r):
+            try:
+                res = setup.adopt_candidate(json.loads(self.reg_path.read_text()), r,
+                                            pol=self._ALLOW_ANY, registry_path=self.reg_path)
+                if not res.get("ok"):
+                    errs.append((r, res))
+            except Exception as e:                  # pragma: no cover
+                errs.append((r, repr(e)))
+
+        ts = [threading.Thread(target=worker, args=(r,)) for r in refs]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        self.assertEqual(errs, [])
+        data = json.loads(self.reg_path.read_text())                 # still valid JSON (no torn write)
+        models = [m.get("model") for m in data["models"]]
+        for r in refs:
+            self.assertIn(r, models)                                 # every adopt persisted (no lost write)
+        self.assertEqual(len(setup.manifest_actions()), len(refs))   # every inverse recorded
+
+    def test_adopt_denied_ref_refused_even_under_allow_any(self):
+        pol = {"allow_any_ollama": True, "family_allow": ["other"], "family_block": []}
+        res = setup.adopt_candidate(self.reg, "deadman44/whatever:latest", pol=pol, registry_path=self.reg_path)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "safety-denied")
+        self.assertEqual(json.loads(self.reg_path.read_text()), self.reg)               # nothing written
+
+    def test_adopt_not_present_refused(self):
+        res = setup.adopt_candidate(self.reg, "qwen3-not-pulled:99b", pol=self._ALLOW_ANY, registry_path=self.reg_path)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "not-present")
+
+    def test_adopt_curated_only_refuses_raw_ref(self):
+        res = setup.adopt_candidate(self.reg, "gemma4:latest", pol=dict(setup.policy.DEFAULT_POLICY),
+                                    registry_path=self.reg_path)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "not-curated")
+
+    def test_adopt_blocked_family_refused(self):
+        pol = {"allow_any_ollama": True, "family_allow": [], "family_block": ["dolphin"]}
+        res = setup.adopt_candidate(self.reg, "dolphin3.0-mistral-24b:latest", pol=pol, registry_path=self.reg_path)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "blocked-family")
+
+    def test_adopt_idempotent_already_registered(self):
+        res = setup.adopt_candidate(self.reg, "qwen3.6-27b-64k", pol=self._ALLOW_ANY, registry_path=self.reg_path)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res.get("skipped"), "already-registered")
+
+    def test_adopt_under_allow_any_needs_affirm_until_affirmed(self):
+        # allow_any opens the uncensored surface → an adopt needs the 18+ affirmation (D5)…
+        pol = {"allow_any_ollama": True, "family_allow": [], "family_block": [], "mature_affirmed_at": None}
+        res = setup.adopt_candidate(self.reg, "gemma4:latest", pol=pol, registry_path=self.reg_path)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "needs-affirm")
+        # …and the explicit per-call affirmation satisfies it.
+        res2 = setup.adopt_candidate(self.reg, "gemma4:latest", pol=pol, registry_path=self.reg_path, affirmed=True)
+        self.assertTrue(res2["ok"])
+
+    # ── validate ──
+    def test_validate_candidates_denylist_first(self):
+        pol = {"allow_any_ollama": True, "family_allow": ["qwen"], "family_block": []}
+        out = setup.validate_candidates(self.reg, [{"ref": "deadman44/x", "name": "x"}], pol)
+        self.assertFalse(out[0]["adoptable"])
+        self.assertEqual(out[0]["reason"], "safety-denied")
+
+    def test_validate_candidates_marks_states(self):
+        out = {c["ref"]: c for c in setup.validate_candidates(self.reg, [
+            {"ref": "gemma4:latest"}, {"ref": "qwen3.6-27b-64k"}, {"ref": "unpulled/x:1b"}], self._ALLOW_ANY)}
+        self.assertTrue(out["gemma4:latest"]["adoptable"])
+        self.assertEqual(out["qwen3.6-27b-64k"]["reason"], "already-registered")
+        self.assertEqual(out["unpulled/x:1b"]["reason"], "not-present")
+
+    def test_validate_candidates_junk_is_empty_not_error(self):
+        self.assertEqual(setup.validate_candidates(self.reg, [{"no_ref": 1}, "garbage", None]), [])
+
+    # ── parse ──
+    def test_parse_candidates_unwraps_fence_and_prose(self):
+        text = ('Here are my picks:\n```json\n[{"name":"Q","ref":"qwen3:8b","approx_gb":5,'
+                '"license":"apache-2.0","why":"good"}]\n```\nHope that helps!')
+        out = setup._parse_candidates(text)
+        self.assertEqual(out[0]["ref"], "qwen3:8b")
+        self.assertEqual(out[0]["approx_gb"], 5.0)
+
+    def test_parse_candidates_junk_is_empty(self):
+        self.assertEqual(setup._parse_candidates("sorry, I can't help with that"), [])
+        self.assertEqual(setup._parse_candidates(""), [])
+
+    def test_parse_candidates_ignores_model_supplied_family(self):
+        out = setup._parse_candidates('[{"name":"x","ref":"dolphin-mistral:7b","family":"qwen"}]')
+        self.assertNotIn("family", out[0])             # a lying model can't smuggle family past the gate
+
+    # ── policy-filtered planning ──
+    def test_plan_bundle_blocks_family(self):
+        reg = setup.load_registry()
+        pol = {"allow_any_ollama": False, "family_allow": [], "family_block": ["mistral-nemo"]}
+        plan = setup.plan_bundle(reg, setup.find_bundle(reg, "text"), pol=pol)
+        self.assertIn("narrator-beats", [b["id"] for b in plan["blocked"]])
+        self.assertNotIn("narrator-beats", [r["id"] for r in plan["rows"]])
+
+    def test_plan_bundle_default_policy_blocks_nothing(self):
+        reg = setup.load_registry()
+        plan = setup.plan_bundle(reg, setup.find_bundle(reg, "text"), pol=dict(setup.policy.DEFAULT_POLICY))
+        self.assertEqual(plan["blocked"], [])
+
+    # ── read-only hermes default ──
+    def test_hermes_current_default_parses_block(self):
+        cfg = Path(self.tmp) / "config.yaml"
+        cfg.write_text("# top comment\nmodel:\n  default: foo:1b\n  provider: custom\nother:\n  default: bar\n")
+        self.assertEqual(setup.hermes_current_default(cfg), "foo:1b")
+
+    def test_hermes_current_default_absent_is_none(self):
+        cfg = Path(self.tmp) / "c2.yaml"
+        cfg.write_text("agent:\n  max_turns: 5\n")
+        self.assertIsNone(setup.hermes_current_default(cfg))
+        self.assertIsNone(setup.hermes_current_default(Path(self.tmp) / "nope.yaml"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -4,6 +4,7 @@
   "models": [
     {
       "id": "b2-vision",
+      "family": "qwen",
       "role": "Seed-likeness safety check (B2)",
       "purpose": "Looks at an opening image — uploaded or generated — to flag a real person (asks consent) or a possible minor (hard block) before it can be animated. The deterministic opencv face detector is the primary gate; this model is the real-vs-drawn / age second opinion.",
       "model": "qwen2.5vl:3b",
@@ -33,6 +34,7 @@
     },
     {
       "id": "narrator",
+      "family": "qwen",
       "role": "Story suggestions (next-beat)",
       "purpose": "Proposes the 3–4 'what happens next' choices each turn, and expands the chosen one into a motion prompt. Output is schema-validated and red-line-filtered before it can reach the GPU.",
       "model": "qwen2.5vl:3b",
@@ -61,6 +63,7 @@
     },
     {
       "id": "narrator-beats",
+      "family": "mistral-nemo",
       "role": "Story suggestions — beat writer (text)",
       "purpose": "Writes the 3-4 'what happens next' choices each turn. Split out from 'narrator' so the beat writer can be a less-timid, more imaginative model than the vision grounder. Output is schema-validated and red-line-filtered before it can reach the GPU.",
       "model": "hf.co/bartowski/MN-12B-Mag-Mell-R1-GGUF:Q5_K_M",
@@ -94,6 +97,7 @@
     },
     {
       "id": "t2i-opening",
+      "family": "illustrious",
       "role": "Text-to-opening (describe → image)",
       "purpose": "Renders the dream's opening frame from a typed description. The result still passes B2 (a t2i can render a person too).",
       "model": "divingIllustriousReal_v40VAE.safetensors",
@@ -121,6 +125,7 @@
     },
     {
       "id": "i2v-dream",
+      "family": "wan",
       "role": "Dream video (image → video)",
       "purpose": "The actual dream: animates the current frame into the next clip, last-frame → first-frame, steered by the chosen beat.",
       "model": "Wan2.2 Enhanced-NSFW nolightning GGUF Q6K (high+low)",
@@ -204,6 +209,7 @@
     },
     {
       "id": "i2v-engine",
+      "family": "selector",
       "role": "Dream video engine selector",
       "purpose": "Which i2v backend run_beat uses: 'wan' (i2v-dream, the default) or '10eros'/'ltx' (i2v-dream-10eros, LTX-2.3). Editable affiliation — flip here or via LUCID_ENGINE to switch the whole shipped path (web, drain, create-from-image).",
       "model": "wan",
@@ -221,6 +227,7 @@
     },
     {
       "id": "i2v-dream-10eros",
+      "family": "ltx",
       "role": "Dream video — LTX-2.3 (10Eros) lane",
       "purpose": "Alternate i2v engine: TenStrip's 10Eros merge on LTX-2.3, driven by build_10eros_i2v (768px, 28-step LTXVScheduler). Selected via i2v-engine='10eros'.",
       "model": "TenStrip LTX2.3-10Eros GGUF Q6_K + Gemma-3-12B TE + LTX-2.3 VAEs",
@@ -273,6 +280,35 @@
           "auth": "none"
         }
       ]
+    },
+    {
+      "id": "hermes-inference",
+      "family": "qwen",
+      "role": "Hermes inference (chat + agent) LLM",
+      "purpose": "The model behind Hermes' chat and agent turns. The LIVE default lives in ~/.hermes/config.yaml (model.default) — Hermes owns it (ADR-0001); AgentOS tracks it here only for currency research, the family policy, and the audit panel. config.yaml stays the single source of truth for what is actually running (ADR-0049).",
+      "model": "qwen3.6-27b-64k",
+      "runtime": "ollama",
+      "size_gb": 17.0,
+      "context_length": 65536,
+      "num_parallel": 1,
+      "source": "ollama (local): qwen3.6-27b-64k — Qwen3.6 27B, 64K context",
+      "local": true,
+      "safety_critical": false,
+      "agent_role": "inference",
+      "agent_target": "hermes",
+      "used_by": [
+        "Hermes chat + agent turns"
+      ],
+      "alternatives": [
+        "qwen3.6:27b — same family, 32K context (lighter KV cache)",
+        "gemma4-26b-64k — 15GB, different family; verify it stays on-GPU under live load before adopting",
+        "hermes4-14b — 15GB, Nous Hermes family; smaller, evicts faster"
+      ],
+      "notes": "Added in ADR-0049 so the inference LLM — whose VRAM footprint is the substrate's central concern (ADR-0018/0024) — stops being a registry blind spot. NOT auto-fetched: it is config-owned and present. Setting this default LIVE in ~/.hermes/config.yaml is ADR-0049 Phase 2 (gated on a measured coexistence canary + evict + fallback_model); Phase 1 only reads the current value for display. The agentos value here may lag the live config — the Hermes adapter reads config.yaml directly for the live default.",
+      "modality": "text",
+      "rating": "sfw",
+      "tier": "hero",
+      "fetch": []
     }
   ],
   "bundles": [
