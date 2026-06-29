@@ -546,5 +546,102 @@ class NoTailscaleExposure(unittest.TestCase):
         self.assertIn("refusing to bind non-loopback", src)
 
 
+class Adr0049Routes(Routes):
+    """The model-policy + adopt/revert routes (ADR-0049). Reuses the Routes loopback harness (which
+    fakes Popen) and additionally isolates the policy file, the manifest, and the registry into tmp so
+    a test NEVER touches the user's real ~/.config/agentos/policy.json or the shipped registry."""
+
+    def setUp(self):
+        super().setUp()
+        self._cfg, self._state = os.environ.get("XDG_CONFIG_HOME"), os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_CONFIG_HOME"] = str(Path(self.tmp) / "cfg")
+        os.environ["XDG_STATE_HOME"] = str(Path(self.tmp) / "state")
+        self._reg_save = setup.REGISTRY
+        regp = Path(self.tmp) / "registry.json"
+        regp.write_text(Path(setup.REGISTRY).read_text())
+        setup.REGISTRY = regp
+        self._cache = setup._OLLAMA_LIST_CACHE
+        setup._OLLAMA_LIST_CACHE = ["gemma4:latest", "dolphin3.0-mistral-24b:latest"]
+
+    def tearDown(self):
+        setup.REGISTRY = self._reg_save
+        setup._OLLAMA_LIST_CACHE = self._cache
+        for k, v in (("XDG_CONFIG_HOME", self._cfg), ("XDG_STATE_HOME", self._state)):
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        super().tearDown()
+
+    def test_policy_get(self):
+        d = json.loads(self._req("GET", "/api/policy")[1])
+        self.assertIn("policy", d)
+        self.assertIn("known_families", d)
+        self.assertIn("hermes_default", d)
+        self.assertIn("qwen", d["known_families"])
+
+    def test_policy_post_requires_token(self):
+        self.assertEqual(self._post("/api/policy", {"allow_any_ollama": False})[0], 403)
+
+    def test_policy_post_sets_block(self):
+        st, _ = self._post("/api/policy", {"allow_any_ollama": False, "family_block": ["dolphin"]}, token=sw.TOKEN)
+        self.assertEqual(st, 200)
+        d = json.loads(self._req("GET", "/api/policy")[1])
+        self.assertIn("dolphin", d["policy"]["family_block"])
+
+    def test_policy_allow_any_needs_affirm(self):
+        st, body = self._post("/api/policy", {"allow_any_ollama": True}, token=sw.TOKEN)
+        self.assertEqual(st, 400)
+        self.assertEqual(json.loads(body)["error"], "affirm-required")
+        st2, body2 = self._post("/api/policy", {"allow_any_ollama": True, "affirm_mature": True}, token=sw.TOKEN)
+        self.assertEqual(st2, 200)
+        pol = json.loads(body2)["policy"]
+        self.assertTrue(pol["allow_any_ollama"])
+        self.assertIsNotNone(pol["mature_affirmed_at"])
+
+    def test_adopt_requires_token(self):
+        self.assertEqual(self._post("/api/adopt", {"ref": "gemma4:latest"})[0], 403)
+
+    def test_adopt_denied_ref_409_and_registry_untouched(self):
+        before = Path(setup.REGISTRY).read_text()
+        st, body = self._post("/api/adopt", {"ref": "deadman44/x:latest"}, token=sw.TOKEN)
+        self.assertEqual(st, 409)
+        self.assertEqual(json.loads(body)["reason"], "safety-denied")
+        self.assertEqual(Path(setup.REGISTRY).read_text(), before)         # nothing written
+
+    def test_adopt_then_revert_happy_path(self):
+        self.assertEqual(self._post("/api/policy", {"allow_any_ollama": True, "affirm_mature": True},
+                                    token=sw.TOKEN)[0], 200)
+        st, body = self._post("/api/adopt", {"ref": "gemma4:latest", "affirmed": True}, token=sw.TOKEN)
+        self.assertEqual(st, 200)
+        mid = json.loads(body)["id"]
+        self.assertIn(mid, [m["id"] for m in json.loads(Path(setup.REGISTRY).read_text())["models"]])
+        d = json.loads(self._req("GET", "/api/policy")[1])
+        self.assertIn(mid, [a["id"] for a in d["adopted"]])
+        self.assertEqual(self._post("/api/revert", {"id": mid}, token=sw.TOKEN)[0], 200)
+        self.assertNotIn(mid, [m["id"] for m in json.loads(Path(setup.REGISTRY).read_text())["models"]])
+
+    def test_research_models_route_starts_job(self):
+        self.assertEqual(self._post("/api/research_models", {"modality": "text"}, token=sw.TOKEN)[0], 202)
+
+    def test_hermes_propose_requires_token(self):
+        self.assertEqual(self._post("/api/hermes_propose", {"ref": "gemma4-26b-64k"})[0], 403)
+
+    def test_hermes_propose_is_dry_run(self):                # ADR-0049 Phase 2a: preview only, writes nothing
+        st, body = self._post("/api/hermes_propose", {"ref": "gemma4-26b-64k"}, token=sw.TOKEN)
+        self.assertEqual(st, 200)
+        d = json.loads(body)
+        for k in ("diff", "fit", "current", "target", "changes", "permitted"):
+            self.assertIn(k, d)
+        self.assertFalse(d["fit"]["measured"])              # honest: not a measured canary
+
+    def test_research_json_jobview_parses_artifact(self):
+        art = Path(self.tmp) / "cand.json"
+        art.write_text(json.dumps({"ok": True, "modality": "text", "candidates": [{"ref": "gemma4:latest"}]}))
+        job = {"id": "x", "kind": "research-json", "label": "t", "proc": _FakeProc(rc=0),
+               "log": str(art), "artifact": str(art), "started": 0}
+        v = sw.job_view(setup.load_registry(), job)
+        self.assertEqual(v["status"], "done")
+        self.assertTrue(v["result"]["ok"])
+        self.assertEqual(v["result"]["candidates"][0]["family"], "gemma")   # re-derived at read time
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

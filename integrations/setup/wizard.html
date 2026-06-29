@@ -392,6 +392,40 @@
       <p class="dsc" style="color:var(--muted);font-size:.8rem;margin:2px 0 0">The ComfyUI engine that runs image &amp; video, and an agent that web-searches the best models for your GPU.</p>
       <div id="runtimeSub"></div>
 
+      <h3 class="ssub">Models &amp; policy</h3>
+      <p class="dsc" style="color:var(--muted);font-size:.8rem;margin:2px 0 8px">Which model families you trust, what's newest that fits, and which model your agents run. Safety blocks always win &amp; can't be turned off.</p>
+      <style>
+        .mp{font-size:.86rem}
+        .mp .mp-cur{color:var(--muted);font-size:.82rem;margin:0 0 10px;line-height:1.5}
+        .mp .mp-cur b{color:var(--blue);font-family:var(--mono)}
+        .mp .mp-toggle{display:flex;align-items:center;gap:9px;margin:8px 0;cursor:pointer}
+        .mp .mp-toggle input{width:16px;height:16px;accent-color:var(--blue);cursor:pointer}
+        .mp .mp-affirm{margin:6px 0 4px 25px;padding:8px 11px;border:1px solid color-mix(in srgb,var(--brand-warm,#e0884f) 40%,transparent);border-radius:10px;background:color-mix(in srgb,var(--brand-warm,#e0884f) 8%,transparent);font-size:.8rem}
+        .mp .mp-label{color:var(--label,var(--muted));font-size:.76rem;text-transform:uppercase;letter-spacing:.03em;margin:12px 0 5px}
+        .mp .mp-chips{display:flex;flex-wrap:wrap;gap:6px}
+        .mp .chip{font-size:.78rem;padding:3px 10px;border-radius:999px;border:1px solid var(--hairline);background:var(--glass,rgba(255,255,255,.04));color:var(--muted);cursor:pointer;user-select:none}
+        .mp .chip.block{color:#ff8b8b;border-color:color-mix(in srgb,#ff8b8b 45%,transparent);background:color-mix(in srgb,#ff8b8b 10%,transparent)}
+        .mp .chip.allow{color:var(--blue);border-color:color-mix(in srgb,var(--blue) 45%,transparent);background:color-mix(in srgb,var(--blue) 10%,transparent)}
+        .mp .mp-prec{color:var(--muted);font-size:.74rem;margin:8px 0 0;font-style:italic}
+        .mp hr{border:0;border-top:1px solid var(--hairline);margin:14px 0}
+        .mp .mp-cand{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:9px 0;border-top:1px solid var(--hairline)}
+        .mp .mp-cand .nm{font-weight:600}
+        .mp .mp-fam{font-size:.7rem;color:var(--blue);border:1px solid color-mix(in srgb,var(--blue) 30%,transparent);border-radius:999px;padding:1px 7px;margin-left:6px;font-weight:500}
+        .mp .mp-cand .ref{font-family:var(--mono);color:var(--muted);font-size:.78rem;margin:2px 0}
+        .mp .mp-cand .why{color:var(--muted);font-size:.76rem}
+        .mp .mp-cand .act{flex:0 0 auto;text-align:right;font-size:.76rem}
+        .mp .mp-deny{color:#ff8b8b}.mp .mp-hint{color:var(--muted)}.mp .mp-hint code{font-family:var(--mono);font-size:.74rem}
+        .mp .mp-ledger{margin-top:10px}
+        .mp .mp-led-row{display:flex;gap:10px;align-items:center;justify-content:space-between;font-size:.8rem;padding:5px 0;color:var(--muted)}
+        .mp .mp-led-row b{color:var(--text,#e6e9f0);font-family:var(--mono)}
+        .mp .mp-defrow{display:flex;gap:6px;margin:8px 0 2px}
+        .mp .mp-defrow input{flex:1;min-width:0;background:var(--glass,rgba(255,255,255,.04));border:1px solid var(--hairline);border-radius:8px;color:var(--text,#e6e9f0);padding:6px 9px;font-size:.8rem;font-family:var(--mono)}
+        .mp .mp-preview{margin:6px 0 2px}
+        .mp .mp-diff{font-family:var(--mono);font-size:.76rem;background:var(--glass,rgba(255,255,255,.04));border:1px solid var(--hairline);border-radius:8px;padding:8px 10px;white-space:pre-wrap;margin:0 0 6px;color:var(--text,#e6e9f0)}
+        .mp .mp-diff .add{color:var(--up,#74d39a)}.mp .mp-diff .del{color:#ff8b8b}
+      </style>
+      <div id="modelPolicy" class="mp"><div class="dsc" style="color:var(--muted)">loading policy…</div></div>
+
       <h3 class="ssub">Accounts</h3>
       <div class="creds">
         <div class="dsc" style="color:var(--muted);font-size:.82rem;line-height:1.5">A free <a href="https://civitai.com/user/account" target="_blank" rel="noopener">Civitai</a> token unlocks the Wan mature checkpoints. A <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">HuggingFace</a> token is only needed for gated models. Tokens go to your OS keyring — never a file, never sent anywhere but the download.</div>
@@ -554,6 +588,138 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     const research = `<div class="subrow"><div class="ico" aria-hidden="true">${SVG("i-cpu")}</div><div class="meta"><div class="nm">Latest models for this GPU</div><div class="dsc">ask an agent to web-search what fits best right now — it proposes, you decide</div></div><button class="btn ghost" id="research">Find latest ↗</button></div>`;
     el.innerHTML = comfy + research;
   }
+
+  // ── 05: Models & policy (ADR-0049) — trust by family, research → adopt, all reversible ──
+  let MP={pol:null,fam:[],hermes:null,adopted:[],cands:null,researching:false,wantAffirm:false};
+  let _mpPoll=null;
+  async function loadPolicy(){
+    try{
+      const d=await (await fetch("/api/policy",{cache:"no-store"})).json();
+      MP.pol=d.policy||{}; MP.fam=d.known_families||[]; MP.hermes=d.hermes_default; MP.adopted=d.adopted||[];
+      renderModelPolicy();
+    }catch(_){}
+  }
+  function chip(f,kind,on){ return `<span class="chip ${on?kind:""}" data-fam-${kind}="${esc(f)}" role="button" tabindex="0" aria-pressed="${on}">${esc(f)}</span>`; }
+  function renderModelPolicy(){
+    const el=document.getElementById("modelPolicy"); if(!el||!MP.pol) return;
+    const p=MP.pol, block=new Set(p.family_block||[]), allow=new Set(p.family_allow||[]);
+    const families=MP.fam.filter(f=>f!=="selector");
+    const cur = MP.hermes
+      ? `Your agent (Hermes) currently runs <b>${esc(MP.hermes)}</b>. Preview a different model as its default below — applying it (one-click revertible) is the next step.`
+      : `We couldn't read your agent's current model — that's fine, it stays the source of truth.`;
+    const affirm = (MP.wantAffirm && !(p.allow_any_ollama && p.mature_affirmed_at))
+      ? `<label class="mp-affirm"><input type="checkbox" id="mpAffirm"> I'm 18 or older — allowing any model can include uncensored/mature ones.</label>` : "";
+    const allowRow = p.allow_any_ollama
+      ? `<div class="mp-label">Allowed families <span style="text-transform:none;letter-spacing:0">— optional; empty = all</span></div><div class="mp-chips">${families.map(f=>chip(f,"allow",allow.has(f))).join("")}</div>` : "";
+    let cands="";
+    if(MP.researching) cands=`<div class="dsc" style="color:var(--muted);margin-top:8px">searching the web for the best models in your VRAM class…</div>`;
+    else if(MP.cands) cands=renderCands(MP.cands);
+    const ledger = (MP.adopted||[]).length
+      ? `<div class="mp-label">Adopted — reversible</div><div class="mp-ledger">${MP.adopted.map(a=>`<div class="mp-led-row"><span><b>${esc(a.ref)}</b> · ${esc(a.at||"")}</span><button class="btn ghost" data-revert="${esc(a.id)}">Revert</button></div>`).join("")}</div>` : "";
+    el.innerHTML = `
+      <p class="mp-cur">${cur}</p>
+      ${MP.hermes?`<div class="mp-defrow"><input id="mpDefRef" placeholder="preview a model as Hermes default — e.g. gemma4-26b-64k" aria-label="model ref"><button class="btn ghost" id="mpPreviewDef">Preview default</button></div><div id="mpPreview"></div>`:""}
+      <label class="mp-toggle"><input type="checkbox" id="mpAny" ${p.allow_any_ollama?"checked":""}> Allow any Ollama model <span style="color:var(--muted)">(not just the curated set)</span></label>
+      ${affirm}
+      <div class="mp-label">Blocked families <span style="text-transform:none;letter-spacing:0">— click to keep a family out</span></div>
+      <div class="mp-chips">${families.map(f=>chip(f,"block",block.has(f))).join("")}</div>
+      ${allowRow}
+      <p class="mp-prec">Order: safety red line &gt; blocked family &gt; allow-any &gt; allowlist. The safety block can't be turned off.</p>
+      <hr>
+      <div class="subrow" style="padding:0"><div class="meta"><div class="nm">Find the latest models for your GPU</div><div class="dsc">a research agent web-searches what fits — only your VRAM class leaves the box, never your model list or policy. It proposes; you adopt.</div></div><button class="btn ghost" id="mpFind" ${MP.researching?"disabled":""}>${MP.researching?"searching…":"Find latest ↗"}</button></div>
+      ${cands}
+      ${ledger}`;
+  }
+  function renderCands(list){
+    if(!list.length) return `<div class="dsc" style="color:var(--muted);margin-top:8px">No usable suggestions came back. Try again, or <span class="mp-hint"><code>ollama pull</code></span> a model and it'll show up in your library.</div>`;
+    return list.map(c=>{
+      const ref=esc(c.ref); let act;
+      if(c.adoptable) act=`<button class="btn" data-adopt="${ref}" data-name="${esc(c.name||"")}">Adopt</button>`;
+      else if(c.reason==="already-registered") act=`<span class="state ready">✓ in your library</span>`;
+      else if(c.reason==="safety-denied") act=`<span class="mp-deny">⛔ safety red line — can't be allowed</span>`;
+      else if(c.reason==="not-present") act=`<span class="mp-hint">pull first: <code>ollama pull ${ref}</code></span>`;
+      else if(c.reason==="blocked-family") act=`<button class="btn ghost" data-allowfam="${esc(c.family)}">Unblock ${esc(c.family)}</button>`;
+      else if(c.reason==="not-curated"||c.reason==="not-in-allowlist") act=`<button class="btn ghost" data-allowfam="${esc(c.family)}">Allow ${esc(c.family)}</button>`;
+      else act=`<span class="mp-hint">${esc(c.reason||"")}</span>`;
+      const meta=[c.approx_gb?`~${esc(c.approx_gb)} GB`:"",c.license?esc(c.license):""].filter(Boolean).join(" · ");
+      return `<div class="mp-cand"><div class="meta"><div class="nm">${esc(c.name||c.ref)}<span class="mp-fam">${esc(c.family)}</span></div><div class="ref">${ref}</div><div class="why">${esc(c.why||"")}${meta?` · ${meta}`:""}</div></div><div class="act">${act}</div></div>`;
+    }).join("");
+  }
+  async function savePolicy(patch){
+    const p=MP.pol||{};
+    const body={
+      allow_any_ollama:("allow_any_ollama" in patch)?patch.allow_any_ollama:!!p.allow_any_ollama,
+      family_allow:("family_allow" in patch)?patch.family_allow:(p.family_allow||[]),
+      family_block:("family_block" in patch)?patch.family_block:(p.family_block||[]),
+    };
+    if(patch.affirm_mature) body.affirm_mature=true;
+    const r=await post("/api/policy",body);
+    if(r.error==="affirm-required"){ MP.wantAffirm=true; renderModelPolicy(); return; }
+    MP.wantAffirm=false; await loadPolicy();
+  }
+  async function previewDefault(ref){
+    const el=document.getElementById("mpPreview"); if(!el) return;
+    el.innerHTML=`<div class="dsc" style="color:var(--muted)">checking…</div>`;
+    const p=await post("/api/hermes_propose",{ref});
+    if(p.error){ el.innerHTML=`<div class="err">${esc(p.error)}</div>`; return; }
+    const f=p.fit||{}, v=f.verdict||"unknown";
+    const vtxt={fits:"fits comfortably",tight:"tight — may share VRAM poorly under load","too-big":"won't fit",unknown:"fit unknown"}[v]||v;
+    const diff=esc(p.diff).split("\n").map(l=>l.startsWith("+")?`<span class="add">${l}</span>`:l.startsWith("-")?`<span class="del">${l}</span>`:l).join("\n");
+    const permit=p.permitted?"":`<div class="mp-deny">⛔ ${esc(p.permit_reason||"not eligible")} — can't be set as the default</div>`;
+    const pull=f.present?"":"⚠ not pulled yet — <code>ollama pull</code> it first. ";
+    el.innerHTML=`<div class="mp-preview">
+      <pre class="mp-diff">${diff}</pre>
+      <div class="dsc">${pull}Estimated footprint <b>${esc(f.est_footprint_gb||"?")} GB</b> of ${esc(f.vram_gb||"?")} GB — <b>${esc(vtxt)}</b> <span style="color:var(--muted)">(${esc(f.note||"")})</span></div>
+      ${permit}
+      <div class="dsc" style="color:var(--muted);margin-top:6px">Preview only. Applying edits <code>~/.hermes/config.yaml</code> and restarts Hermes — one-click revertible. <b>Not enabled yet</b> — it lands after this preview is reviewed on your box.</div>
+    </div>`;
+  }
+  async function findLatest(){
+    MP.researching=true; MP.cands=null; renderModelPolicy();
+    const r=await post("/api/research_models",{modality:"text"});
+    if(r.error){ MP.researching=false; renderModelPolicy(); return; }
+    clearInterval(_mpPoll);
+    _mpPoll=setInterval(async()=>{
+      try{
+        const d=await (await fetch("/api/jobs",{cache:"no-store"})).json();
+        const j=(d.jobs||[]).filter(x=>x.kind==="research-json").slice(-1)[0];
+        if(j && j.status!=="running"){
+          clearInterval(_mpPoll); MP.researching=false;
+          MP.cands=(j.result&&j.result.ok)?(j.result.candidates||[]):[];
+          renderModelPolicy();
+        }
+      }catch(_){}
+    },2500);
+  }
+  document.getElementById("modelPolicy").addEventListener("click",async e=>{
+    const t=e.target;
+    if(t.id==="mpFind"){ findLatest(); return; }
+    if(t.id==="mpPreviewDef"){ const ref=(document.getElementById("mpDefRef").value||"").trim(); if(ref) previewDefault(ref); return; }
+    const bf=t.closest("[data-fam-block]");
+    if(bf){ const f=bf.dataset.famBlock,s=new Set(MP.pol.family_block||[]); s.has(f)?s.delete(f):s.add(f); savePolicy({family_block:[...s]}); return; }
+    const af=t.closest("[data-fam-allow]");
+    if(af){ const f=af.dataset.famAllow,s=new Set(MP.pol.family_allow||[]); s.has(f)?s.delete(f):s.add(f); savePolicy({family_allow:[...s]}); return; }
+    const al=t.closest("[data-allowfam]");
+    if(al){ const f=al.dataset.allowfam,blk=new Set(MP.pol.family_block||[]);
+      if(blk.has(f)){ blk.delete(f); savePolicy({family_block:[...blk]}); }
+      else { const alw=new Set(MP.pol.family_allow||[]); alw.add(f); savePolicy({allow_any_ollama:true,family_allow:[...alw]}); } return; }
+    const ad=t.closest("[data-adopt]");
+    if(ad){ ad.disabled=true; const ref=ad.dataset.adopt; let r=await post("/api/adopt",{ref,name:ad.dataset.name||""});
+      if(r.reason==="needs-affirm"){ if(confirm("This may be a mature/uncensored model. Are you 18 or older?")) r=await post("/api/adopt",{ref,name:ad.dataset.name||"",affirmed:true}); else { ad.disabled=false; return; } }
+      if(r.error||r.ok===false){ inlineErr(ad,(r.reason||r.error||"couldn't adopt")); ad.disabled=false; return; }
+      await loadPolicy(); refreshState(); return; }
+    const rv=t.closest("[data-revert]");
+    if(rv){ rv.disabled=true; const r=await post("/api/revert",{id:rv.dataset.revert});
+      if(r.error||r.ok===false){ inlineErr(rv,(r.reason||"couldn't revert")); rv.disabled=false; return; }
+      await loadPolicy(); refreshState(); return; }
+  });
+  document.getElementById("modelPolicy").addEventListener("change",e=>{
+    if(e.target.id==="mpAny") savePolicy({allow_any_ollama:e.target.checked});
+    else if(e.target.id==="mpAffirm" && e.target.checked) savePolicy({allow_any_ollama:true,affirm_mature:true});
+  });
+  document.getElementById("modelPolicy").addEventListener("keydown",e=>{
+    if((e.key==="Enter"||e.key===" ") && e.target.classList&&e.target.classList.contains("chip")){ e.preventDefault(); e.target.click(); }
+  });
 
   function renderLedger(s){
     const el=document.getElementById("ledger");
@@ -724,7 +890,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
       const d=await (await fetch("/api/jobs",{cache:"no-store"})).json();
       const el=document.getElementById("progress");
       if(!d.jobs||!d.jobs.length){ el.innerHTML=""; return; }
-      el.innerHTML=d.jobs.map(j=>{
+      el.innerHTML=d.jobs.filter(j=>j.kind!=="research-json").map(j=>{   // research-json renders in Models & policy
         const pct=j.total?Math.round(100*j.present/j.total):(j.status==="done"?100:0);
         let st;
         if(j.kind==="research") st=j.status==="running"?"searching the web…":j.status==="done"?"done":"couldn't finish";
@@ -935,10 +1101,10 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
   // ── boot ──
   document.body.classList.add("first");
   setTimeout(()=>document.body.classList.remove("first"),700);
-  refreshState(); refreshJobs(); refreshComponentJobs();
+  refreshState(); refreshJobs(); refreshComponentJobs(); loadPolicy();
   setInterval(refreshJobs,2500);
   setInterval(refreshState,8000);
-  setInterval(()=>{ if(document.getElementById("extras-sec").open) refreshDesktop(); else refreshComponentJobs(); },6000);
+  setInterval(refreshComponentJobs,6000);
 </script>
 </body>
 </html>
