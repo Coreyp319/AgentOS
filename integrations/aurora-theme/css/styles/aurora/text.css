@@ -176,7 +176,7 @@ spinbox
         margin: 0px;
         margin-right: var(--minimal-spacing);
 
-        &:hover,
+        &:hovered,
         &:pressed
         {
             border: none;

@@ -23,6 +23,23 @@ kread_ini() {
 prev_style="$(cat "$STATE/prev-widgetstyle" 2>/dev/null || true)"; : "${prev_style:=kvantum}"
 prev_scheme="$(cat "$STATE/prev-colorscheme" 2>/dev/null || true)"
 
+# Idempotent revert ("revert twice = safe no-op", the tx invariant): act ONLY if Aurora is actually
+# active. After a clean revert every signal below is gone, so a re-run (line 87 invites one) short-
+# circuits here instead of clobbering whatever style the user has since chosen — and the captures
+# consumed on success below can't strand a stale value. Fail-SAFE: ANY one signal ⇒ proceed.
+aurora_active=0
+for s in prev-widgetstyle prev-colorscheme union-style.conf.preaurora; do
+  if [ -e "$STATE/$s" ]; then aurora_active=1; fi
+done
+case "$(kread_ini kdeglobals General ColorScheme)" in AuroraDark|AuroraLight) aurora_active=1 ;; esac
+if [ -f "$ENVD/union-style.conf" ] && grep -q '^UNION_STYLE_NAME=aurora$' "$ENVD/union-style.conf" 2>/dev/null; then
+  aurora_active=1
+fi
+if [ "$aurora_active" -eq 0 ]; then
+  echo "✓ Aurora is not active — nothing to revert (already reverted, or never applied)."
+  exit 0
+fi
+
 # Best-effort per item: a revert must never abort half-way (kwriteconfig6 can fail under a
 # read-only-home / cold-boot unit — see the kread_ini note). Each step records its own failure;
 # we report the set at the end instead of letting `set -e` strand the remaining reverts.
@@ -56,7 +73,12 @@ if [ -f "$STATE/union-style.conf.preaurora" ]; then
     && echo "✓ UNION_STYLE_NAME restored to its prior value" \
     || failed+=("UNION_STYLE_NAME env knob")
 else
-  rm -f "$ENVD/union-style.conf"
+  # Only remove the file if it is OURS (UNION_STYLE_NAME=aurora). A re-run after a clean revert
+  # must never delete a UNION_STYLE_NAME the user has since set themselves (the active-guard above
+  # already short-circuits that case; this is belt-and-suspenders for it).
+  if [ -f "$ENVD/union-style.conf" ] && grep -q '^UNION_STYLE_NAME=aurora$' "$ENVD/union-style.conf" 2>/dev/null; then
+    rm -f "$ENVD/union-style.conf"
+  fi
 fi
 
 # Reverse the GTK app re-accent (ADR-0042 OS-cohesion pass). Each guarded; a missing backup just skips.
@@ -79,6 +101,10 @@ for base in gtk-3.0 gtk-4.0; do
 done
 
 if [ "${#failed[@]}" -eq 0 ]; then
+  # Consume the once-only captures so the NEXT apply re-records the user's real current style
+  # (apply uses `[ -s … ] ||`, so a surviving capture would freeze a stale value across cycles).
+  # Done only on a FULL success — a partial revert keeps them so a re-run can retry.
+  rm -f "$STATE/prev-widgetstyle" "$STATE/prev-colorscheme"
   echo "✓ Aurora deactivated. Restored: widgetStyle → $prev_style${prev_scheme:+, ColorScheme → $prev_scheme}."
   echo "  Your desktop is exactly as it was — effective for new apps now, fully at next login."
 else

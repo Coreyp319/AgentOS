@@ -93,6 +93,14 @@ def lint(style_dir: str):
                 if re.search(r"--focus-color\b", code) or re.search(r"set-alpha", code, re.I):
                     errors.append(f"{fn}:{ln}: translucent focus outline (must be the SOLID "
                                   f"--focus-ring-color / --focus-outline): {line.strip()}")
+        # Fail-closed before trusting the brace parser: unbalanced braces desync top_level_blocks,
+        # which can make the focus-coverage assertion below pass VACUOUSLY on a malformed file.
+        # (The line-based outline scan above is brace-independent, so it still ran.)
+        nb = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
+        if nb.count("{") != nb.count("}"):
+            errors.append(f"{fn}: unbalanced braces ({nb.count('{')} open vs {nb.count('}')} close) "
+                          f"— CSS malformed; focus coverage cannot be trusted. Fix the file.")
+            continue
         # 2. accumulate per-widget state coverage
         for sel, body in top_level_blocks(raw):
             wtypes = widget_types(sel)
