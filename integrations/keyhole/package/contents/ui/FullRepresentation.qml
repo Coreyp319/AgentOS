@@ -148,6 +148,24 @@ Item {
                 color: full.secondaryFg; font.pixelSize: 12
                 wrapMode: Text.WordWrap
             }
+            // QUEUE (schema 4, ADR-0041): who is waiting their turn at the lease RIGHT NOW + the tier
+            // served next — the "who's in line" half of the arbitration picture, beside LEASE's "who
+            // holds". CALM weather (not bold, like the deferral/held weather), never warm. PRESENT only
+            // when something waits; at rest both cells hide and the grid collapses (density grows with
+            // load). Both cells share one visibility binding so the 2-column grid stays aligned.
+            Text {
+                text: "QUEUE"; color: full.labelFg; font.pixelSize: 11
+                visible: full.model && full.model.queueString() !== ""
+            }
+            Text {
+                Layout.fillWidth: true
+                visible: full.model && full.model.queueString() !== ""
+                text: full.model ? full.model.queueString() : ""
+                color: full.secondaryFg; font.pixelSize: 13
+                elide: Text.ElideRight
+                Accessible.role: Accessible.StaticText
+                Accessible.name: "Queue " + (full.model ? full.model.queueString() : "")
+            }
             // WORKLOAD (schema 3): names the dominant GPU compute process — the attribution the
             // lease/residency rows miss, chiefly ComfyUI (dreaming). The row is PRESENT only when
             // something heavy runs; at rest both cells hide and the grid collapses (density grows

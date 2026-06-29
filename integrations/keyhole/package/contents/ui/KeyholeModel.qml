@@ -45,6 +45,11 @@ Item {
     // 0 is a real "nothing waiting" datum (NOT -1/UNKNOWN). A schema-1 producer omits the field,
     // so we default to empty and let the `|| {...}` guard hold it. Two counts → two tray lines.
     property var pendingRequests: ({ held: 0, needs_review: 0 })
+    // schema 4 (ADR-0041): the LIVE cross-workflow VRAM-demand queue (arbiter) — how many workflows are
+    // blocked on WaitTurn for the lease RIGHT NOW + the tier served next. DISTINCT from pendingRequests
+    // (the durable deferral buffer): this is who is actively in line for the GPU this moment. 0 is a real
+    // "nothing in line" datum, never UNKNOWN; a pre-schema-4 file omits it and the `|| {...}` guard holds.
+    property var queue: ({ depth: 0, next_tier: "" })
 
     // --- Freshness / liveness ------------------------------------------------
     property bool everLoaded: false     // have we ever parsed a good file?
@@ -288,6 +293,9 @@ Item {
         // schema 2: lucid queue mirror. Backward-compatible — a schema-1 file lacks the field and
         // we hold the empty default (0,0), which reads as "nothing waiting", never UNKNOWN.
         pendingRequests = d.pending_requests || ({ held: 0, needs_review: 0 })
+        // schema 4: live arbiter wait-queue. A pre-schema-4 file omits it → hold the empty default
+        // (nothing in line), which reads calm, never UNKNOWN.
+        queue = d.queue || ({ depth: 0, next_tier: "" })
     }
 
     // schema 2: the two tray lines (held = calm weather; needs_review = your-move). Empty queue →
@@ -304,6 +312,17 @@ Item {
         if (effectiveState === "unknown") return ""
         var n = (pendingRequests && pendingRequests.needs_review) || 0
         return n > 0 ? (n + (n === 1 ? " needs your OK" : " need your OK")) : ""
+    }
+    // schema 4 (ADR-0041): the live arbiter wait-queue line — "N waiting · <tier> next". CALM weather,
+    // like held: a count + an aggregate next-tier, NEVER warm and NEVER a waiter's identity (the
+    // arbiter's no-leak contract). "" when nothing is in line or UNKNOWN, so the QUEUE row collapses and
+    // the panel stays calm at rest (density grows with load — the ADR-0012 ethos).
+    function queueString() {
+        if (effectiveState === "unknown") return ""
+        var n = (queue && queue.depth) || 0
+        if (n <= 0) return ""
+        var t = (queue && queue.next_tier) || ""
+        return (n + " waiting") + (t.length ? (" · " + t + " next") : "")
     }
 
     Timer {
