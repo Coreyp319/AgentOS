@@ -150,6 +150,22 @@ class FailClosed(unittest.TestCase):
             self.assertEqual(back["mature_affirmed_at"], 123.0)
 
 
+class HostPin(unittest.TestCase):
+    def test_ref_host(self):
+        self.assertIsNone(policy.ref_host("qwen3.6:27b"))            # no '/', dot is in the name not a host
+        self.assertIsNone(policy.ref_host("bartowski/model"))       # namespace/name on the default registry
+        self.assertEqual(policy.ref_host("hf.co/bartowski/MN-12B:Q5"), "hf.co")
+        self.assertEqual(policy.ref_host("evil.com/ns/model"), "evil.com")
+        self.assertEqual(policy.ref_host("localhost:5000/m"), "localhost:5000")
+
+    def test_host_allowed(self):
+        self.assertTrue(policy.host_allowed("qwen3.6:27b"))         # default registry
+        self.assertTrue(policy.host_allowed("library/qwen:7b"))     # namespace, default registry
+        self.assertTrue(policy.host_allowed("hf.co/bartowski/X:Q5"))
+        self.assertFalse(policy.host_allowed("evil.com/ns/model"))  # arbitrary host → refused
+        self.assertFalse(policy.host_allowed("localhost:11434/x"))
+
+
 class Mature(unittest.TestCase):
     def test_markers(self):
         self.assertTrue(policy.is_mature_marker("huihui_ai/qwen2.5-abliterate:3b"))

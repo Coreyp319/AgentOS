@@ -46,9 +46,9 @@ CANARY_TOK_S = float(os.environ.get("AGENTOS_CANARY_TOK_S", "8.0"))       # gene
 
 # the model.default scalar, capturing (prefix)(value)(trailing comment/space) so we replace ONLY value.
 _DEFAULT_RE = re.compile(r"^(\s*default\s*:\s*)(\"[^\"]*\"|'[^']*'|\S+)(.*)$")
-# a safe single-line model ref — no whitespace/newline/quotes, so it can't inject YAML structure into
-# config.yaml (security review). Applied to user-supplied refs before any write.
-_REF_RE = re.compile(r"^[A-Za-z0-9._:/+@-]{1,200}$")
+# a safe single-line model ref — leading alnum (no `-flag` confusion at argv), no whitespace/newline/
+# quotes (no YAML injection into config.yaml). Applied via fullmatch to user-supplied refs before any write.
+_REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+@-]{0,199}")
 
 # the command that applies a config change (mirrors integrations/hermes/gpu-coordinator/DEPLOY.md).
 HERMES_RESTART = ("systemctl", "--user", "restart", "hermes-gateway.service")
@@ -126,56 +126,96 @@ def _ollama_generate(ref: str, prompt: str = "Say OK.", num_predict: int = 16,
         return json.load(r)
 
 
+# ── VRAM coordinator admission (ADR-0049 Phase 3 — closes the canary's predict-before-load TOCTOU) ──
+COORD_NAME = "org.agentos.Coordinator1"
+COORD_PATH = "/org/agentos/Coordinator1"
+
+
+def _coord_acquire(est_mib: int, *, tier: str = "batch", run=subprocess.run):
+    """Ask the VRAM coordinator to admit a ~est_mib load (it accounts for ComfyUI/dream jobs that Ollama's
+    own fit math can't see). → (token, None) granted · (None, reason) denied · (None, 'unreachable') if the
+    coordinator isn't on the bus (caller falls back to current-free-VRAM admission)."""
+    try:
+        r = run(["busctl", "--user", "--json=short", "call", COORD_NAME, COORD_PATH, COORD_NAME,
+                 "Acquire", "su", tier, str(int(est_mib))], capture_output=True, text=True, timeout=20, check=False)
+        if r.returncode != 0:
+            return None, "unreachable"
+        data = json.loads(r.stdout).get("data", [])
+        granted = bool(data[0]) if data else False
+        token = data[1] if len(data) > 1 else 0
+        return (token, None) if granted else (None, (data[2] if len(data) > 2 else "") or "denied")
+    except Exception:
+        return None, "unreachable"
+
+
+def _coord_release(token, *, run=subprocess.run) -> None:
+    if not token:
+        return
+    try:
+        run(["busctl", "--user", "call", COORD_NAME, COORD_PATH, COORD_NAME, "Release", "t", str(int(token))],
+            capture_output=True, timeout=10, check=False)
+    except Exception:
+        pass
+
+
 def measured_canary(ref: str, *, run=subprocess.run, generate=None, ps=None, hw=None,
-                    stop_after: bool = True) -> dict:
-    """MEASURE that `ref` actually runs on the GPU under the live load — the go/no-go before a live
-    default change. Loads the model via Ollama, reads `/api/ps` (`size_vram` vs `size`) and the
-    generation tok/s, and PASSES only if it is ~entirely on the GPU AND above the tok/s floor. A model
-    that offloads to CPU (the 2026-06-19 thrash) or OOMs is REFUSED no matter how capable. Read-only
-    w.r.t. config; frees the model afterward (so the canary doesn't leave it resident) unless it is the
-    one the gateway is already using. Returns a verdict dict (never raises)."""
+                    stop_after: bool = True, acquire=None, release=None) -> dict:
+    """MEASURE that `ref` actually runs on the GPU under the live load — the go/no-go before a live default
+    change. ADMISSION FIRST (never load blind): ask the VRAM coordinator to Acquire a batch lease (it sees
+    ComfyUI/dream jobs); if it's not on the bus, fall back to current-free-VRAM admission. Then load via
+    Ollama, read `/api/ps` (`size_vram` vs `size`) + tok/s, and PASS only if ~entirely on the GPU AND above
+    the floor — a model that offloads to CPU (the 2026-06-19 thrash) or OOMs is REFUSED. Releases the lease
+    + frees the model afterward (unless it's the one the gateway is already serving). Never raises."""
     generate = generate or _ollama_generate
     ps = ps or _ollama_ps
+    acquire = acquire or _coord_acquire
+    release = release or _coord_release
     if not setup._ollama_has(ref):
         return {"pass": False, "reason": "not-present", "measured": True}
     already_resident = any((m.get("name") or m.get("model") or "").split(":")[0] == ref.split(":")[0]
                            for m in ps())
-    # PREDICT-BEFORE-LOAD (ADR-0024 §4): refuse to even load the candidate if it won't fit CURRENT free
-    # VRAM — never OOM a standing graphics holder (ComfyUI's allocation is invisible to Ollama's own fit
-    # math) or stack two big LLMs. Fail-closed; the user frees the GPU (or it ages out) and retries.
-    # (Full Spawn(batch)-lease admission is the remaining hardening — noted in ADR-0049 §Phase-2b.)
+    lease_token = None
     if not already_resident:
-        hw = hw or setup.detect_hardware()
-        free_gb = round((hw.get("vram_free_mib") or 0) / 1024, 1)
         foot = round((_ollama_size_gb(ref) or 0) * 1.3, 1)        # weights + KV/context headroom
-        if foot and free_gb and foot > free_gb - 1.0:             # 1 GB desktop headroom
-            return {"pass": False, "reason": "insufficient-free-vram", "needed_gb": foot,
-                    "free_gb": free_gb, "measured": True}
+        token, deny = acquire(int(foot * 1024) or 1)
+        if deny == "unreachable":                                 # coordinator down → current-free admission
+            hw = hw or setup.detect_hardware()
+            free_gb = round((hw.get("vram_free_mib") or 0) / 1024, 1)
+            if foot and free_gb and foot > free_gb - 1.0:         # 1 GB desktop headroom
+                return {"pass": False, "reason": "insufficient-free-vram", "needed_gb": foot,
+                        "free_gb": free_gb, "measured": True}
+        elif deny:                                                # admitted-against-coexistence → refuse, no load
+            return {"pass": False, "reason": "coordinator-denied", "detail": deny, "measured": True}
+        else:
+            lease_token = token
     try:
-        d = generate(ref)
-    except Exception as e:
-        return {"pass": False, "reason": f"load-failed: {e}", "measured": True}
-    ec, ed = d.get("eval_count") or 0, d.get("eval_duration") or 0
-    tok_s = round(ec / (ed / 1e9), 1) if ec and ed else 0.0
-    size = size_vram = 0
-    for m in ps():
-        nm = m.get("name") or m.get("model") or ""
-        if nm == ref or nm.split(":")[0] == ref.split(":")[0]:
-            size, size_vram = m.get("size") or 0, m.get("size_vram") or 0
-            break
-    frac = round(size_vram / size, 3) if size else 0.0
-    on_gpu = frac >= CANARY_ON_GPU
-    fast = tok_s >= CANARY_TOK_S
-    ok = on_gpu and fast
-    reason = "ok" if ok else ("cpu-offload" if not on_gpu else "too-slow")
-    # free it — UNLESS it was already resident (it may be the model the gateway is serving; don't evict that).
-    if stop_after and not already_resident:
         try:
-            run(["ollama", "stop", ref], capture_output=True, timeout=20, check=False)
-        except Exception:
-            pass
-    return {"pass": ok, "on_gpu_frac": frac, "tok_s": tok_s, "size_gb": round(size / 1024**3, 1),
-            "size_vram_gb": round(size_vram / 1024**3, 1), "reason": reason, "measured": True}
+            d = generate(ref)
+        except Exception as e:
+            return {"pass": False, "reason": f"load-failed: {e}", "measured": True}
+        ec, ed = d.get("eval_count") or 0, d.get("eval_duration") or 0
+        tok_s = round(ec / (ed / 1e9), 1) if ec and ed else 0.0
+        size = size_vram = 0
+        for m in ps():
+            nm = m.get("name") or m.get("model") or ""
+            if nm == ref or nm.split(":")[0] == ref.split(":")[0]:
+                size, size_vram = m.get("size") or 0, m.get("size_vram") or 0
+                break
+        frac = round(size_vram / size, 3) if size else 0.0
+        on_gpu = frac >= CANARY_ON_GPU
+        fast = tok_s >= CANARY_TOK_S
+        ok = on_gpu and fast
+        reason = "ok" if ok else ("cpu-offload" if not on_gpu else "too-slow")
+        # free it — UNLESS it was already resident (it may be the model the gateway is serving; don't evict).
+        if stop_after and not already_resident:
+            try:
+                run(["ollama", "stop", ref], capture_output=True, timeout=20, check=False)
+            except Exception:
+                pass
+        return {"pass": ok, "on_gpu_frac": frac, "tok_s": tok_s, "size_gb": round(size / 1024**3, 1),
+                "size_vram_gb": round(size_vram / 1024**3, 1), "reason": reason, "measured": True}
+    finally:
+        release(lease_token)                                      # always release the lease (incl. load-failed)
 
 
 class HermesAdapter:

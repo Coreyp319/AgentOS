@@ -26,8 +26,8 @@ CLI:
   setup.py creds set|clear <svc>  store/clear a HuggingFace/Civitai token in the OS keyring
   setup.py onboard                interactive: pick → plan → confirm → fetch → ready
   setup.py policy                 show the model family/safety policy + the live Hermes default (ADR-0049)
-  setup.py research-json [text]   research the latest models → STRICT JSON candidates (--out PATH)
-  setup.py adopt <ref> [--yes-mature]   adopt a present, permitted ollama ref into the registry (reversible)
+  setup.py research-json [text]   research models → STRICT JSON candidates (on-box; --cloud for web; --out PATH)
+  setup.py adopt <ref> [--yes-mature] [--pull]   adopt a permitted ollama ref (reversible; --pull fetches it, host-pinned)
   setup.py revert <id>            undo an adopt by id
 """
 from __future__ import annotations
@@ -86,7 +86,27 @@ _DEFAULT_PROMPT = {"image": "A young girl in a red dress dancing gracefully on a
 
 # ── registry ────────────────────────────────────────────────────────────────────────────────
 def load_registry(path: Path | None = None) -> dict:
-    return json.loads((path or REGISTRY).read_text())
+    reg = json.loads((path or REGISTRY).read_text())
+    if path is None:                                  # merge the user's 0600 adopted-models overlay (ADR-0049 P3):
+        ids = {m.get("id") for m in reg.get("models", [])}   # an adopted (possibly uncensored) ref is a sensitive
+        for m in _load_adopted():                            # taste profile — it NEVER lands in the git-tracked catalog
+            if m.get("id") not in ids:
+                reg.setdefault("models", []).append(m)
+    return reg
+
+
+def adopted_registry_path() -> Path:
+    """The 0600 user-state overlay where research-ADOPTED models live — kept OUT of the shipped, git-tracked
+    registry.json so an adopted ref is never committed/pushed or left world-readable (privacy review)."""
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return Path(base) / "agentos" / "registry-adopted.json"
+
+
+def _load_adopted() -> list[dict]:
+    try:
+        return json.loads(adopted_registry_path().read_text()).get("models", [])
+    except Exception:
+        return []
 
 
 def models(reg: dict) -> list[dict]:
@@ -737,26 +757,35 @@ def _parse_candidates(text: str) -> list[dict]:
     return out
 
 
+_JSON_CONTRACT = (
+    "Reply with ONLY a JSON array (no prose, no markdown fence) of objects with EXACTLY these keys: "
+    '"name" (str), "ref" (the exact Ollama ref or HuggingFace repo[:quant]), "approx_gb" (number — the '
+    'runnable quant that fits this VRAM class), "license" (SPDX-ish str), "why" (one short sentence). '
+    "Prefer permissive licenses. Exclude any minor-targeted or non-consensual real-person-likeness model.")
+
+
 def research_candidates(modality: str = "text", hw: dict | None = None, run=subprocess.run,
-                        timeout: int = 200, claude: str | None = None) -> dict:
-    """Ask a research agent for the latest local, open-weights models for THIS GPU as a STRICT JSON
-    array. Privacy (ADR-0049 §4): only the modality + a COARSE VRAM bucket leave the box — never the
-    installed-model inventory, never the family policy. The result is a PROPOSAL; every field is
-    re-derived/re-checked in code (validate_candidates) before anything can be adopted."""
+                        timeout: int = 200, claude: str | None = None, source: str = "local") -> dict:
+    """Propose the best current local models for THIS GPU as a STRICT JSON array. ADR-0049 Phase 3:
+    source='local' (DEFAULT — NO egress; the on-box inference LLM proposes from its own knowledge, which
+    may be dated) or source='cloud' (claude -p web search — discloses ONLY modality + a coarse VRAM bucket,
+    never the inventory/policy). The result is a PROPOSAL; every field is re-derived/re-checked in code
+    (validate_candidates) before anything is adopted."""
     hw = hw or detect_hardware()
+    bucket = vram_bucket(hw)
+    if source == "local":
+        return _research_local(modality, bucket, run=run, timeout=timeout)
+    return _research_cloud(modality, bucket, run=run, timeout=timeout, claude=claude)
+
+
+def _research_cloud(modality, bucket, *, run=subprocess.run, timeout=200, claude=None) -> dict:
     claude = claude or shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
     if not Path(claude).exists():
-        return {"ok": False, "error": "the `claude` CLI isn't installed — needed to research models"}
-    bucket = vram_bucket(hw)
+        return {"ok": False, "error": "the `claude` CLI isn't installed — needed for cloud research"}
     runner = "Ollama" if modality == "text" else "ComfyUI"
-    prompt = (
-        "You are AgentOS's model-currency scout. Recommend the 3-5 best CURRENT local, open-weights "
-        f"{modality} models runnable via {runner} on a single GPU in the {bucket} VRAM class, as of today. "
-        "Reply with ONLY a JSON array (no prose, no markdown fence) of objects with EXACTLY these keys: "
-        '"name" (str), "ref" (the exact Ollama ref or HuggingFace repo[:quant]), "approx_gb" (number — the '
-        'runnable quant that fits this VRAM class), "license" (SPDX-ish str), "why" (one short sentence). '
-        "Prefer permissive licenses. Exclude any minor-targeted or non-consensual real-person-likeness model."
-    )
+    prompt = (f"You are AgentOS's model-currency scout. Recommend the 3-5 best CURRENT local, open-weights "
+              f"{modality} models runnable via {runner} on a single GPU in the {bucket} VRAM class, as of "
+              f"today. " + _JSON_CONTRACT)
     cmd = [claude, "-p", prompt, "--model", os.environ.get("AGENTOS_RESEARCH_MODEL", "claude-sonnet-4-6"),
            "--allowedTools", "WebSearch WebFetch", "--output-format", "text"]   # one arg — separate args drop WebFetch
     try:
@@ -766,8 +795,57 @@ def research_candidates(modality: str = "text", hw: dict | None = None, run=subp
     out = (r.stdout or "").strip()
     if not out:
         return {"ok": False, "error": "no output — is `claude` authenticated?"}
-    return {"ok": True, "modality": modality, "vram_bucket": bucket, "disclosed": True,
+    return {"ok": True, "modality": modality, "vram_bucket": bucket, "disclosed": True, "source": "cloud",
             "candidates": _parse_candidates(out), "raw": out[:4000]}
+
+
+def _research_local(modality, bucket, *, run=subprocess.run, timeout=200) -> dict:
+    """On-box research: the box's own inference LLM proposes from its training (NO web, NO egress) —
+    privacy-first default; honest that suggestions may be dated (cloud is the opt-in for currency)."""
+    model = hermes_current_default()
+    if model and not _ollama_has(model):                     # don't let `ollama run` silently network-pull it
+        model = None
+    model = model or _text_model_present()
+    if not model:
+        return {"ok": False, "error": "no local text model is pulled to research with — pull one first"}
+    runner = "Ollama" if modality == "text" else "ComfyUI"
+    prompt = (f"You are AgentOS's model-currency scout. From your OWN knowledge (no web access), list the "
+              f"3-5 best local, open-weights {modality} models runnable via {runner} on a single GPU in the "
+              f"{bucket} VRAM class. " + _JSON_CONTRACT)
+    try:
+        r = run(["ollama", "run", model, prompt], capture_output=True, text=True, timeout=timeout, check=False)
+    except Exception as e:
+        return {"ok": False, "error": f"local research failed: {e}"}
+    out = _ANSI.sub("", r.stdout or "").strip()
+    if not out:
+        return {"ok": False, "error": "no output from the local model"}
+    return {"ok": True, "modality": modality, "vram_bucket": bucket, "disclosed": False, "source": "local",
+            "candidates": _parse_candidates(out), "raw": out[:4000]}
+
+
+# Patterns in a model's SYSTEM prompt worth a human look before it becomes the agent's brain (a poisoned
+# Modelfile can steer every turn / exfiltrate). Heuristic + ADVISORY — it surfaces, the human disposes.
+_SYSTEM_FLAGS = ("ignore previous", "ignore all", "disregard", "exfiltrat", "http://", "https://",
+                 "base64", "os.system", "subprocess", "send to", "api key", "password", "secret key",
+                 "curl ", "wget ", "you must always", "do not tell", "do not mention")
+
+
+def inspect_modelfile(ref: str, run=subprocess.run) -> dict:
+    """Read a model's Modelfile (`ollama show --modelfile`) and surface its SYSTEM prompt + any red-flag
+    patterns — so a pulled-via-allow_any model's brain is reviewable BEFORE it becomes an agent default
+    (ADR-0049 Phase 3). Heuristic + advisory: SURFACES the SYSTEM prompt, never silently blocks."""
+    try:
+        r = run(["ollama", "show", "--modelfile", ref], capture_output=True, text=True, timeout=20, check=False)
+        text = r.stdout or ""
+    except Exception:
+        return {"ok": False, "has_system": False, "system": "", "flags": ["could-not-read"]}
+    system = ""
+    m = re.search(r'(?ms)^SYSTEM\s+("""(.*?)"""|"(.*?)"|(\S.*?))\s*$', text)
+    if m:
+        system = (m.group(2) or m.group(3) or m.group(4) or "").strip()
+    low = system.lower()
+    return {"ok": True, "has_system": bool(system), "system": system[:2000],
+            "flags": [p for p in _SYSTEM_FLAGS if p in low]}
 
 
 def validate_candidates(reg: dict, candidates: list[dict], pol: dict | None = None) -> list[dict]:
@@ -873,32 +951,33 @@ def _atomic_write_json(path: Path, data: dict, mode: int = 0o644) -> bool:
 
 
 def add_registry_model(registry_path: Path, entry: dict) -> bool:
-    """Append a model entry (idempotent on id; the whole read-modify-write is under the registry lock)."""
+    """Append a model entry (idempotent on id; locked read-modify-write; written 0600 — it's the user's
+    adopted-models overlay, a sensitive taste profile). Tolerates the overlay not existing yet."""
     registry_path = Path(registry_path)
     with _file_lock(registry_path):
         try:
             reg = json.loads(registry_path.read_text())
         except Exception:
-            return False
+            reg = {"models": []}                              # overlay may not exist yet
         if any(m.get("id") == entry.get("id") for m in reg.get("models", [])):
             return True                                       # idempotent
         reg.setdefault("models", []).append(entry)
-        return _atomic_write_json(registry_path, reg)
+        return _atomic_write_json(registry_path, reg, mode=0o600)
 
 
 def remove_registry_model(registry_path: Path, model_id: str) -> bool:
-    """Drop a model entry by id (idempotent — removing an absent entry is a success; under the lock)."""
+    """Drop a model entry by id (idempotent — removing an absent entry, or an absent overlay, is success)."""
     registry_path = Path(registry_path)
     with _file_lock(registry_path):
         try:
             reg = json.loads(registry_path.read_text())
         except Exception:
-            return False
+            return True                                       # nothing to remove (overlay absent)
         kept = [m for m in reg.get("models", []) if m.get("id") != model_id]
         if len(kept) == len(reg.get("models", [])):
             return True                                       # already gone
         reg["models"] = kept
-        return _atomic_write_json(registry_path, reg)
+        return _atomic_write_json(registry_path, reg, mode=0o600)
 
 
 # ── reversibility ledger (the inverse records, alongside record_fetch's `fetched`) ───────────────
@@ -928,19 +1007,22 @@ def manifest_actions() -> list[dict]:
 
 
 def adopt_candidate(reg: dict, ref: str, *, name: str | None = None, modality: str = "text",
-                    why: str | None = None, registry_path: Path | None = None,
-                    pol: dict | None = None, affirmed: bool = False) -> dict:
-    """Adopt a PRESENT, PERMITTED ollama ref into the registry, reversibly (ADR-0049 Phase 1). Re-validates
-    server-side — denylist FIRST, then policy, then present-check — so a stale client can't slip a bad ref
-    past the gate. NEVER pulls (phase-1). The inverse is recorded BEFORE the registry write (and rolled
-    back if the write fails) so we never leave a registry entry with no way to Revert it."""
+                    why: str | None = None, registry_path: Path | None = None, pol: dict | None = None,
+                    affirmed: bool = False, allow_pull: bool = False, run=subprocess.run) -> dict:
+    """Adopt a PERMITTED ollama ref into the registry, reversibly. Re-validates server-side — denylist
+    FIRST, then policy, then (phase-1) present-check. The inverse is recorded BEFORE the registry write
+    (rolled back on failure) so a registry entry never lacks a Revert. ADR-0049 Phase 3: with allow_pull,
+    a permitted-but-not-present ref may be PULLED — gated by the host-pin (default registry + hf.co only)
+    and the 18+ affirmation; the pulled model's Modelfile is then surfaced for review."""
     pol = pol if pol is not None else policy.load_policy()
-    registry_path = Path(registry_path) if registry_path else REGISTRY
+    registry_path = Path(registry_path) if registry_path else adopted_registry_path()   # 0600 overlay, not the catalog
     ref = (ref or "").strip()
     if not ref:
         return {"ok": False, "reason": "no-ref"}
     if policy.is_denied_ref(ref):                              # 1 — the red line, first + unconditional
         return {"ok": False, "reason": "safety-denied"}
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+@-]{0,199}", ref):   # leading alnum → no `-flag` confusion at argv
+        return {"ok": False, "reason": "bad-ref"}
     existing = registry_match(reg, ref)
     if existing:
         return {"ok": True, "skipped": "already-registered", "id": existing.get("id")}
@@ -949,8 +1031,19 @@ def adopt_candidate(reg: dict, ref: str, *, name: str | None = None, modality: s
         return {"ok": False, "reason": reason}
     if policy.requires_mature_affirm(ref, pol) and not (affirmed or policy.is_affirmed(pol)):
         return {"ok": False, "reason": "needs-affirm"}
-    if not _ollama_has(ref):                                  # 3 — present-check (no arbitrary pull, phase-1)
-        return {"ok": False, "reason": "not-present"}
+    pulled = False
+    if not _ollama_has(ref):                                  # 3 — present-check
+        if not allow_pull:
+            return {"ok": False, "reason": "not-present"}     # phase-1 default: pull it yourself first
+        if not policy.host_allowed(ref):                      # Phase-3 host-pin: no arbitrary registry host
+            return {"ok": False, "reason": "host-not-allowed"}
+        pr = run(["ollama", "pull", ref], capture_output=True, text=True, timeout=3600, check=False)
+        if getattr(pr, "returncode", 1) != 0:
+            return {"ok": False, "reason": "pull-failed"}
+        _invalidate_ollama_cache()
+        if not _ollama_has(ref):
+            return {"ok": False, "reason": "pull-failed"}
+        pulled = True
     entry = _new_model_entry(ref, name=name, modality=modality, why=why)
     # inverse FIRST: an orphan inverse (action with no entry) is harmless — Revert is idempotent — but an
     # orphan entry (no inverse) would be un-revertable. So record, then write, and roll back on write failure.
@@ -961,7 +1054,10 @@ def adopt_candidate(reg: dict, ref: str, *, name: str | None = None, modality: s
     if not add_registry_model(registry_path, entry):
         remove_action(entry["id"])                            # roll back the inverse — no orphan ledger row
         return {"ok": False, "reason": "write-failed"}
-    return {"ok": True, "id": entry["id"], "family": entry["family"]}
+    res = {"ok": True, "id": entry["id"], "family": entry["family"], "pulled": pulled}
+    if pulled:                                                 # surface the brain we just brought on-box
+        res["modelfile"] = inspect_modelfile(ref, run=run)
+    return res
 
 
 def revert_action(action_id: str) -> dict:
@@ -1186,8 +1282,8 @@ def _cmd_policy(reg: dict) -> int:
     return 0
 
 
-def _cmd_research_json(reg: dict, modality: str, out_path: str | None = None) -> int:
-    res = research_candidates(modality, detect_hardware())
+def _cmd_research_json(reg: dict, modality: str, out_path: str | None = None, source: str = "local") -> int:
+    res = research_candidates(modality, detect_hardware(), source=source)
     if res.get("ok"):
         res["candidates"] = validate_candidates(reg, res.get("candidates", []))
     blob = json.dumps(res)
@@ -1202,19 +1298,25 @@ def _cmd_research_json(reg: dict, modality: str, out_path: str | None = None) ->
     return 0 if res.get("ok") else 1
 
 
-def _cmd_adopt(reg: dict, ref: str, yes_mature: bool) -> int:
-    res = adopt_candidate(reg, ref, affirmed=yes_mature)
+def _cmd_adopt(reg: dict, ref: str, yes_mature: bool, pull: bool = False) -> int:
+    res = adopt_candidate(reg, ref, affirmed=yes_mature, allow_pull=pull)
     if res.get("ok"):
         if res.get("skipped"):
             print(f"· {ref} is already registered ({res.get('id')}) — nothing to do.")
         else:
-            print(f"✓ adopted {ref} as '{res['id']}' (family: {res['family']}). "
-                  f"Revert with: setup.py revert {res['id']}")
+            print(f"✓ {'pulled + ' if res.get('pulled') else ''}adopted {ref} as '{res['id']}' "
+                  f"(family: {res['family']}). Revert with: setup.py revert {res['id']}")
+            mf = res.get("modelfile") or {}
+            if mf.get("has_system"):
+                print(f"  ⚠ this model ships a SYSTEM prompt — review before making it an agent default:\n"
+                      f"    {mf.get('system','')[:300]}")
         return 0
     reason = res.get("reason", "rejected")
     msg = {"safety-denied": "refused by the safety red line — cannot be overridden by any setting",
            "needs-affirm": "needs an 18+ affirmation (mature/uncensored, or allow-any is on) — re-run with --yes-mature",
-           "not-present": "not pulled yet — `ollama pull` it first (phase-1 never pulls arbitrary refs)",
+           "not-present": "not pulled yet — pass --pull to fetch it (allow-any + host-pinned), or `ollama pull` it",
+           "host-not-allowed": "that registry host isn't allowed — only the default Ollama registry + hf.co",
+           "pull-failed": "the `ollama pull` failed — check the ref and your connection",
            }.get(reason, policy.REASON_TEXT.get(reason, reason))
     print(f"✗ not adopted: {msg}", file=sys.stderr)
     return 1
@@ -1235,6 +1337,8 @@ def main(argv: list[str]) -> int:
     yes = "--yes" in rest or "-y" in rest
     full = "--full" in rest                          # opt out of the GPU-aware downselect (fetch every model)
     yes_mature = "--yes-mature" in rest              # ADR-0049: affirm 18+ for a mature/uncensored adopt
+    cloud = "--cloud" in rest                        # ADR-0049 Phase 3: research via the cloud (default = on-box)
+    pull = "--pull" in rest                          # ADR-0049 Phase 3: adopt may pull a permitted, host-pinned ref
     rest2 = list(rest)
     out_path = None
     if "--out" in rest2:                             # ADR-0049: research-json writes its JSON array here
@@ -1265,9 +1369,10 @@ def main(argv: list[str]) -> int:
     if cmd == "policy":
         return _cmd_policy(reg)
     if cmd == "research-json":
-        return _cmd_research_json(reg, pos[0] if pos and pos[0] in ("text", "image", "video") else "text", out_path)
+        return _cmd_research_json(reg, pos[0] if pos and pos[0] in ("text", "image", "video") else "text",
+                                  out_path, source=("cloud" if cloud else "local"))
     if cmd == "adopt":
-        return _cmd_adopt(reg, pos[0] if pos else "", yes_mature)
+        return _cmd_adopt(reg, pos[0] if pos else "", yes_mature, pull)
     if cmd == "revert":
         return _cmd_revert(pos[0] if pos else "")
     if cmd == "hermes-default":

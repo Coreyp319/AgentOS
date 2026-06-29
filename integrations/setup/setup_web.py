@@ -47,6 +47,7 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost", ""}
 _jobs: dict[str, dict] = {}                     # job_id → {bundle, mature, proc, log, started, ...}
 _jobs_lock = threading.Lock()
 _apply_lock = threading.Lock()                  # single-flight for the Hermes canary+apply (loads a model)
+_pull_lock = threading.Lock()                   # single-flight for a pull-adopt (a network model download)
 
 
 def _runtime_dir() -> Path:
@@ -151,9 +152,10 @@ def start_research(modality: str, spawn=subprocess.Popen) -> dict | None:
                          f"latest {modality} models", spawn=spawn)
 
 
-def start_research_models(modality: str, spawn=subprocess.Popen) -> dict | None:
+def start_research_models(modality: str, source: str = "local", spawn=subprocess.Popen) -> dict | None:
     """ADR-0049: STRUCTURED research — spawn `setup.py research-json` writing a candidates artifact the
-    job then parses (NOT a screen-scraped log tail; the council's must-fix). One at a time."""
+    job then parses (NOT a screen-scraped log tail). Phase 3: source 'local' (on-box, no egress; default)
+    or 'cloud' (web search, discloses a coarse VRAM bucket). One at a time."""
     modality = modality if modality in ("text", "image", "video") else "text"
     with _jobs_lock:
         if any(j["kind"] == "research-json" and j["proc"] and j["proc"].poll() is None for j in _jobs.values()):
@@ -163,6 +165,8 @@ def start_research_models(modality: str, spawn=subprocess.Popen) -> dict | None:
     log = _runtime_dir() / f"research-json-{jid}.log"
     fh = open(log, "w")
     argv = ["python3", str(HERE / "setup.py"), "research-json", modality, "--out", str(art)]
+    if source == "cloud":
+        argv.append("--cloud")
     proc = spawn(argv, stdout=fh, stderr=subprocess.STDOUT)
     job = {"id": jid, "kind": "research-json", "label": f"latest {modality} models", "proc": proc,
            "log": str(log), "artifact": str(art), "started": time.time()}
@@ -181,7 +185,8 @@ def set_policy(body: dict) -> tuple[dict | None, str]:
         "allow_any_ollama": allow_any,
         "family_allow": body.get("family_allow") if isinstance(body.get("family_allow"), list) else cur["family_allow"],
         "family_block": body.get("family_block") if isinstance(body.get("family_block"), list) else cur["family_block"],
-        "mature_affirmed_at": cur.get("mature_affirmed_at"),
+        # consent is revocable: turning allow-any OFF clears the 18+ affirmation (you re-affirm next time)
+        "mature_affirmed_at": cur.get("mature_affirmed_at") if allow_any else None,
     }
     if allow_any and not new["mature_affirmed_at"]:
         if body.get("affirm_mature"):
@@ -553,18 +558,28 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/research_models":         # ADR-0049: structured research → candidates artifact
             if not self._guard():
                 return
-            job = start_research_models(str(self._body().get("modality", "text")))
+            body = self._body()
+            job = start_research_models(str(body.get("modality", "text")),
+                                        source=("cloud" if body.get("source") == "cloud" else "local"))
             self._json(202 if job else 409,
                        {"id": job["id"], "status": "started"} if job else {"error": "already researching"})
-        elif path == "/api/adopt":                   # ADR-0049: adopt a present, permitted ref (re-validated)
+        elif path == "/api/adopt":                   # ADR-0049: adopt a permitted ref (re-validated; pull = Phase 3)
             if not self._guard():
                 return
             body = self._body()
-            reg = setup.load_registry()
-            res = setup.adopt_candidate(reg, str(body.get("ref", "")).strip(),
-                                        name=(str(body.get("name") or "") or None),
-                                        modality=str(body.get("modality") or "text"),
-                                        affirmed=bool(body.get("affirmed")))
+            pull = bool(body.get("pull"))
+            if pull and not _pull_lock.acquire(blocking=False):   # single-flight: one network pull at a time
+                self._json(409, {"error": "busy", "reason": "another model is already downloading"})
+                return
+            try:
+                reg = setup.load_registry()
+                res = setup.adopt_candidate(reg, str(body.get("ref", "")).strip(),
+                                            name=(str(body.get("name") or "") or None),
+                                            modality=str(body.get("modality") or "text"),
+                                            affirmed=bool(body.get("affirmed")), allow_pull=pull)
+            finally:
+                if pull:
+                    _pull_lock.release()
             self._json(200 if res.get("ok") else 409, res)
         elif path == "/api/revert":                  # ADR-0049: undo an adopt by id
             if not self._guard():
@@ -584,6 +599,8 @@ class Handler(BaseHTTPRequestHandler):
             prop["fit"] = a.estimate_fit(ref)
             prop["permitted"] = ok
             prop["permit_reason"] = why
+            if setup._ollama_has(ref):                # surface the model's SYSTEM prompt before it's a brain
+                prop["modelfile"] = setup.inspect_modelfile(ref)
             self._json(200, prop)
         elif path == "/api/hermes_apply":           # ADR-0049 Phase 2b: the LIVE default write (gated)
             if not self._guard():

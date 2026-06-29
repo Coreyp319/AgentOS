@@ -213,18 +213,53 @@ class CanaryTests(unittest.TestCase):
         self.assertIn("load-failed", c["reason"])
 
     def test_admission_refuses_before_loading_when_vram_insufficient(self):
-        # predict-before-load: a candidate that won't fit current free VRAM is refused WITHOUT loading it.
+        # coordinator down → fall back to current-free-VRAM admission; refuse WITHOUT loading.
         orig = agent_targets._ollama_size_gb
         agent_targets._ollama_size_gb = lambda ref: 20.0
         loaded = []
         try:
             c = agent_targets.measured_canary("m:tag", generate=lambda r: loaded.append(1) or {},
-                                              ps=lambda: [], hw={"vram_free_mib": 4096}, run=lambda *a, **k: _R(0))
+                                              ps=lambda: [], hw={"vram_free_mib": 4096}, run=lambda *a, **k: _R(0),
+                                              acquire=lambda *a, **k: (None, "unreachable"))
         finally:
             agent_targets._ollama_size_gb = orig
         self.assertFalse(c["pass"])
         self.assertEqual(c["reason"], "insufficient-free-vram")
         self.assertEqual(loaded, [])                         # generate() was never called — no blind load
+
+    def test_coordinator_denied_refuses_without_loading(self):
+        loaded = []
+        c = agent_targets.measured_canary("m:tag", generate=lambda r: loaded.append(1) or {},
+                                          ps=lambda: [], acquire=lambda *a, **k: (None, "no free VRAM"),
+                                          run=lambda *a, **k: _R(0))
+        self.assertFalse(c["pass"])
+        self.assertEqual(c["reason"], "coordinator-denied")
+        self.assertEqual(loaded, [])                         # the coordinator gate ran BEFORE any load
+
+    def test_coordinator_grant_releases_lease(self):
+        gen = lambda ref: {"eval_count": 160, "eval_duration": 2_000_000_000}
+        ps = lambda: [{"name": "m:tag", "size": 1000, "size_vram": 1000}]
+        released = []
+        c = agent_targets.measured_canary("m:tag", generate=gen, ps=ps, run=lambda *a, **k: _R(0),
+                                          acquire=lambda *a, **k: (777, None),
+                                          release=lambda tok, **k: released.append(tok))
+        # ps reports the model resident here, so admission is skipped and no lease is taken (token stays None).
+        self.assertTrue(c["pass"])
+        self.assertEqual(released, [None])                   # release is always called (here with no token)
+
+    def test_coordinator_grant_when_not_resident_releases_token(self):
+        gen = lambda ref: {"eval_count": 160, "eval_duration": 2_000_000_000}
+        # ps empty on the admission check (not resident → acquire), then resident for the measure
+        calls = {"n": 0}
+        def ps():
+            calls["n"] += 1
+            return [] if calls["n"] == 1 else [{"name": "m:tag", "size": 1000, "size_vram": 1000}]
+        released = []
+        c = agent_targets.measured_canary("m:tag", generate=gen, ps=ps, run=lambda *a, **k: _R(0),
+                                          acquire=lambda *a, **k: (777, None),
+                                          release=lambda tok, **k: released.append(tok))
+        self.assertTrue(c["pass"])
+        self.assertEqual(released, [777])                    # the granted lease token is released after
 
 
 if __name__ == "__main__":

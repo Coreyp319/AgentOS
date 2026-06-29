@@ -152,9 +152,24 @@ Two hard constraints shape the answer:
   quant/tag of a resident model skips admission. (iv) no §6 hash-guard against an out-of-band gpu-coordinator
   edit of `model.default` (different code path, doesn't share the lock) — our own inverse stays correct
   because the prior is read under the lock; this is defense-in-depth only.
-- **Phase 3 (designed):** hardened `allow_any_ollama` (arbitrary-host pulling behind host-pinning +
-  Modelfile inspection + 18+ affirmation); on-box research path; the adapter contract realized for a real
-  second agent.
+- **Phase 3 (BUILT):** (a) hardened `allow_any_ollama` **pulling** — a permitted, non-present ref can be
+  `ollama pull`ed (the `allow_pull` path), gated in order: denylist → ref charset (leading-alnum, argv-safe)
+  → policy.permits → 18+ affirm → **host-pin** (`policy.host_allowed`: default Ollama registry + hf.co only;
+  matches Ollama's own host-detection rule, so an arbitrary `evil.com/…` is refused). The pulled model's
+  **Modelfile is inspected** (`inspect_modelfile` surfaces the `SYSTEM` prompt + red-flag terms) and shown
+  before it can become an agent default — a poisoned brain is reviewable, the human disposes. (b) **on-box
+  research** (`research_candidates(source="local")`): the box's own inference LLM proposes from its training
+  with **zero egress** (the default); cloud web-search is the disclosed opt-in (only modality + a coarse VRAM
+  bucket). (c) **lease-admitted canary**: `measured_canary` now `Acquire`s a batch lease from the live VRAM
+  coordinator (`org.agentos.Coordinator1`) before loading — closing the Phase-2b TOCTOU — and falls back to
+  current-free-VRAM admission if the coordinator is off the bus. **Privacy (reviewed):** an adopted (possibly
+  uncensored) ref is a sensitive taste profile, so it goes to a **0600 user-state overlay**
+  (`$XDG_STATE_HOME/agentos/registry-adopted.json`, merged at `load_registry`), **never** the git-tracked
+  0644 `registry.json`; the 18+ affirmation is **revocable** (turning allow-any off clears it); a pull-adopt
+  is single-flight. Security + privacy sign-off: no Blocker/High; the host-pin, the denylist-first chain, and
+  argv-only `ollama`/`busctl` calls were verified. (`models_panel` shows only the curated catalog, not the
+  per-user overlay — by design.) The adapter contract for a *real* second agent (openclaw) remains the
+  documented extension point — still no framework for a hypothetical one.
 
 ## Consequences
 

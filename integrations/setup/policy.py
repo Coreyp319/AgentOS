@@ -91,6 +91,13 @@ DEFAULT_POLICY: dict = {
     "mature_affirmed_at": None,
 }
 
+# Registry hosts a ref may be PULLED from under allow_any (ADR-0049 Phase 3). The default Ollama
+# registry (no host in the ref) is always allowed; hf.co is Ollama's native GGUF source. An arbitrary
+# host (a model-supplied, web-derived ref pointing at evil.com/…) is refused — that is the supply-chain
+# pivot the host-pin closes. NOTE: only governs PULLING a non-present ref; a present ref the user already
+# pulled themselves is unaffected.
+ALLOWED_HOSTS: frozenset[str] = frozenset({"hf.co", "huggingface.co"})
+
 
 # ── ref parsing ──────────────────────────────────────────────────────────────────────────────────
 def _name_segment(ref: str) -> str:
@@ -118,6 +125,25 @@ def is_denied_ref(ref: str) -> bool:
     """True iff the ref hits the inviolable safety DENYLIST (matched anywhere, case-insensitive)."""
     blob = (ref or "").lower()
     return any(d in blob for d in DENYLIST)
+
+
+def ref_host(ref: str) -> str | None:
+    """The registry HOST a ref names, or None for the default Ollama registry. A host is the part before
+    the first '/' iff it looks like a domain/port ('hf.co', 'localhost', 'evil.com:5000') — so a plain
+    'qwen3.6:27b' or a 'namespace/name' has no host (default registry), but 'hf.co/bartowski/X' → 'hf.co'."""
+    s = (ref or "").strip().split()[0] if (ref or "").strip() else ""
+    if "/" not in s:
+        return None
+    first = s.split("/")[0]
+    if "." in first or ":" in first or first == "localhost":
+        return first.lower()
+    return None
+
+
+def host_allowed(ref: str) -> bool:
+    """May this ref be PULLED (ADR-0049 Phase 3)? The default registry (no host) + ALLOWED_HOSTS only."""
+    h = ref_host(ref)
+    return h is None or h in ALLOWED_HOSTS
 
 
 def is_mature_marker(ref: str) -> bool:
