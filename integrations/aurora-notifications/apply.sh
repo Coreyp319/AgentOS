@@ -101,6 +101,10 @@ if [ "$(kread_ini plasmarc Theme name)" != "$clone" ]; then
   echo "✓ Plasma shell theme → $clone"
 fi
 
+# 4. Applied-marker so the adopt engine (ADR-0043) detects this component is ON and offers Remove.
+#    The clone name is dynamic, so a fixed marker in the shared state dir is the only stable signal.
+: > "$STATE/aurora-notifications.on"
+
 echo
 echo "✓ Aurora notifications applied."
 echo "  • Effective at next login / plasmashell restart (plasmarc + theme SVG cache are read at start)."

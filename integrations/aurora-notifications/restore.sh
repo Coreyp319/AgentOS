@@ -44,6 +44,9 @@ if [ -n "$dst" ] && [ -d "$dst/dialogs" ]; then
   fi
 fi
 
+# Drop the applied-marker so the adopt engine (ADR-0043) reads this component as available again.
+rm -f "$STATE/aurora-notifications.on"
+
 # 2. If aurora-panel is NOT managing the shell theme (no prev-plasmatheme set by it would
 #    still be here), repoint the shell back only if WE created the clone and aurora-panel
 #    isn't holding it. We detect aurora-panel's ownership by the presence of the panel's

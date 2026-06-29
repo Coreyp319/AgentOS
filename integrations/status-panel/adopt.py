@@ -148,12 +148,17 @@ PROBES: dict[str, tuple] = {
     "keyhole":          ("applet", "org.agentos.keyhole"),
     "swaync-race":      ("file", "~/.config/systemd/user/swaync.service.d/nimbus-race.conf"),
     "reactive-wallpaper": ("file", "~/.local/state/agentos/reactive-wallpaper/prev-wallpaper.json"),
+    "portal-timeout":   ("file", "~/.config/systemd/user/xdg-desktop-portal.service.d/timeout.conf"),
     "aurora-theme":     ("kconfig", ("kdeglobals", "KDE", "widgetStyle", "Union")),
     # aurora-panel writes this marker on apply and rm -f's it on restore (see aurora-panel/apply.sh,
     # restore.sh) — the only stable signal, since the cloned theme name is dynamic (<theme>-aurora).
     "aurora-panel":     ("file", "~/.local/share/aurora-theme/prev-plasmatheme"),
+    # aurora-notifications writes an applied-marker on apply, rm -f's it on restore — the cloned theme
+    # name is dynamic, so a fixed marker in the shared state dir is the only stable signal.
+    "aurora-notifications": ("file", "~/.local/share/aurora-theme/aurora-notifications.on"),
     "dolphin-create":   ("file", "~/.local/share/kio/servicemenus/agentos-create-video.desktop"),
     "browser-host":     ("file", "~/.local/share/agentos/agentos_create_video_host.py"),
+    "krunner-finder":   ("file", "~/.local/share/dbus-1/services/dev.corey.krunner.claude.service"),
     "firefox-pin":      ("file", "/etc/firefox/policies/policies.json"),
     "hermes-plugins":   ("file", "~/.hermes/plugins/needs-you-signal"),   # the needs-you-signal plugin (NOT gpu-coordinator)
     "gpu-coordinator":  ("file", "~/.hermes/plugins/gpu-coordinator"),    # promoted from DEPLOY.md to a component
