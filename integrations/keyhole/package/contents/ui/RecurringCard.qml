@@ -12,6 +12,7 @@ import QtQuick.Layouts
 
 Rectangle {
     id: card
+    property var model              // KeyholeModel (for cronHuman)
     property var skin
     property var job                // a recurring entry
     property int tick: 0
@@ -34,7 +35,7 @@ Rectangle {
     implicitHeight: row.implicitHeight + 22
 
     Accessible.role: Accessible.StaticText
-    Accessible.name: (job ? job.name : "") + ", schedule " + (job ? job.schedule : "")
+    Accessible.name: (job ? job.name : "") + ", " + (card.model && job ? card.model.cronHuman(job.schedule) : (job ? job.schedule : ""))
         + ", " + (job && job.enabled ? "enabled" : "paused")
         + ", last run " + (job && job.last_status ? job.last_status : "never")
 
@@ -65,34 +66,25 @@ Rectangle {
 
         ColumnLayout {
             Layout.fillWidth: true
-            spacing: 5
-            RowLayout {
+            spacing: 4
+            Text {
                 Layout.fillWidth: true
-                spacing: 8
-                Text {
-                    Layout.fillWidth: true
-                    text: card.job ? card.job.name : ""
-                    color: card.skin ? card.skin.text : "#E6E9F0"
-                    font.pixelSize: 13
-                    font.bold: true
-                    elide: Text.ElideRight
-                    Accessible.ignored: true
-                }
-                Rectangle {
-                    radius: 5
-                    color: card.skin ? Qt.rgba(card.skin.text.r, card.skin.text.g, card.skin.text.b, 0.06) : "#1c1f2a"
-                    Layout.preferredWidth: cadence.implicitWidth + 12
-                    Layout.preferredHeight: cadence.implicitHeight + 5
-                    Text {
-                        id: cadence
-                        anchors.centerIn: parent
-                        text: card.job ? card.job.schedule : ""
-                        color: card.skin ? card.skin.muted : "#B4BAC8"
-                        font.pixelSize: 10
-                        font.family: "monospace"
-                        Accessible.ignored: true
-                    }
-                }
+                text: card.job ? card.job.name : ""
+                color: card.skin ? card.skin.text : "#E6E9F0"
+                font.pixelSize: 13
+                font.bold: true
+                elide: Text.ElideRight
+                Accessible.ignored: true
+            }
+            // the HUMAN cadence (↻ "Daily 4:00 AM"), not the raw cron — cron means nothing to read
+            Text {
+                Layout.fillWidth: true
+                text: "↻ " + (card.model && card.job ? card.model.cronHuman(card.job.schedule)
+                                                      : (card.job ? card.job.schedule : ""))
+                color: card.skin ? card.skin.muted : "#B4BAC8"
+                font.pixelSize: 11
+                elide: Text.ElideRight
+                Accessible.ignored: true
             }
             Text {
                 Layout.fillWidth: true

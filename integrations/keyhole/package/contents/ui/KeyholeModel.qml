@@ -424,6 +424,37 @@ Item {
     function gpuUtilString()   { return (effectiveState === "unknown" || gpuUtil < 0) ? emdash() : (gpuUtil + "%") }
     function gpuUtilFraction() { return (gpuUtil < 0) ? 0 : Math.max(0, Math.min(1, gpuUtil / 100)) }
 
+    // Humanize a 5-field cron expr into a readable cadence — raw "0 4 * * *" means nothing to a human.
+    // Falls back to the raw expr for shapes it doesn't recognise (never invents a wrong time).
+    function cronHuman(expr) {
+        if (!expr || !expr.length) return ""
+        var p = expr.trim().split(/\s+/)
+        if (p.length < 5) return expr
+        var mn = p[0], hr = p[1], dom = p[2], mon = p[3], dow = p[4]
+        var days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
+        function t12(hh, mm) {
+            hh = parseInt(hh); mm = parseInt(mm)
+            var s = hh < 12 ? "AM" : "PM", h = hh % 12; if (h === 0) h = 12
+            return h + ":" + (mm < 10 ? "0" : "") + mm + " " + s
+        }
+        var m
+        if ((m = mn.match(/^\*\/(\d+)$/)) && hr === "*") return "Every " + m[1] + " min"
+        if (mn === "*" && hr === "*") return "Every minute"
+        if (mn === "0" && (m = hr.match(/^\*\/(\d+)$/))) return "Every " + m[1] + "h"
+        if (/^\d+$/.test(mn) && hr === "*") return "Hourly at :" + (parseInt(mn) < 10 ? "0" : "") + parseInt(mn)
+        if (/^\d+$/.test(hr) && dom === "*" && mon === "*") {
+            var mins = mn.split(","), allNum = true
+            for (var i = 0; i < mins.length; i++) if (!/^\d+$/.test(mins[i])) { allNum = false; break }
+            if (allNum) {
+                var when = []
+                for (var j = 0; j < mins.length; j++) when.push(t12(hr, mins[j]))
+                var freq = (dow === "*") ? "Daily" : (days[parseInt(dow)] || ("Day " + dow))
+                return freq + " " + when.join(", ")
+            }
+        }
+        return expr   // unknown shape — show the raw cron rather than lie
+    }
+
     Timer {
         interval: model.pollIntervalMs
         running: true

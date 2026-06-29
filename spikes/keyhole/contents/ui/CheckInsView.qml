@@ -186,7 +186,13 @@ Item {
         Flickable {
             id: body
             Layout.fillWidth: true
-            readonly property real activeH: (checkins.viewMode === 0 ? listCol.implicitHeight : boardCol.implicitHeight)
+            // when the empty/unknown message shows, the list/board columns collapse to ~0 height — so
+            // give the Flickable a fixed height for the message, else it clips to nothing (the
+            // board-renders-blank bug: an empty board has 0 task cards AND no recurring of its own).
+            readonly property bool showEmpty: checkins.unknown
+                                              || (checkins.empty && (checkins.viewMode === 1 || checkins.recurring.length === 0))
+            readonly property real activeH: showEmpty ? 84
+                                            : (checkins.viewMode === 0 ? listCol.implicitHeight : boardCol.implicitHeight)
             Layout.preferredHeight: Math.min(activeH, checkins.bodyCap)
             contentWidth: width
             contentHeight: activeH
@@ -200,15 +206,23 @@ Item {
             Keys.onUpPressed:   body.contentY = Math.max(0, body.contentY - 60)
 
             // ===== EMPTY / UNKNOWN STATE =====
-            // Two honest states share this line: unreachable Hermes → "Can't reach Hermes" (and the
-            // cards below are suppressed so nothing stale animates); reachable-but-empty → "No active
-            // check-ins". checkInsEmptyReason() resolves which from the existing UNKNOWN honesty.
+            // Honest states: unreachable Hermes → "Can't reach Hermes" (cards suppressed, nothing
+            // stale animates); reachable-but-empty → "No active check-ins". The BOARD shows only task
+            // columns (no recurring), so an empty board ALWAYS needs this line even when recurring
+            // exist — and it points the user to where the recurring live (the List view).
             Text {
-                visible: checkins.unknown || (checkins.empty && checkins.recurring.length === 0)
-                width: body.width
+                visible: body.showEmpty
+                width: body.width - 24
+                x: 12
                 horizontalAlignment: Text.AlignHCenter
-                topPadding: 26
-                text: checkins.model ? checkins.model.checkInsEmptyReason() : "—"
+                topPadding: 28
+                wrapMode: Text.WordWrap
+                text: checkins.unknown
+                      ? (checkins.model ? checkins.model.checkInsEmptyReason() : "—")
+                      : (checkins.viewMode === 1 && checkins.recurring.length > 0)
+                        ? ("No active tasks — " + checkins.recurring.length
+                           + (checkins.recurring.length === 1 ? " recurring check is in List" : " recurring checks are in List"))
+                        : (checkins.model ? checkins.model.checkInsEmptyReason() : "—")
                 color: checkins.skin ? checkins.skin.label : "#878C9B"
                 font.pixelSize: 12
             }
@@ -260,7 +274,7 @@ Item {
                         required property int index
                         required property var modelData
                         width: listCol.width
-                        skin: checkins.skin; job: modelData
+                        model: checkins.model; skin: checkins.skin; job: modelData
                         tick: checkins.tick; reducedMotion: checkins.reducedMotion
                         phase: index + 3
                         animate: checkins.active && !checkins.reducedMotion && index < checkins.creatureCap
