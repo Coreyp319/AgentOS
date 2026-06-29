@@ -612,7 +612,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     const allowRow = p.allow_any_ollama
       ? `<div class="mp-label">Allowed families <span style="text-transform:none;letter-spacing:0">— optional; empty = all</span></div><div class="mp-chips">${families.map(f=>chip(f,"allow",allow.has(f))).join("")}</div>` : "";
     let cands="";
-    if(MP.researching) cands=`<div class="dsc" style="color:var(--muted);margin-top:8px">searching the web for the best models in your VRAM class…</div>`;
+    if(MP.researching) cands=`<div class="dsc" style="color:var(--muted);margin-top:8px">${MP.source==="cloud"?"searching the web for the best models in your VRAM class…":"asking your on-box model — nothing leaves the box…"}</div>`;
     else if(MP.cands) cands=renderCands(MP.cands);
     const ledger = (MP.adopted||[]).length
       ? `<div class="mp-label">Adopted — reversible</div><div class="mp-ledger">${MP.adopted.map(a=>`<div class="mp-led-row"><span><b>${esc(a.ref)}</b> · ${esc(a.at||"")}</span><button class="btn ghost" data-revert="${esc(a.id)}">Revert</button></div>`).join("")}</div>` : "";
@@ -626,7 +626,8 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
       ${allowRow}
       <p class="mp-prec">Order: safety red line &gt; blocked family &gt; allow-any &gt; allowlist. The safety block can't be turned off.</p>
       <hr>
-      <div class="subrow" style="padding:0"><div class="meta"><div class="nm">Find the latest models for your GPU</div><div class="dsc">a research agent web-searches what fits — only your VRAM class leaves the box, never your model list or policy. It proposes; you adopt.</div></div><button class="btn ghost" id="mpFind" ${MP.researching?"disabled":""}>${MP.researching?"searching…":"Find latest ↗"}</button></div>
+      <div class="subrow" style="padding:0"><div class="meta"><div class="nm">Find models for your GPU</div><div class="dsc">on-box — your own model proposes from what it knows, nothing leaves the box. It proposes; you adopt.</div></div><button class="btn ghost" id="mpFind" ${MP.researching?"disabled":""}>${MP.researching?"searching…":"Find (on-box)"}</button></div>
+      <div style="margin:3px 0 0"><button id="mpFindWeb" ${MP.researching?"disabled":""} style="background:none;border:0;color:var(--blue);cursor:pointer;font-size:.78rem;padding:0;text-decoration:underline">or search the web for what's newest ↗</button> <span style="color:var(--muted);font-size:.74rem">— sends only your VRAM class to the cloud, never your model list or policy</span></div>
       ${cands}
       ${ledger}`;
   }
@@ -637,7 +638,9 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
       if(c.adoptable) act=`<button class="btn" data-adopt="${ref}" data-name="${esc(c.name||"")}">Adopt</button>`;
       else if(c.reason==="already-registered") act=`<span class="state ready">✓ in your library</span>`;
       else if(c.reason==="safety-denied") act=`<span class="mp-deny">⛔ safety red line — can't be allowed</span>`;
-      else if(c.reason==="not-present") act=`<span class="mp-hint">pull first: <code>ollama pull ${ref}</code></span>`;
+      else if(c.reason==="not-present") act=(MP.pol&&MP.pol.allow_any_ollama)
+        ? `<button class="btn" data-pulladopt="${ref}" data-name="${esc(c.name||"")}">Pull &amp; adopt</button>`
+        : `<span class="mp-hint">pull first: <code>ollama pull ${ref}</code></span>`;
       else if(c.reason==="blocked-family") act=`<button class="btn ghost" data-allowfam="${esc(c.family)}">Unblock ${esc(c.family)}</button>`;
       else if(c.reason==="not-curated"||c.reason==="not-in-allowlist") act=`<button class="btn ghost" data-allowfam="${esc(c.family)}">Allow ${esc(c.family)}</button>`;
       else act=`<span class="mp-hint">${esc(c.reason||"")}</span>`;
@@ -666,6 +669,8 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     const vtxt={fits:"fits comfortably",tight:"tight — may share VRAM poorly under load","too-big":"won't fit",unknown:"fit unknown"}[v]||v;
     const diff=esc(p.diff).split("\n").map(l=>l.startsWith("+")?`<span class="add">${l}</span>`:l.startsWith("-")?`<span class="del">${l}</span>`:l).join("\n");
     const pull=f.present?"":"⚠ not pulled yet — <code>ollama pull</code> it first. ";
+    const mf=p.modelfile||{};
+    const sysWarn = mf.has_system ? `<div class="mp-deny" style="margin-top:6px">⚠ This model ships a custom SYSTEM prompt — it would steer every Hermes turn. Review it:<pre class="mp-diff" style="margin-top:4px">${esc((mf.system||"").slice(0,800))}</pre>${(mf.flags&&mf.flags.length)?`<div style="margin-top:2px">flagged terms: <b>${esc(mf.flags.join(", "))}</b></div>`:""}</div>` : "";
     let action;
     if(!p.permitted) action=`<div class="mp-deny">⛔ ${esc(p.permit_reason||"not eligible")} — can't be set as the default</div>`;
     else if(!f.present) action=`<div class="dsc" style="color:var(--muted)">pull it first, then you can apply it.</div>`;
@@ -675,6 +680,7 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
       <pre class="mp-diff">${diff}</pre>
       <div class="dsc">${pull}Estimated footprint <b>${esc(f.est_footprint_gb||"?")} GB</b> of ${esc(f.vram_gb||"?")} GB — <b>${esc(vtxt)}</b> <span style="color:var(--muted)">(${esc(f.note||"")})</span></div>
       <div class="dsc" style="color:var(--muted);margin-top:4px">Applying runs a measured fit check on your GPU, edits <code>~/.hermes/config.yaml</code> (one line, the rest byte-for-byte), and takes effect when Hermes restarts — one-click revertible.</div>
+      ${sysWarn}
       <div class="mp-act" style="margin-top:8px">${action}</div>
       <div id="mpApplyOut"></div>
     </div>`;
@@ -697,9 +703,9 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     out.innerHTML=`<div class="mp-preview"><div class="dsc">✓ Set <b>${esc(r.new)}</b> as the Hermes default${c.measured?` (${esc(c.tok_s)} tok/s, ${esc(c.size_vram_gb)}/${esc(c.size_gb)} GB on GPU)`:""}. It takes effect when Hermes restarts.</div><div class="mp-act" style="margin-top:6px"><button class="btn" id="mpRestart">Restart Hermes now</button> <span style="color:var(--muted);font-size:.76rem">(drops any in-flight turn)</span> <button class="btn ghost" id="mpRevertDef">Revert</button></div><div id="mpRestartOut"></div></div>`;
     loadPolicy();
   }
-  async function findLatest(){
-    MP.researching=true; MP.cands=null; renderModelPolicy();
-    const r=await post("/api/research_models",{modality:"text"});
+  async function findLatest(source){
+    MP.researching=true; MP.source=source||"local"; MP.cands=null; renderModelPolicy();
+    const r=await post("/api/research_models",{modality:"text",source:source||"local"});
     if(r.error){ MP.researching=false; renderModelPolicy(); return; }
     clearInterval(_mpPoll);
     _mpPoll=setInterval(async()=>{
@@ -716,8 +722,18 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
   }
   document.getElementById("modelPolicy").addEventListener("click",async e=>{
     const t=e.target;
-    if(t.id==="mpFind"){ findLatest(); return; }
+    if(t.id==="mpFind"){ findLatest("local"); return; }
+    if(t.id==="mpFindWeb"){ findLatest("cloud"); return; }
     if(t.id==="mpPreviewDef"){ const ref=(document.getElementById("mpDefRef").value||"").trim(); if(ref) previewDefault(ref); return; }
+    const pa=t.closest("[data-pulladopt]");
+    if(pa){ const ref=pa.dataset.pulladopt;
+      if(!confirm("Pull "+ref+" and adopt it? It's fetched only from a pinned registry (default Ollama / hf.co); its SYSTEM prompt is shown after so you can review the brain before making it a default.")) return;
+      pa.disabled=true; pa.textContent="pulling…";
+      let r=await post("/api/adopt",{ref,name:pa.dataset.name||"",pull:true});
+      if(r.reason==="needs-affirm"){ if(confirm("This may be a mature/uncensored model. Are you 18 or older?")) r=await post("/api/adopt",{ref,name:pa.dataset.name||"",pull:true,affirmed:true}); else { pa.disabled=false; pa.textContent="Pull & adopt"; return; } }
+      if(r.error||r.ok===false){ inlineErr(pa,(r.reason||"couldn't pull/adopt")); pa.disabled=false; pa.textContent="Pull & adopt"; return; }
+      const mf=r.modelfile||{}; if(mf.has_system) alert("Heads up: "+ref+" ships a custom SYSTEM prompt that would steer every Hermes turn. Review it before making this model your agent default:\n\n"+(mf.system||"").slice(0,500));
+      await loadPolicy(); refreshState(); return; }
     const ap=t.closest("[data-apply-ref]"); if(ap){ if(confirm("Set "+ap.dataset.applyRef+" as your Hermes default? A fit check runs first; it takes effect on restart and is one-click revertible.")) applyDefault(ap.dataset.applyRef,false); return; }
     const apf=t.closest("[data-apply-force]"); if(apf){ if(confirm("Apply despite the failed fit check? This can make every Hermes turn slow.")) applyDefault(apf.dataset.applyForce,true); return; }
     if(t.id==="mpRestart"){ const o=document.getElementById("mpRestartOut"); if(o) o.innerHTML=`<div class="dsc" style="color:var(--muted)">restarting Hermes…</div>`; const r=await post("/api/hermes_restart",{}); if(o) o.innerHTML=r.ok?`<div class="dsc">✓ Hermes restarted — your new default is live.</div>`:`<div class="err">${esc(r.reason||"restart failed")}</div>`; return; }

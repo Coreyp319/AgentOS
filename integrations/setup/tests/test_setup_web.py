@@ -599,6 +599,14 @@ class Adr0049Routes(Routes):
     def test_adopt_requires_token(self):
         self.assertEqual(self._post("/api/adopt", {"ref": "gemma4:latest"})[0], 403)
 
+    def test_disabling_allow_any_revokes_affirmation(self):
+        self._post("/api/policy", {"allow_any_ollama": True, "affirm_mature": True}, token=sw.TOKEN)
+        d = json.loads(self._req("GET", "/api/policy")[1])
+        self.assertIsNotNone(d["policy"]["mature_affirmed_at"])
+        self._post("/api/policy", {"allow_any_ollama": False}, token=sw.TOKEN)   # turning it off clears consent
+        d = json.loads(self._req("GET", "/api/policy")[1])
+        self.assertIsNone(d["policy"]["mature_affirmed_at"])
+
     def test_adopt_denied_ref_409_and_registry_untouched(self):
         before = Path(setup.REGISTRY).read_text()
         st, body = self._post("/api/adopt", {"ref": "deadman44/x:latest"}, token=sw.TOKEN)
@@ -612,11 +620,12 @@ class Adr0049Routes(Routes):
         st, body = self._post("/api/adopt", {"ref": "gemma4:latest", "affirmed": True}, token=sw.TOKEN)
         self.assertEqual(st, 200)
         mid = json.loads(body)["id"]
-        self.assertIn(mid, [m["id"] for m in json.loads(Path(setup.REGISTRY).read_text())["models"]])
+        self.assertIn(mid, [m["id"] for m in setup.load_registry()["models"]])   # via the 0600 overlay merge
+        self.assertNotIn(mid, [m["id"] for m in json.loads(Path(setup.REGISTRY).read_text())["models"]])  # NOT in the catalog
         d = json.loads(self._req("GET", "/api/policy")[1])
         self.assertIn(mid, [a["id"] for a in d["adopted"]])
         self.assertEqual(self._post("/api/revert", {"id": mid}, token=sw.TOKEN)[0], 200)
-        self.assertNotIn(mid, [m["id"] for m in json.loads(Path(setup.REGISTRY).read_text())["models"]])
+        self.assertNotIn(mid, [m["id"] for m in setup.load_registry()["models"]])
 
     def test_research_models_route_starts_job(self):
         self.assertEqual(self._post("/api/research_models", {"modality": "text"}, token=sw.TOKEN)[0], 202)
