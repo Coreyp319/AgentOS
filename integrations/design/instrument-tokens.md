@@ -137,3 +137,26 @@ rest and never impersonates the wallpaper's reserved `needs_you` dawn-*breath*. 
 | `member-fade-ms` | `180` (OutCubic) | member rows fade on expand/collapse (opacity only — height is never tweened) |
 
 Opacity envelope: `washOpacity = reducedMotion ? wash-peak : wash-rest + (wash-peak − wash-rest)·bloom`, where `bloom` ∈ [1→0] decays once over `wash-bloom-ms` on arrival and is 0 thereafter (steady at `wash-rest`). **Reduced-motion** holds at `wash-peak` (a legible still crest) with no bloom. **Honest UNKNOWN:** a stale/unreachable board performs none of this — rows go dim-still.
+
+## Creature moods (ADR-0052) — the per-task sidekick register, Check-ins tab ONLY
+
+A **bounded second register** beside the calm instrument, confined to the keyhole's Check-ins tab. Each
+token is an alias to an existing vetted token (no new hue); mood is always carried redundantly by the
+face **shape** + the status **word**, so these never carry state colour-only.
+
+| token | value | meaning |
+| --- | --- | --- |
+| `creatureWorking` | `blue` | active — the unified violet accent |
+| `creatureStalled` | dark `stAmber` · light `#7A5710` | blocked / failing — amber (cool, **never red**) |
+| `creatureNeedsYou` | `warm` (#FF9957) | RESERVED needs-you GLOW — used **only** on the halo / border / board-dot |
+| `creatureNeedsYouText` | dark `warm` · light `warmText` (#A8480F copper) | needs-you **foreground** (face glyph + status word) — the AA-safe split, exactly like the tray glyph; warmth never rides letterforms |
+| `creatureDone` | dark `stUp` · light `#1F6B41` | finished — muted sage |
+| `creatureCalm` | `dim` | queued / scheduled — quiet |
+
+**Warm-predicate monopoly:** `warm` is spent only on the `needs_you` predicate (kanban `review`); no
+other mood touches it and no second warm hue is minted. The light-register `creatureStalled`/`Done`
+darken (≥5.3:1 vs the card glass) because they double as **status text**, where the shared `stUp`/`stAmber`
+were razor-thin (4.5–4.7:1); the shared SYSTEM-board tokens are left unchanged. Motion is one shared
+~9fps tick, gated on tab-active **AND** popup-expanded **AND** `!reduced-motion` **AND** `!unknown`, with
+a ~10-creature cap + per-card phase offset; reduced-motion / over-cap / off-screen render as open-eyed
+stills. See ADR-0052.

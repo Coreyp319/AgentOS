@@ -24,11 +24,18 @@ Item {
     property var skin: _defaultSkin
     InstrumentPalette { id: _defaultSkin }
     property bool reducedMotion: model ? model.reducedMotion : false
+    // ADR-0050: which tab is showing (0 = Instrument, 1 = Check-ins). The HorizonStrip, the state
+    // glyph honesty, and the compact tray stay shell-global; only the body below the tab bar swaps.
+    property int currentTab: 0
     // Honest UNKNOWN: a stale/unreachable board performs NO motion (no tint sunrise,
     // no ember, no breath) — the rows go dim-still instead.
     readonly property bool servicesAvailable: !!(services && services.available)
     implicitWidth: 360
-    implicitHeight: col.implicitHeight + 24
+    // Per-tab height so the popup re-measures to the ACTIVE tab (a StackLayout would size to the
+    // tallest child and clip the shorter). Snap on switch — no height tween (the contentHeight->0
+    // popup-clip + WCAG 2.3.3 lesson the SYSTEM board already follows).
+    implicitHeight: (currentTab === 0 ? (col.y + col.implicitHeight)
+                                      : (checkins.y + checkins.implicitHeight)) + 16
 
     // Authoritative size for the host popup (PlasmaCore.Dialog reads the mainItem's
     // Layout hints): pin min == preferred == implicit so the popup opens at full height
@@ -84,11 +91,29 @@ Item {
         reducedMotion: full.reducedMotion
     }
 
+    // ADR-0050: the tab switcher — a calm segmented control in the instrument's own language,
+    // pinned shell-global directly under the signature strip. Keyboard-operable, reduced-motion aware.
+    SegmentedToggle {
+        id: tabBar
+        anchors { top: strip.bottom; left: parent.left; right: parent.right }
+        anchors.topMargin: 7
+        anchors.leftMargin: 14
+        anchors.rightMargin: 14
+        skin: full.skin
+        reducedMotion: full.reducedMotion
+        segments: ["Instrument", "Check-ins"]
+        currentIndex: full.currentTab
+        onActivated: function(i) { full.currentTab = i }
+    }
+
+    // Tab 1 — the existing arbitration Instrument, byte-for-byte (only the top anchor + this
+    // `visible` binding changed vs the single-panel original).
     ColumnLayout {
         id: col
-        anchors { top: strip.bottom; left: parent.left; right: parent.right }
+        visible: full.currentTab === 0
+        anchors { top: tabBar.bottom; left: parent.left; right: parent.right }
         anchors.margins: 12
-        anchors.topMargin: 10
+        anchors.topMargin: 8
         spacing: 10
 
         // --- Header: state token + fleet -----------------------------------
@@ -545,5 +570,19 @@ Item {
                 }
             }
         }
+    }
+
+    // Tab 2 — the Check-ins page (ADR-0050/0051/0052/0053). Sibling of `col`; shown on tab 1. Owns
+    // its own shared creature Timer gated on `active`, so the Instrument tab pays nothing for it.
+    CheckInsView {
+        id: checkins
+        visible: full.currentTab === 1
+        anchors { top: tabBar.bottom; left: parent.left; right: parent.right }
+        anchors.margins: 12
+        anchors.topMargin: 8
+        model: full.model
+        skin: full.skin
+        reducedMotion: full.reducedMotion
+        active: full.visible && full.currentTab === 1
     }
 }

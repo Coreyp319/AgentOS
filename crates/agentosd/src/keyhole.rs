@@ -18,8 +18,8 @@
 //! `gateway:"unknown"` + `state:"unknown"`, which the consumer renders as
 //! "Status unavailable — can't reach Hermes", distinct from `idle` and from a real `0`.
 //!
-//! Output contract — schema 3, consumed by `spikes/keyhole/contents/ui/KeyholeModel.qml`:
-//!   {"schema":3,"state":…,"gateway":…,"floats":{busy,warm,snag},
+//! Output contract — schema 5, consumed by `{integrations,spikes}/keyhole/.../KeyholeModel.qml`:
+//!   {"schema":5,"state":…,"gateway":…,"floats":{busy,warm,snag},
 //!    "fleet":{running,queued,snagged},          // -1 == unknown (NOT zero)
 //!    "lease":{tier,holder,preempt},             // empty string == no datum
 //!    "vram":{used_mib,total_mib},               // -1 == unknown
@@ -30,20 +30,32 @@
 //!                                                // both miss — most of all ComfyUI (the dreaming
 //!                                                // backend), which holds no lease and is no model.
 //!    "tokens_per_sec":null,                      // null == UNKNOWN, never synthesized (P2: proxy)
-//!    "pending_requests":{held,needs_review}}     // schema 2 (ADR-0019 §6): lucid queue mirror.
+//!    "pending_requests":{held,needs_review},     // schema 2 (ADR-0019 §6): lucid queue mirror.
 //!                                                // 0 == empty (a REAL datum, never -1/UNKNOWN);
 //!                                                // `held` is calm weather (count only, NEVER warm),
 //!                                                // `needs_review` is the warm-bloom cohort — but
 //!                                                // the warmth is the lucid→feed.rs sidecar's job
 //!                                                // (G1), NOT written here (read-only mirror).
+//!    "queue":{depth,next_tier},                  // schema 4 (ADR-0041): live arbiter wait-queue.
+//!    "gpu_util_pct":N,                           // schema 5: NVML GPU util %. -1 == unreadable
+//!                                                // (a real 0 == idle GPU — distinct, ADR-0012 §4).
+//!    "check_ins":[{id,title,assignee,status,…}], // schema 5 (ADR-0051): per-task Hermes cards,
+//!                                                // read READ-ONLY from kanban.db. [] == none OR
+//!                                                // can't-read (the consumer splits the two on the
+//!                                                // gateway/state "unknown"). RAW status — the view
+//!                                                // derives the mood (no UI vocab in the contract).
+//!    "check_ins_total":N,                        // pre-cap count (honest "16 of 23"); -1 unknown.
+//!    "recurring":[{id,name,schedule,…}]}         // schema 5 (ADR-0051): Hermes cron jobs from
+//!                                                // ~/.hermes/cron/jobs.json. [] == none / can't-read.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::gpu::{GpuBackend, ProcClass};
+use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 
 use crate::feed::{
@@ -55,9 +67,13 @@ use crate::feed::{
 /// schema 2 (ADR-0019 §6): adds the additive `pending_requests` block.
 /// schema 3 (ADR-0012 workload attribution): adds the additive `workload` block — the dominant
 /// GPU compute process by VRAM (from NVML), the slice neither Ollama-residency nor the lease
-/// daemon can see. Both additions are purely additive; an older consumer ignores the unknown
-/// field and the serializer always emits an honest-empty default, never absent.
-const SCHEMA: u32 = 4;
+/// daemon can see.
+/// schema 4 (ADR-0041): adds the additive `queue` block (live arbiter wait-queue).
+/// schema 5 (ADR-0051): adds the additive `gpu_util_pct` scalar + the `check_ins`/`check_ins_total`
+/// per-task cards (read-only from kanban.db) + `recurring` (Hermes cron). Each addition is purely
+/// additive; an older consumer ignores the unknown field and the serializer always emits an
+/// honest-empty default ([], -1, ""), never absent.
+const SCHEMA: u32 = 5;
 
 /// Negative sentinel for an unreadable integer datum — distinct from a real `0` (ADR-0012 §4).
 const UNK: i64 = -1;
@@ -77,6 +93,18 @@ const GPU_VRAM_MIN_FRAC: f64 = 0.20;
 /// Decoupled from the util gate on purpose: "who holds the memory" is a steadier signal than
 /// instantaneous util (which dips between diffusion steps and would make the row flicker).
 const WORKLOAD_MIN_FRAC: f64 = 0.20;
+
+/// schema 5 (ADR-0051): cap the Check-ins card list so the hot `keyhole.json` stays small and the
+/// tray reflow stays bounded. The pre-cap total rides in `check_ins_total` for honest truncation.
+const CHECK_IN_CAP: usize = 16;
+/// A `done` task stays in the Check-ins DONE column only this long after `completed_at`, then ages
+/// out — so the card list is "what is live + just finished," not the whole archive.
+const DONE_WINDOW_SECS: i64 = 6 * 3600;
+/// Truncate a task's `last_failure_error` to this many chars (+ "…") so one giant traceback can't
+/// bloat the feed; the view only needs the gist for the card's status line / blurt.
+const ERROR_MAX: usize = 200;
+/// Cap the recurring/cron list (defensive — Hermes cron is tiny today, but never unbounded).
+const RECUR_CAP: usize = 12;
 
 // ---------------------------------------------------------------------------
 // The emitted contract (field order == serialization order == the pinned string).
@@ -109,6 +137,22 @@ pub struct KeyholeFeed {
     /// waiting their turn at the lease right now + the tier served next. Always present (default
     /// `{0,""}`), never `null`. Distinct from `pending_requests` (the durable deferral buffer).
     pub queue: Queue,
+    /// schema 5 (ADR-0051): live NVML GPU utilization %. -1 == unreadable (distinct from a real 0%
+    /// idle GPU, ADR-0012 §4). Surfaces the value `read_gpu_util` already computes for the work-gate
+    /// so the Check-ins metrics rail shows a real number instead of inferring one from `busy`.
+    pub gpu_util_pct: i64,
+    /// schema 5 (ADR-0051): the Check-ins cards — per-task rows of Hermes' `tasks` table, read
+    /// READ-ONLY, ordered active-first and capped at `CHECK_IN_CAP`. `[]` == no active tasks OR an
+    /// unreadable kanban; the consumer distinguishes the two via `gateway`/`state` == `"unknown"`
+    /// (no separate flag). Cards carry the RAW kanban `status` — the view derives the creature mood
+    /// (calm/working/stalled/needsyou/done), so UI vocabulary never leaks into the contract.
+    pub check_ins: Vec<CheckIn>,
+    /// schema 5: count matching the inclusion filter BEFORE the cap, so the UI can say "16 of 23"
+    /// honestly instead of silently dropping cards. -1 == kanban unreadable (distinct from 0 rows).
+    pub check_ins_total: i64,
+    /// schema 5 (ADR-0051): Hermes recurring/cron jobs from `~/.hermes/cron/jobs.json` (the cadence
+    /// the `tasks` table does not carry). `[]` == none / unreadable — calm fail-open, never faked.
+    pub recurring: Vec<Recurring>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -221,6 +265,55 @@ pub struct Queue {
     pub depth: i64,
     #[serde(default)]
     pub next_tier: String,
+}
+
+/// schema 5 (ADR-0051): one Check-ins card — a per-task row of Hermes' `tasks` table, read
+/// READ-ONLY. The contract ships the **raw** kanban `status` + `consecutive_failures`; the view
+/// derives the creature mood (calm/working/stalled/needsyou/done), so UI vocabulary never leaks
+/// into the producer (single source of truth for mood = the QML model). Timestamps are epoch
+/// SECONDS (Hermes writes `int(time.time())`); `-1` == that stamp is unset — a queued task has no
+/// heartbeat, distinct from a real `0`. Strings: `""` == none / unknown. Every field is always
+/// serialized (the `Vram`/`Fleet` always-emit convention) so the pin-test stays deterministic and
+/// the QML binding needs no `undefined` juggling.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CheckIn {
+    pub id: String,
+    pub title: String,
+    /// The agent on the task ("" == unassigned/unknown).
+    pub assignee: String,
+    /// RAW kanban status (`running`/`blocked`/`review`/`ready`/`todo`/`scheduled`/`triage`/`done`).
+    pub status: String,
+    pub priority: i64,
+    pub consecutive_failures: i64,
+    pub created_at: i64,
+    /// -1 == not started.
+    pub started_at: i64,
+    /// -1 == no heartbeat yet (the view's "last check-in" = first of [heartbeat, started, created]).
+    pub last_heartbeat_at: i64,
+    /// `current_step_key` — a cheap progress hint with no `task_runs` join. "" == none.
+    pub step: String,
+    /// `last_failure_error`, truncated to `ERROR_MAX`. "" == none.
+    pub last_error: String,
+}
+
+/// schema 5 (ADR-0051): one recurring/cron job from `~/.hermes/cron/jobs.json` (the cadence the
+/// `tasks` table doesn't carry). A thin honest passthrough; timestamps are Hermes' ISO-8601 strings
+/// (NOT epoch — the view relative-formats them). "" == none / not-yet-run. Read-only mirror.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Recurring {
+    pub id: String,
+    pub name: String,
+    /// `schedule_display` — the human cron expr, e.g. "0 4 * * *".
+    pub schedule: String,
+    pub enabled: bool,
+    /// "scheduled" | "paused" | ….
+    pub state: String,
+    /// `next_run_at` ISO-8601; "" == none.
+    pub next_run: String,
+    /// `last_run_at` ISO-8601; "" == never run.
+    pub last_run: String,
+    /// "ok" | "error" | "" — the cheap "did it snag" signal.
+    pub last_status: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +486,174 @@ fn read_queue(path: &Path) -> Queue {
         .unwrap_or_default()
 }
 
+/// schema 5: map the NVML util read to the wire sentinel — `Some(u) → u`, `None → -1` (UNKNOWN),
+/// keeping a real `0%` idle distinct from "couldn't read the GPU" (ADR-0012 §4).
+fn util_field(util: Option<u32>) -> i64 {
+    util.map(|u| u as i64).unwrap_or(UNK)
+}
+
+/// `read_check_ins`' per-task SELECT. Active + recently-finished rows, ordered active-first; the
+/// `COUNT(*) OVER ()` is the pre-cap total on every row (one read, no second query). `?1` = the
+/// done-window cutoff (epoch secs), `?2` = the cap. Reads Hermes' internal `tasks` table directly
+/// (no API boundary), so a schema drift is probed once at startup (`probe_check_in_columns`).
+const CHECK_IN_SQL: &str = "\
+SELECT \
+  id, title, COALESCE(assignee,''), status, COALESCE(priority,0), \
+  COALESCE(consecutive_failures,0), created_at, COALESCE(started_at,-1), \
+  COALESCE(last_heartbeat_at,-1), COALESCE(current_step_key,''), \
+  COALESCE(last_failure_error,''), COUNT(*) OVER () AS total \
+FROM tasks \
+WHERE status IN ('running','blocked','triage','todo','scheduled','ready','review') \
+   OR (status = 'done' AND completed_at IS NOT NULL AND completed_at >= ?1) \
+ORDER BY \
+  CASE status WHEN 'running' THEN 0 WHEN 'blocked' THEN 1 WHEN 'review' THEN 2 \
+              WHEN 'ready' THEN 3 WHEN 'todo' THEN 4 WHEN 'scheduled' THEN 5 \
+              WHEN 'triage' THEN 6 WHEN 'done' THEN 7 ELSE 8 END, \
+  (consecutive_failures > 0) DESC, priority DESC, \
+  COALESCE(last_heartbeat_at, started_at, created_at) DESC \
+LIMIT ?2";
+
+/// schema 5 (ADR-0051): read the Check-ins cards READ-ONLY from `tasks`. Returns the capped cards +
+/// the pre-cap total. Mirrors `read_fleet`'s open/busy_timeout; any error (DB absent/locked/drift)
+/// bubbles to the caller, which folds it to `(vec![], -1)` — fail-open (ADR-0003). `now` is the
+/// producer clock (epoch secs), bound as a param so the read is deterministic + testable. The view
+/// derives mood/last-seen from the raw fields; the producer ships no UI vocabulary.
+fn read_check_ins(db: &Path, now: i64, cap: usize) -> rusqlite::Result<(Vec<CheckIn>, i64)> {
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(Duration::from_millis(2000))?;
+    let cutoff = now - DONE_WINDOW_SECS;
+    let mut stmt = conn.prepare(CHECK_IN_SQL)?;
+    let mut total = 0i64;
+    let rows = stmt
+        .query_map(rusqlite::params![cutoff, cap as i64], |r| {
+            total = r.get::<_, i64>(11)?; // the window count — identical on every row
+            let raw_err: String = r.get(10)?;
+            let last_error = if raw_err.chars().count() > ERROR_MAX {
+                let mut t: String = raw_err.chars().take(ERROR_MAX).collect();
+                t.push('…');
+                t
+            } else {
+                raw_err
+            };
+            Ok(CheckIn {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                assignee: r.get(2)?,
+                status: r.get(3)?,
+                priority: r.get(4)?,
+                consecutive_failures: r.get(5)?,
+                created_at: r.get(6)?,
+                started_at: r.get(7)?,
+                last_heartbeat_at: r.get(8)?,
+                step: r.get(9)?,
+                last_error,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok((rows, total))
+}
+
+/// Columns `CHECK_IN_SQL` reads beyond the always-present id/title/status. A Hermes upgrade that
+/// renamed/dropped one would make `read_check_ins` error → the caller folds to empty cards, which
+/// would read as "no tasks" instead of a real break. Probed ONCE at startup and logged loudly so the
+/// drift lands in the journal. Diagnostic only — the runtime path stays fail-open (ADR-0003).
+const CHECK_IN_COLUMNS: [&str; 9] = [
+    "assignee",
+    "priority",
+    "consecutive_failures",
+    "created_at",
+    "started_at",
+    "completed_at",
+    "last_heartbeat_at",
+    "current_step_key",
+    "last_failure_error",
+];
+
+/// One-shot check that `tasks` still exposes the `CHECK_IN_COLUMNS`. `Ok(())` == present OR the DB /
+/// `tasks` table isn't there yet (Hermes simply not initialized — benign, like `feed.rs`'s `Absent`);
+/// `Err(why)` == a real column drift to log loudly. Never panics, never blocks the loop.
+fn probe_check_in_columns(db: &Path) -> Result<(), String> {
+    let conn = match Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(_) => return Ok(()), // DB not present yet — benign, not drift.
+    };
+    let mut stmt = match conn.prepare("SELECT name FROM pragma_table_info('tasks')") {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+    let have: std::collections::HashSet<String> = match stmt.query_map([], |r| r.get::<_, String>(0)) {
+        Ok(rows) => rows.flatten().collect(),
+        Err(_) => return Ok(()),
+    };
+    if have.is_empty() {
+        return Ok(()); // `tasks` table not found yet — benign.
+    }
+    let missing: Vec<&str> =
+        CHECK_IN_COLUMNS.iter().copied().filter(|c| !have.contains(*c)).collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("`tasks` is missing {missing:?}"))
+    }
+}
+
+/// `~/.hermes/cron/jobs.json` shape — only the fields the Check-ins RECURRING section needs.
+#[derive(Deserialize, Default)]
+struct CronFile {
+    #[serde(default)]
+    jobs: Vec<CronJob>,
+}
+#[derive(Deserialize, Default)]
+struct CronJob {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    schedule_display: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    next_run_at: Option<String>,
+    #[serde(default)]
+    last_run_at: Option<String>,
+    #[serde(default)]
+    last_status: Option<String>,
+}
+
+/// schema 5 (ADR-0051): read Hermes recurring/cron jobs from `~/.hermes/cron/jobs.json`. Absent/
+/// unparseable → `[]` (calm fail-open, never a fabricated schedule). Capped at `cap`. Pure read
+/// mirror — the keyhole never writes cron. ISO-8601 timestamps pass through verbatim (the view
+/// relative-formats); a JSON `null` for a stamp/status collapses to `""`.
+fn read_recurring(path: &Path, cap: usize) -> Vec<Recurring> {
+    let file: CronFile =
+        match fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+            Some(f) => f,
+            None => return vec![],
+        };
+    file.jobs
+        .into_iter()
+        .take(cap)
+        .map(|j| Recurring {
+            id: j.id,
+            name: j.name,
+            schedule: j.schedule_display,
+            enabled: j.enabled,
+            state: j.state,
+            next_run: j.next_run_at.unwrap_or_default(),
+            last_run: j.last_run_at.unwrap_or_default(),
+            last_status: j.last_status.unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// Wall-clock seconds since the epoch, for the Check-ins done-window + the producer's read clock.
+fn now_secs() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // The pure assembly — fleet/gateway/needs_you → {state, gateway, floats, fleet}.
 // ---------------------------------------------------------------------------
@@ -483,7 +744,20 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
     let lease_mirror = dir.join("lease.json");
     let pending_mirror = dir.join("pending.json");
     let queue_mirror = dir.join("queue.json");
+    let cron_jobs = hermes_path("cron/jobs.json");
     println!("agentosd keyhole → {}", out.display());
+
+    // schema 5 (ADR-0051): surface a Hermes `tasks` schema drift loudly once at startup — the
+    // per-task Check-ins read goes straight into Hermes' internal table, so a renamed/dropped column
+    // would otherwise read as "no tasks" (phantom-empty) rather than a real break. The runtime read
+    // stays fail-open either way (ADR-0003).
+    match probe_check_in_columns(&kanban) {
+        Ok(()) => {}
+        Err(why) => eprintln!(
+            "agentosd keyhole: WARNING — Hermes kanban schema drift: {why}. Check-ins cards now \
+             read empty (fail-open); update CHECK_IN_SQL/CHECK_IN_COLUMNS in keyhole.rs to match."
+        ),
+    }
 
     // Own GPU backend (like `monitor`), never the lease daemon's. Absent → VRAM degrades to
     // unknown but the rest of the instrument still works (fail-open, ADR-0003).
@@ -513,6 +787,12 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
         let lease = read_lease(&lease_mirror);
         let pending_requests = read_pending(&pending_mirror);
         let queue = read_queue(&queue_mirror);
+        // schema 5 (ADR-0051): the Check-ins cards + Hermes cron. Each read is fail-open: a DB error
+        // folds to `(vec![], UNK)` (empty cards, total UNKNOWN — never a panic, never a fabricated
+        // task); a missing cron file folds to `[]`. One indexed SELECT per tick (idx_tasks_status).
+        let (check_ins, check_ins_total) =
+            read_check_ins(&kanban, now_secs(), CHECK_IN_CAP).unwrap_or((vec![], UNK));
+        let recurring = read_recurring(&cron_jobs, RECUR_CAP);
 
         // Promote an idle fleet to `working` when the GPU is genuinely busy with a real workload
         // (not the shader wallpaper) — gated on util AND (heavy VRAM OR a resident model).
@@ -533,6 +813,10 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
             tokens_per_sec: None, // P2: summed from the ADR-0002 proxy stream. Never faked.
             pending_requests,     // schema 2: lucid deferral buffer; {0,0} until the sidecar exists.
             queue,                // schema 4: live arbiter wait-queue; {0,""} until `agentosd queue` runs.
+            gpu_util_pct: util_field(gpu_util), // schema 5: real NVML util %; -1 == unreadable.
+            check_ins,            // schema 5: per-task cards (read-only kanban); [] == none/can't-read.
+            check_ins_total,      // schema 5: pre-cap total for honest truncation; -1 == unknown.
+            recurring,            // schema 5: Hermes cron jobs; [] == none/can't-read.
         };
 
         let changed = last.as_ref() != Some(&feed);
@@ -689,8 +973,10 @@ mod tests {
         // schema 2 (ADR-0019 §6): `pending_requests` appended additively after `tokens_per_sec`.
         // schema 3 (workload attribution): `workload` inserted after `residency`.
         // schema 4 (ADR-0041): `queue` (live arbiter wait-queue) appended after `pending_requests`.
+        // schema 5 (ADR-0051): `gpu_util_pct` + `check_ins` + `check_ins_total` + `recurring`
+        // appended after `queue` (additive; an older consumer ignores the trailing fields).
         let feed = KeyholeFeed {
-            schema: 4,
+            schema: 5,
             state: "working".into(),
             gateway: "running".into(),
             floats: Floats { busy: 0.85, warm: 0.0, snag: 0.0 },
@@ -707,10 +993,35 @@ mod tests {
             tokens_per_sec: None,
             pending_requests: Pending { held: 2, needs_review: 1 },
             queue: Queue { depth: 3, next_tier: "batch".into() },
+            gpu_util_pct: 42,
+            check_ins: vec![CheckIn {
+                id: "t1".into(),
+                title: "Refactor feed".into(),
+                assignee: "qwen".into(),
+                status: "running".into(),
+                priority: 5,
+                consecutive_failures: 0,
+                created_at: 1_750_000_000,
+                started_at: 1_750_000_100,
+                last_heartbeat_at: 1_750_000_200,
+                step: "edit".into(),
+                last_error: String::new(),
+            }],
+            check_ins_total: 1,
+            recurring: vec![Recurring {
+                id: "job1".into(),
+                name: "Daily audit".into(),
+                schedule: "0 4 * * *".into(),
+                enabled: true,
+                state: "scheduled".into(),
+                next_run: "2026-06-30T04:00:00-07:00".into(),
+                last_run: "2026-06-29T05:21:52-07:00".into(),
+                last_status: "ok".into(),
+            }],
         };
         assert_eq!(
             serde_json::to_string(&feed).unwrap(),
-            r#"{"schema":4,"state":"working","gateway":"running","floats":{"busy":0.85,"warm":0.0,"snag":0.0},"fleet":{"running":3,"queued":2,"snagged":0},"lease":{"tier":"interactive","holder":"Hermes","preempt":"wallpaper yielded ~1.5GB -> qwen2.5 loaded"},"vram":{"used_mib":6240,"total_mib":8192},"residency":[{"name":"qwen2.5:14b","loaded_secs":240}],"workload":{"name":"ComfyUI","used_mib":21000},"tokens_per_sec":null,"pending_requests":{"held":2,"needs_review":1},"queue":{"depth":3,"next_tier":"batch"}}"#
+            r#"{"schema":5,"state":"working","gateway":"running","floats":{"busy":0.85,"warm":0.0,"snag":0.0},"fleet":{"running":3,"queued":2,"snagged":0},"lease":{"tier":"interactive","holder":"Hermes","preempt":"wallpaper yielded ~1.5GB -> qwen2.5 loaded"},"vram":{"used_mib":6240,"total_mib":8192},"residency":[{"name":"qwen2.5:14b","loaded_secs":240}],"workload":{"name":"ComfyUI","used_mib":21000},"tokens_per_sec":null,"pending_requests":{"held":2,"needs_review":1},"queue":{"depth":3,"next_tier":"batch"},"gpu_util_pct":42,"check_ins":[{"id":"t1","title":"Refactor feed","assignee":"qwen","status":"running","priority":5,"consecutive_failures":0,"created_at":1750000000,"started_at":1750000100,"last_heartbeat_at":1750000200,"step":"edit","last_error":""}],"check_ins_total":1,"recurring":[{"id":"job1","name":"Daily audit","schedule":"0 4 * * *","enabled":true,"state":"scheduled","next_run":"2026-06-30T04:00:00-07:00","last_run":"2026-06-29T05:21:52-07:00","last_status":"ok"}]}"#
         );
     }
 
@@ -778,6 +1089,10 @@ mod tests {
             tokens_per_sec: None,
             pending_requests: Pending::default(),
             queue: Queue::default(),
+            gpu_util_pct: UNK,
+            check_ins: vec![],
+            check_ins_total: UNK,
+            recurring: vec![],
         };
         let s = serde_json::to_string(&feed).unwrap();
         assert!(s.contains(r#""fleet":{"running":-1,"queued":-1,"snagged":-1}"#));
@@ -790,5 +1105,191 @@ mod tests {
         // (An unreachable Hermes says nothing about a LOCAL lucid queue — the counts are
         // independent producers; the keyhole must not let one UNKNOWN smear into the other.)
         assert!(s.contains(r#""pending_requests":{"held":0,"needs_review":0}"#));
+        // schema 5: an unreadable GPU is -1 (distinct from a real 0% idle); unreadable kanban →
+        // empty cards + a -1 total (NOT 0 rows); no cron → empty recurring.
+        assert!(s.contains(r#""gpu_util_pct":-1"#));
+        assert!(s.contains(r#""check_ins":[]"#));
+        assert!(s.contains(r#""check_ins_total":-1"#));
+        assert!(s.contains(r#""recurring":[]"#));
+    }
+
+    // ---- schema 5 (ADR-0051): the Check-ins per-task read + GPU util + cron ----
+
+    #[test]
+    fn util_field_maps_none_to_unknown_and_keeps_a_real_zero() {
+        assert_eq!(util_field(Some(42)), 42);
+        assert_eq!(util_field(Some(0)), 0); // a real idle GPU is 0, NOT UNKNOWN
+        assert_eq!(util_field(None), UNK); // unreadable NVML → -1, distinct from 0
+    }
+
+    /// Build a `tasks` table with the full Check-ins column set + insert rows for the test.
+    fn write_check_in_db(path: &Path, inserts: &str) {
+        let _ = fs::remove_file(path);
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, assignee TEXT, status TEXT NOT NULL,
+                priority INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL, started_at INTEGER, completed_at INTEGER,
+                last_heartbeat_at INTEGER, current_step_key TEXT, last_failure_error TEXT);",
+        )
+        .unwrap();
+        conn.execute_batch(inserts).unwrap();
+    }
+
+    #[test]
+    fn read_check_ins_maps_orders_and_windows() {
+        let p = std::env::temp_dir().join(format!("agentos_checkins_{}.db", std::process::id()));
+        let now = 1_750_000_000i64;
+        // running, a stalled (failures), a needs-you (review), a queued (todo), a recent done,
+        // an OLD done (outside the 6h window → excluded), and an archived (excluded).
+        let recent_done = now - 60;
+        let old_done = now - DONE_WINDOW_SECS - 10;
+        let inserts = format!(
+            "INSERT INTO tasks
+             (id,title,assignee,status,priority,consecutive_failures,created_at,started_at,completed_at,last_heartbeat_at,current_step_key,last_failure_error) VALUES
+             ('a','Index sources','atlas','running',5,0,{c},{s},NULL,{hb},'edit',NULL),
+             ('b','Train reranker','local','running',5,2,{c},{s},NULL,{hb},'step',NULL),
+             ('c','Review draft','scribe','review',3,0,{c},NULL,NULL,NULL,NULL,NULL),
+             ('d','Backfill','atlas','todo',1,0,{c},NULL,NULL,NULL,NULL,NULL),
+             ('e','Nightly backup','local','done',0,0,{c},{s},{rd},{hb},NULL,NULL),
+             ('f','Old finished','local','done',0,0,{c},{s},{od},{hb},NULL,NULL),
+             ('g','Archived job','local','archived',0,0,{c},{s},{rd},{hb},NULL,NULL);",
+            c = now - 1000, s = now - 900, hb = now - 100, rd = recent_done, od = old_done
+        );
+        write_check_in_db(&p, &inserts);
+
+        let (cards, total) = read_check_ins(&p, now, CHECK_IN_CAP).unwrap();
+        // 5 included (a,b,c,d,e); old-done (f) + archived (g) excluded.
+        assert_eq!(total, 5);
+        assert_eq!(cards.len(), 5);
+        // active-first ordering: running before review before todo before done; within running the
+        // failing one (b) sorts ahead (the `consecutive_failures>0 DESC` tiebreak).
+        let ids: Vec<&str> = cards.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["b", "a", "c", "d", "e"]);
+        // mapping: raw status passes through; a NULL assignee/step/error → "" ; NULL started → -1.
+        let c = &cards[2]; // 'c' the review card
+        assert_eq!(c.status, "review");
+        assert_eq!(c.assignee, "scribe");
+        assert_eq!(c.started_at, UNK);
+        assert_eq!(c.last_heartbeat_at, UNK);
+        assert_eq!(c.step, "");
+        assert_eq!(c.last_error, "");
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn read_check_ins_caps_and_reports_pre_cap_total() {
+        let p = std::env::temp_dir().join(format!("agentos_checkins_cap_{}.db", std::process::id()));
+        let now = 1_750_000_000i64;
+        let mut rows = String::from(
+            "INSERT INTO tasks (id,title,assignee,status,priority,consecutive_failures,created_at,started_at,completed_at,last_heartbeat_at,current_step_key,last_failure_error) VALUES ",
+        );
+        for i in 0..25 {
+            rows.push_str(&format!(
+                "('t{i}','Task {i}','a','running',0,0,{c},{c},NULL,{c},NULL,NULL){}",
+                if i == 24 { ";" } else { "," },
+                c = now - 100
+            ));
+        }
+        write_check_in_db(&p, &rows);
+        let (cards, total) = read_check_ins(&p, now, CHECK_IN_CAP).unwrap();
+        assert_eq!(cards.len(), CHECK_IN_CAP); // capped at 16
+        assert_eq!(total, 25); // but the honest pre-cap total is reported
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn read_check_ins_truncates_a_giant_error() {
+        let p = std::env::temp_dir().join(format!("agentos_checkins_err_{}.db", std::process::id()));
+        let now = 1_750_000_000i64;
+        let big = "x".repeat(500);
+        let inserts = format!(
+            "INSERT INTO tasks (id,title,assignee,status,priority,consecutive_failures,created_at,started_at,completed_at,last_heartbeat_at,current_step_key,last_failure_error) VALUES
+             ('a','Boom','local','blocked',0,1,{c},{c},NULL,{c},NULL,'{big}');",
+            c = now - 100
+        );
+        write_check_in_db(&p, &inserts);
+        let (cards, _) = read_check_ins(&p, now, CHECK_IN_CAP).unwrap();
+        assert_eq!(cards.len(), 1);
+        // bounded to ERROR_MAX chars + the ellipsis
+        assert_eq!(cards[0].last_error.chars().count(), ERROR_MAX + 1);
+        assert!(cards[0].last_error.ends_with('…'));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn read_check_ins_absent_db_is_an_error_so_caller_fails_open_empty() {
+        // The runtime folds Err → (vec![], UNK): empty cards + a -1 total (unreadable, NOT "0 tasks").
+        let p = Path::new("/nonexistent/dir/kanban.db");
+        assert!(read_check_ins(p, 1_750_000_000, CHECK_IN_CAP).is_err());
+        let (cards, total) = read_check_ins(p, 1_750_000_000, CHECK_IN_CAP).unwrap_or((vec![], UNK));
+        assert!(cards.is_empty());
+        assert_eq!(total, UNK);
+    }
+
+    #[test]
+    fn read_check_ins_reachable_but_empty_is_zero_not_unknown() {
+        // A real empty board: the read succeeds, 0 rows, total 0 — distinct from the -1 above.
+        let p = std::env::temp_dir().join(format!("agentos_checkins_empty_{}.db", std::process::id()));
+        write_check_in_db(&p, "");
+        let (cards, total) = read_check_ins(&p, 1_750_000_000, CHECK_IN_CAP).unwrap();
+        assert!(cards.is_empty());
+        assert_eq!(total, 0);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn read_recurring_parses_cron_jobs_and_collapses_nulls() {
+        let p = std::env::temp_dir().join(format!("agentos_cron_{}.json", std::process::id()));
+        fs::write(
+            &p,
+            r#"{"jobs":[
+                {"id":"j1","name":"Daily audit","schedule_display":"0 4 * * *","enabled":true,
+                 "state":"scheduled","next_run_at":"2026-06-30T04:00:00-07:00",
+                 "last_run_at":"2026-06-29T05:21:52-07:00","last_status":"ok"},
+                {"id":"j2","name":"Never ran","schedule_display":"*/5 * * * *","enabled":false,
+                 "state":"paused","next_run_at":null,"last_run_at":null,"last_status":null}
+            ],"updated_at":"x"}"#,
+        )
+        .unwrap();
+        let r = read_recurring(&p, RECUR_CAP);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].schedule, "0 4 * * *");
+        assert_eq!(r[0].last_status, "ok");
+        assert!(r[0].enabled);
+        // a never-run job: nulls collapse to "" (honest, never a fabricated time).
+        assert_eq!(r[1].next_run, "");
+        assert_eq!(r[1].last_run, "");
+        assert_eq!(r[1].last_status, "");
+        assert!(!r[1].enabled);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn read_recurring_absent_or_garbage_is_empty() {
+        assert!(read_recurring(Path::new("/nonexistent/cron/jobs.json"), RECUR_CAP).is_empty());
+        let p = std::env::temp_dir().join(format!("agentos_cron_bad_{}.json", std::process::id()));
+        fs::write(&p, "not json").unwrap();
+        assert!(read_recurring(&p, RECUR_CAP).is_empty());
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn probe_check_in_columns_ok_present_drift_when_dropped_benign_when_absent() {
+        // present: full column set → Ok.
+        let p = std::env::temp_dir().join(format!("agentos_ci_probe_ok_{}.db", std::process::id()));
+        write_check_in_db(&p, "");
+        assert!(probe_check_in_columns(&p).is_ok());
+        let _ = fs::remove_file(&p);
+        // drift: a column we read is gone → Err (loud log, not phantom-empty).
+        let p2 = std::env::temp_dir().join(format!("agentos_ci_probe_drift_{}.db", std::process::id()));
+        let _ = fs::remove_file(&p2);
+        let conn = Connection::open(&p2).unwrap();
+        conn.execute_batch("CREATE TABLE tasks (id TEXT, title TEXT, status TEXT);").unwrap();
+        assert!(probe_check_in_columns(&p2).is_err());
+        let _ = fs::remove_file(&p2);
+        // absent: no DB yet (Hermes not up) is benign → Ok, not a false drift warning.
+        assert!(probe_check_in_columns(Path::new("/nonexistent/kanban.db")).is_ok());
     }
 }

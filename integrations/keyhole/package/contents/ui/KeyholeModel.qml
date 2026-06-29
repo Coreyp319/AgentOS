@@ -50,6 +50,15 @@ Item {
     // (the durable deferral buffer): this is who is actively in line for the GPU this moment. 0 is a real
     // "nothing in line" datum, never UNKNOWN; a pre-schema-4 file omits it and the `|| {...}` guard holds.
     property var queue: ({ depth: 0, next_tier: "" })
+    // schema 5 (ADR-0051): the Check-ins cards — per-task Hermes rows read READ-ONLY from kanban.db.
+    // [] is the only empty: no active tasks OR an unreadable kanban (the two SPLIT on effectiveState
+    // === "unknown" — see checkInsEmptyReason). Cards carry the RAW kanban status; the VIEW derives the
+    // creature mood HERE (checkInMood), so the producer ships no UI vocabulary and there is no
+    // Rust/QML drift. A pre-schema-5 file omits the field → the `|| []` guard holds the empty default.
+    property var checkIns: []
+    property int checkInsTotal: -1      // pre-cap total for honest "N of M"; -1 == kanban unreadable
+    property int gpuUtil: -1            // schema 5: real NVML GPU %; -1 == UNKNOWN (a real 0 == idle GPU)
+    property var recurring: []          // schema 5: Hermes cron jobs (the cadence the tasks table lacks)
 
     // --- Freshness / liveness ------------------------------------------------
     property bool everLoaded: false     // have we ever parsed a good file?
@@ -296,6 +305,12 @@ Item {
         // schema 4: live arbiter wait-queue. A pre-schema-4 file omits it → hold the empty default
         // (nothing in line), which reads calm, never UNKNOWN.
         queue = d.queue || ({ depth: 0, next_tier: "" })
+        // schema 5 (ADR-0051): the Check-ins cards + GPU util + cron. A pre-schema-5 file omits them →
+        // hold the empty/UNKNOWN defaults (never a fabricated task, never a guessed util).
+        checkIns      = d.check_ins || []
+        checkInsTotal = (d.check_ins_total === undefined) ? -1 : d.check_ins_total
+        gpuUtil       = (d.gpu_util_pct === undefined) ? -1 : d.gpu_util_pct
+        recurring     = d.recurring || []
     }
 
     // schema 2: the two tray lines (held = calm weather; needs_review = your-move). Empty queue →
@@ -324,6 +339,90 @@ Item {
         var t = (queue && queue.next_tier) || ""
         return (n + " waiting") + (t.length ? (" · " + t + " next") : "")
     }
+
+    // --- schema 5 (ADR-0051): Check-ins helpers ------------------------------
+    // Mood + time derivations live HERE (not in the producer) so the contract stays raw and there is
+    // ONE source of truth for the creature vocabulary — every card/creature/column samples these.
+    //
+    // RAW kanban status (+ failure count) → the creature mood. Precedence:
+    //   needsyou (review = explicitly your move) > stalled (blocked / failing) > working > done > calm.
+    function checkInMood(status, fails) {
+        if (status === "review")  return "needsyou"
+        if (status === "blocked" || (fails && fails > 0)) return "stalled"
+        if (status === "running") return "working"
+        if (status === "done" || status === "archived") return "done"
+        return "calm"   // triage/todo/scheduled/ready/unknown → queued-calm
+    }
+    // Which board column a card sits in (SCHEDULED / NEEDS YOU / RUNNING / DONE).
+    function checkInColumn(status, fails) {
+        var m = checkInMood(status, fails)
+        if (m === "needsyou") return "needs_you"
+        if (m === "working" || m === "stalled") return "running"
+        if (m === "done") return "done"
+        return "scheduled"
+    }
+    // Hermes stamps are epoch SECONDS (int(time.time())); Date.now() is ms. em-dash for an unset stamp.
+    function agoString(ts) {
+        if (!ts || ts <= 0) return emdash()
+        var s = Math.max(0, Math.floor(Date.now() / 1000 - ts))
+        if (s < 60)    return s + "s ago"
+        if (s < 3600)  return Math.floor(s / 60) + "m ago"
+        if (s < 86400) return Math.floor(s / 3600) + "h ago"
+        return Math.floor(s / 86400) + "d ago"
+    }
+    // "last check-in" = first present of heartbeat → started → created.
+    function lastSeenString(card) {
+        if (!card) return emdash()
+        var ts = (card.last_heartbeat_at > 0) ? card.last_heartbeat_at
+               : (card.started_at > 0)        ? card.started_at : card.created_at
+        return agoString(ts)
+    }
+    // The card's status line — a mood-appropriate phrase that always carries the WORD (never
+    // color-only): a recent error gist / the current step / running / a "last seen" relative time.
+    function checkInStatusLine(card) {
+        if (!card) return ""
+        var m = checkInMood(card.status, card.consecutive_failures)
+        if (m === "stalled" && card.last_error && card.last_error.length) return card.last_error
+        if (m === "working") return (card.step && card.step.length) ? (card.step + " · running") : ("running · " + lastSeenString(card))
+        if (m === "needsyou") return "needs your OK"
+        if (m === "done")     return "done · " + lastSeenString(card)
+        return "queued"   // calm
+    }
+    // A short local "blurt" for the poke bubble — the error gist if any, else a mood line.
+    function checkInBlurt(card) {
+        if (!card) return ""
+        if (card.last_error && card.last_error.length) return card.last_error
+        var m = checkInMood(card.status, card.consecutive_failures)
+        if (m === "working")  return (card.step && card.step.length) ? (card.step + "…") : "working…"
+        if (m === "needsyou") return "your move…"
+        if (m === "done")     return "all done!"
+        return "waiting…"
+    }
+    // Honest truncation: the producer caps the list; checkInsTotal is the pre-cap count.
+    function checkInsTruncated()   { return checkInsTotal > 0 && checkInsTotal > (checkIns ? checkIns.length : 0) }
+    function checkInsHiddenCount() { return checkInsTruncated() ? (checkInsTotal - checkIns.length) : 0 }
+    // The two distinct empty states (no new flag — split on the existing UNKNOWN honesty).
+    function checkInsEmptyReason() {
+        return (effectiveState === "unknown") ? "Can't reach Hermes" : "No active check-ins"
+    }
+    // Header counts derived from the cards (no extra producer field needed).
+    function checkInRunningCount() {
+        var n = 0
+        if (checkIns) for (var i = 0; i < checkIns.length; i++) {
+            var m = checkInMood(checkIns[i].status, checkIns[i].consecutive_failures)
+            if (m === "working" || m === "stalled") n++
+        }
+        return n
+    }
+    function checkInNeedsYouCount() {
+        var n = 0
+        if (checkIns) for (var i = 0; i < checkIns.length; i++)
+            if (checkInMood(checkIns[i].status, checkIns[i].consecutive_failures) === "needsyou") n++
+        return n
+    }
+    // GPU util for the rail — honest em-dash on UNKNOWN, a real "0%" when the GPU is genuinely idle.
+    function gpuUtilString()   { return (effectiveState === "unknown" || gpuUtil < 0) ? emdash() : (gpuUtil + "%") }
+    function gpuUtilFraction() { return (gpuUtil < 0) ? 0 : Math.max(0, Math.min(1, gpuUtil / 100)) }
 
     Timer {
         interval: model.pollIntervalMs

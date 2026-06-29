@@ -51,4 +51,21 @@ QtObject {
     readonly property color auroraLo:  dark ? "#27306E" : "#3E50C4"   // deep indigo base
     readonly property color auroraMid: dark ? "#4A5AD2" : "#5E54C2"   // blue
     readonly property color auroraHi:  dark ? "#8A6BDC" : "#7E42AE"   // violet crest
+
+    // --- creature moods (ADR-0052): the per-task sidekick register, Check-ins tab ONLY ---------
+    // ALIASES to existing vetted tokens — NO new hue. needs-you REUSES the reserved `warm`, so the
+    // one-warm-element rule holds (a creature never mints a second warm). Mood is ALWAYS paired with
+    // shape+text (the face glyphs + the status word), so these never carry state colour-only.
+    readonly property color creatureWorking:  blue       // active — the unified violet accent
+    // stalled/done are used as STATUS TEXT on the card glass; the shared stUp/stAmber light values are
+    // razor-thin AA there (4.68 / 4.52:1), so give the creature versions a darker LIGHT value for real
+    // headroom (~5.3:1) WITHOUT touching the shared SYSTEM-board tokens. Dark register is unchanged.
+    readonly property color creatureStalled:  dark ? stAmber : "#7A5710"   // blocked / failing — amber (never red)
+    readonly property color creatureNeedsYou: warm       // RESERVED needs-you GLOW/halo/border + dot (no second warm)
+    readonly property color creatureDone:     dark ? stUp : "#1F6B41"      // finished — muted sage
+    readonly property color creatureCalm:     dim        // queued / scheduled — quiet
+    // needs-you FOREGROUND (the face glyph + the status WORD) — the AA-safe `warmText` split, exactly
+    // like the tray glyph (the raw glow #FF9957 fails AA as text on the light base, 1.83:1). Dark keeps
+    // the glow; light becomes copper #A8480F (~5:1). The halo/border/dot stay `creatureNeedsYou`.
+    readonly property color creatureNeedsYouText: dark ? warm : warmText
 }
