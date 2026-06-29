@@ -665,14 +665,37 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     const f=p.fit||{}, v=f.verdict||"unknown";
     const vtxt={fits:"fits comfortably",tight:"tight — may share VRAM poorly under load","too-big":"won't fit",unknown:"fit unknown"}[v]||v;
     const diff=esc(p.diff).split("\n").map(l=>l.startsWith("+")?`<span class="add">${l}</span>`:l.startsWith("-")?`<span class="del">${l}</span>`:l).join("\n");
-    const permit=p.permitted?"":`<div class="mp-deny">⛔ ${esc(p.permit_reason||"not eligible")} — can't be set as the default</div>`;
     const pull=f.present?"":"⚠ not pulled yet — <code>ollama pull</code> it first. ";
+    let action;
+    if(!p.permitted) action=`<div class="mp-deny">⛔ ${esc(p.permit_reason||"not eligible")} — can't be set as the default</div>`;
+    else if(!f.present) action=`<div class="dsc" style="color:var(--muted)">pull it first, then you can apply it.</div>`;
+    else if(!p.changes) action=`<div class="dsc" style="color:var(--muted)">already your default.</div>`;
+    else action=`<button class="btn" data-apply-ref="${esc(ref)}">Apply as Hermes default</button>`;
     el.innerHTML=`<div class="mp-preview">
       <pre class="mp-diff">${diff}</pre>
       <div class="dsc">${pull}Estimated footprint <b>${esc(f.est_footprint_gb||"?")} GB</b> of ${esc(f.vram_gb||"?")} GB — <b>${esc(vtxt)}</b> <span style="color:var(--muted)">(${esc(f.note||"")})</span></div>
-      ${permit}
-      <div class="dsc" style="color:var(--muted);margin-top:6px">Preview only. Applying edits <code>~/.hermes/config.yaml</code> and restarts Hermes — one-click revertible. <b>Not enabled yet</b> — it lands after this preview is reviewed on your box.</div>
+      <div class="dsc" style="color:var(--muted);margin-top:4px">Applying runs a measured fit check on your GPU, edits <code>~/.hermes/config.yaml</code> (one line, the rest byte-for-byte), and takes effect when Hermes restarts — one-click revertible.</div>
+      <div class="mp-act" style="margin-top:8px">${action}</div>
+      <div id="mpApplyOut"></div>
     </div>`;
+  }
+  async function applyDefault(ref,force){
+    const out=document.getElementById("mpApplyOut"); if(out) out.innerHTML=`<div class="dsc" style="color:var(--muted)">running a measured fit check on your GPU (loads the model briefly)…</div>`;
+    const r=await post("/api/hermes_apply",{ref,force:!!force});
+    if(r.error==="canary-failed"){
+      const c=r.canary||{}, reason=c.reason||"failed"; let msg, force="";
+      if(reason==="too-slow"){ msg=`Too slow — <b>${esc(c.tok_s)} tok/s</b> (${esc(c.size_vram_gb)}/${esc(c.size_gb)} GB on the GPU). It would make every Hermes turn sluggish.`; force=`<button class="btn ghost" data-apply-force="${esc(ref)}" style="margin-top:6px">Apply anyway (not recommended)</button>`; }
+      else if(reason==="cpu-offload"){ msg=`Would run on the CPU — only <b>${esc(c.size_vram_gb)}/${esc(c.size_gb)} GB</b> fit on the GPU. Refused: this is the slow-turn trap.`; }
+      else if(reason==="insufficient-free-vram"){ msg=`Not enough free VRAM right now — needs <b>~${esc(c.needed_gb)} GB</b>, only ${esc(c.free_gb)} GB free. Free the GPU (or let it idle) and try again.`; }
+      else if(reason==="not-present"){ msg=`Not pulled — run <code>ollama pull ${esc(ref)}</code> first.`; }
+      else { msg=`Couldn't measure it (<b>${esc(reason)}</b>) — is Ollama running?`; }
+      out.innerHTML=`<div class="mp-deny">${msg}</div>${force}`;
+      return;
+    }
+    if(r.error||r.ok===false){ out.innerHTML=`<div class="err">${esc(r.reason||r.error||"couldn't apply")}</div>`; return; }
+    const c=r.canary||{};
+    out.innerHTML=`<div class="mp-preview"><div class="dsc">✓ Set <b>${esc(r.new)}</b> as the Hermes default${c.measured?` (${esc(c.tok_s)} tok/s, ${esc(c.size_vram_gb)}/${esc(c.size_gb)} GB on GPU)`:""}. It takes effect when Hermes restarts.</div><div class="mp-act" style="margin-top:6px"><button class="btn" id="mpRestart">Restart Hermes now</button> <span style="color:var(--muted);font-size:.76rem">(drops any in-flight turn)</span> <button class="btn ghost" id="mpRevertDef">Revert</button></div><div id="mpRestartOut"></div></div>`;
+    loadPolicy();
   }
   async function findLatest(){
     MP.researching=true; MP.cands=null; renderModelPolicy();
@@ -695,6 +718,10 @@ integrations/agentosd-remote.sh up          # serve the UIs (down / status to re
     const t=e.target;
     if(t.id==="mpFind"){ findLatest(); return; }
     if(t.id==="mpPreviewDef"){ const ref=(document.getElementById("mpDefRef").value||"").trim(); if(ref) previewDefault(ref); return; }
+    const ap=t.closest("[data-apply-ref]"); if(ap){ if(confirm("Set "+ap.dataset.applyRef+" as your Hermes default? A fit check runs first; it takes effect on restart and is one-click revertible.")) applyDefault(ap.dataset.applyRef,false); return; }
+    const apf=t.closest("[data-apply-force]"); if(apf){ if(confirm("Apply despite the failed fit check? This can make every Hermes turn slow.")) applyDefault(apf.dataset.applyForce,true); return; }
+    if(t.id==="mpRestart"){ const o=document.getElementById("mpRestartOut"); if(o) o.innerHTML=`<div class="dsc" style="color:var(--muted)">restarting Hermes…</div>`; const r=await post("/api/hermes_restart",{}); if(o) o.innerHTML=r.ok?`<div class="dsc">✓ Hermes restarted — your new default is live.</div>`:`<div class="err">${esc(r.reason||"restart failed")}</div>`; return; }
+    if(t.id==="mpRevertDef"){ const r=await post("/api/hermes_revert",{}); const o=document.getElementById("mpApplyOut"); if(o) o.innerHTML=r.ok?`<div class="dsc">✓ Reverted to <b>${esc(r.restored)}</b> — restart Hermes to apply.</div>`:`<div class="err">${esc(r.reason||"revert failed")}</div>`; loadPolicy(); return; }
     const bf=t.closest("[data-fam-block]");
     if(bf){ const f=bf.dataset.famBlock,s=new Set(MP.pol.family_block||[]); s.has(f)?s.delete(f):s.add(f); savePolicy({family_block:[...s]}); return; }
     const af=t.closest("[data-fam-allow]");

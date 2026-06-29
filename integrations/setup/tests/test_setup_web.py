@@ -632,6 +632,31 @@ class Adr0049Routes(Routes):
             self.assertIn(k, d)
         self.assertFalse(d["fit"]["measured"])              # honest: not a measured canary
 
+    # ── Phase 2b: the live apply is gated (these never load real Ollama / never write the real config) ──
+    def test_hermes_apply_requires_token(self):
+        self.assertEqual(self._post("/api/hermes_apply", {"ref": "qwen3.6-27b-64k"})[0], 403)
+
+    def test_hermes_apply_refuses_non_permitted_before_canary(self):
+        # a non-curated raw ref is refused by the safety/policy gate FIRST — the canary never runs.
+        st, body = self._post("/api/hermes_apply", {"ref": "gemma4-26b-64k"}, token=sw.TOKEN)
+        self.assertEqual(st, 409)
+        self.assertEqual(json.loads(body)["error"], "not-permitted")
+
+    def test_hermes_apply_canary_fail_blocks_write(self):
+        import agent_targets
+        orig = agent_targets.measured_canary
+        agent_targets.measured_canary = lambda ref, **k: {"pass": False, "reason": "cpu-offload", "measured": True}
+        try:
+            st, body = self._post("/api/hermes_apply", {"ref": "qwen3.6-27b-64k"}, token=sw.TOKEN)
+        finally:
+            agent_targets.measured_canary = orig
+        self.assertEqual(st, 409)                            # curated+permitted, but canary failed → no write
+        self.assertEqual(json.loads(body)["error"], "canary-failed")
+
+    def test_hermes_revert_and_restart_require_token(self):
+        self.assertEqual(self._post("/api/hermes_revert", {})[0], 403)
+        self.assertEqual(self._post("/api/hermes_restart", {})[0], 403)
+
     def test_research_json_jobview_parses_artifact(self):
         art = Path(self.tmp) / "cand.json"
         art.write_text(json.dumps({"ok": True, "modality": "text", "candidates": [{"ref": "gemma4:latest"}]}))
