@@ -124,6 +124,72 @@
       ]
     },
     {
+      "id": "t2i-engine",
+      "family": "selector",
+      "role": "Opening-image engine selector",
+      "purpose": "Which t2i backend generate_opening() uses: 'illustrious' (t2i-opening — divingIllustrious SDXL, the default/known-good) or 'krea2' (Krea 2 Turbo, encoder gated by the dream rating). Flip here or via LUCID_T2I_ENGINE; default preserves prior behavior.",
+      "model": "krea2",
+      "runtime": "selector",
+      "local": true,
+      "safety_critical": false,
+      "used_by": [
+        "Lucid text-to-opening"
+      ],
+      "notes": "A selector, not a model file (mirrors i2v-engine). 'illustrious' -> t2i-opening (SDXL, ~28 steps cfg5, CheckpointLoaderSimple graph). 'krea2' -> t2i-krea2-{sfw,mature} (Krea 2 Turbo, 12-step cfg1 euler/beta UNETLoader graph; the text encoder is rating-gated: stock Qwen3-VL for sfw, abliterated Qwen3-VL for mature). Default 'illustrious' = nothing changes until flipped. Revert instantly: set this to 'illustrious' or LUCID_T2I_ENGINE=illustrious (ADR-0055).",
+      "modality": "selector",
+      "rating": "sfw",
+      "tier": "minimum",
+      "fetch": []
+    },
+    {
+      "id": "t2i-krea2-sfw",
+      "family": "krea",
+      "role": "Text-to-opening — Krea 2 Turbo (sfw)",
+      "purpose": "Higher-quality opening frame via Krea 2 Turbo with the stock Qwen3-VL-4B encoder. Used when t2i-engine='krea2' and the dream rating is sfw.",
+      "model": "Krea/krea2_turbo_fp8_scaled.safetensors",
+      "runtime": "comfyui",
+      "size_gb": 18.0,
+      "source": "huggingface: Comfy-Org/Krea-2 (krea2_turbo_fp8_scaled DiT + qwen_image_vae + qwen3vl_4b stock encoder)",
+      "local": true,
+      "safety_critical": false,
+      "used_by": [
+        "Lucid text-to-opening (t2i-engine=krea2, sfw)"
+      ],
+      "notes": "Krea 2 Turbo: 12-step, cfg 1, euler/beta, ~18GB resident (13GB fp8 DiT + ~5GB Qwen3-VL encoder). 12.9B Krea DiT (NOT a Qwen-Image finetune; borrows the Qwen-Image VAE + Qwen3-VL encoder). CLIPLoader type='krea2' (needs ComfyUI >= the 2026-06 Krea-2 build). Encoder is the STOCK qwen3vl_4b for sfw. Krea 2 Community License (personal use). Selected by t2i-engine; default opening path stays divingIllustrious (ADR-0055).",
+      "modality": "image",
+      "rating": "sfw",
+      "tier": "hero",
+      "fetch": [
+        {"via": "hf", "repo": "Comfy-Org/Krea-2", "file": "diffusion_models/krea2_turbo_fp8_scaled.safetensors", "dest": "diffusion_models/Krea/krea2_turbo_fp8_scaled.safetensors", "auth": "none"},
+        {"via": "hf", "repo": "Comfy-Org/Krea-2", "file": "vae/qwen_image_vae.safetensors", "dest": "vae/qwen_image_vae.safetensors", "auth": "none"},
+        {"via": "hf", "repo": "Comfy-Org/Krea-2", "file": "text_encoders/qwen3vl_4b_fp8_scaled.safetensors", "dest": "text_encoders/qwen3vl_4b_fp8_scaled.safetensors", "auth": "none"}
+      ]
+    },
+    {
+      "id": "t2i-krea2-mature",
+      "family": "krea",
+      "role": "Text-to-opening — Krea 2 Turbo (mature)",
+      "purpose": "Krea 2 Turbo opening with the abliterated Qwen3-VL-4B encoder, so the opening can seed a pose/anatomy-correct mature frame. Used when t2i-engine='krea2' and the dream rating is mature.",
+      "model": "Krea/krea2_turbo_fp8_scaled.safetensors",
+      "runtime": "comfyui",
+      "size_gb": 18.0,
+      "source": "huggingface: Comfy-Org/Krea-2 DiT + qwen_image_vae + ahmed22xa/Huihui-Qwen3-VL-4B-Instruct-abliterated (uncensored encoder)",
+      "local": true,
+      "safety_critical": false,
+      "used_by": [
+        "Lucid text-to-opening (t2i-engine=krea2, mature)"
+      ],
+      "notes": "Same Krea 2 Turbo DiT as t2i-krea2-sfw, but the text encoder is the ABLITERATED Qwen3-VL-4B (huihui-ai, Apache-2.0) — removes the encoder's refusal direction so an explicit description encodes faithfully (the DiT already holds the latent capability). Rating-gated: engaged only when the dream rating is mature; sfw dreams use the stock encoder. The deterministic red-line gate (minors/real-people/non-consent) + B2 likeness guard still apply unchanged. Engaged only when t2i-engine=krea2 (ADR-0055).",
+      "modality": "image",
+      "rating": "mature",
+      "tier": "hero",
+      "fetch": [
+        {"via": "hf", "repo": "Comfy-Org/Krea-2", "file": "diffusion_models/krea2_turbo_fp8_scaled.safetensors", "dest": "diffusion_models/Krea/krea2_turbo_fp8_scaled.safetensors", "auth": "none"},
+        {"via": "hf", "repo": "Comfy-Org/Krea-2", "file": "vae/qwen_image_vae.safetensors", "dest": "vae/qwen_image_vae.safetensors", "auth": "none"},
+        {"via": "hf", "repo": "ahmed22xa/Huihui-Qwen3-VL-4B-Instruct-abliterated-comfy", "file": "Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors", "dest": "text_encoders/Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors", "auth": "none"}
+      ]
+    },
+    {
       "id": "i2v-dream",
       "family": "wan",
       "role": "Dream video (image → video)",

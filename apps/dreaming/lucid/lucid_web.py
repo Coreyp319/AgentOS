@@ -1877,7 +1877,7 @@ class Handler(BaseHTTPRequestHandler):
                     fd, seed = tempfile.mkstemp(suffix=".png")
                     os.close(fd)
                     try:
-                        T2I.generate_opening(req["text"], seed)   # gates the description; predict-before-load
+                        T2I.generate_opening(req["text"], seed, rating=("mature" if rating_floor == "mature" else "sfw"))   # gates the description; predict-before-load; rating gates the krea2 encoder
                     except ValueError as e:                       # red-line blocked the description
                         os.remove(seed)
                         return self._send(200, json.dumps({"error": str(e)}), "application/json")

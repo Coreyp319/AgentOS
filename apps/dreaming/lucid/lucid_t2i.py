@@ -30,6 +30,21 @@ NEG = ("worst quality, low quality, jpeg artifacts, text, watermark, logo, blurr
        "deformed, bad anatomy, extra limbs, extra fingers, fused fingers, mutated hands")
 _IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
+# --- Krea 2 opening backend (ADR-0055) ------------------------------------------------------
+# A fast (12-step, cfg 1) higher-quality turbo opener, selectable via the `t2i-engine` registry
+# selector or LUCID_T2I_ENGINE. The text encoder is RATING-GATED: the stock Qwen3-VL for sfw
+# dreams, the abliterated Qwen3-VL for the mature lane — so a mature opening can be pose/anatomy
+# correct the way the SDXL opener is, without uncensoring sfw dreams. Default engine stays
+# 'illustrious' (divingIllustrious): nothing changes until flipped.
+KREA_UNET = os.environ.get("LUCID_T2I_KREA_UNET", "Krea/krea2_turbo_fp8_scaled.safetensors")
+KREA_VAE = os.environ.get("LUCID_T2I_KREA_VAE", "qwen_image_vae.safetensors")
+KREA_ENC_SFW = os.environ.get("LUCID_T2I_KREA_ENC_SFW", "qwen3vl_4b_fp8_scaled.safetensors")
+KREA_ENC_MATURE = os.environ.get(
+    "LUCID_T2I_KREA_ENC_MATURE", "Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors")
+KREA_STEPS = int(os.environ.get("LUCID_T2I_KREA_STEPS", "12"))   # turbo: 8-12 steps
+KREA_CFG = float(os.environ.get("LUCID_T2I_KREA_CFG", "1.0"))    # distilled -> cfg 1 (no real negative)
+KREA_EST_MIB = int(os.environ.get("LUCID_T2I_KREA_EST_MIB", "18500"))  # 13GB DiT + ~5GB Qwen3-VL enc + working set
+
 
 def _free_vram_mib():
     """Read-only free-VRAM probe (predict-before-load). None if unreadable -> caller fails open."""
@@ -57,7 +72,36 @@ def _workflow(prompt, seed, w, h):
     }
 
 
-def generate_opening(prompt, out_path, w=768, h=1344, seed=None, timeout=180):   # 9:16 portrait, SDXL-friendly (matches the i2v frame)
+def _t2i_engine():
+    """Active opening-image backend: 'illustrious' (default, known-good SDXL) | 'krea2'. Flip via
+    LUCID_T2I_ENGINE env or the registry 't2i-engine' selector (mirrors i2v-engine); default
+    preserves prior behavior — nothing changes until flipped."""
+    return (os.environ.get("LUCID_T2I_ENGINE")
+            or lucid_models.get("t2i-engine", "illustrious")).strip().lower()
+
+
+def _workflow_krea(prompt, seed, w, h, rating="sfw"):
+    """Krea 2 Turbo t2i graph (ComfyUI API format). The text encoder is rating-gated: stock
+    Qwen3-VL for sfw, abliterated for mature. cfg=1 (distilled) so the negative is a zeroed-out
+    positive (no real negative at turbo cfg). Needs ComfyUI with the 'krea2' CLIP type."""
+    enc = KREA_ENC_MATURE if rating == "mature" else KREA_ENC_SFW
+    return {
+        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": KREA_UNET, "weight_dtype": "default"}},
+        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": enc, "type": "krea2", "device": "default"}},
+        "vae": {"class_type": "VAELoader", "inputs": {"vae_name": KREA_VAE}},
+        "pos": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["clip", 0]}},
+        "neg": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["pos", 0]}},
+        "lat": {"class_type": "EmptySD3LatentImage", "inputs": {"width": w, "height": h, "batch_size": 1}},
+        "smp": {"class_type": "KSampler", "inputs": {
+            "seed": seed, "steps": KREA_STEPS, "cfg": KREA_CFG, "sampler_name": "euler",
+            "scheduler": "beta", "denoise": 1.0,
+            "model": ["unet", 0], "positive": ["pos", 0], "negative": ["neg", 0], "latent_image": ["lat", 0]}},
+        "dec": {"class_type": "VAEDecode", "inputs": {"samples": ["smp", 0], "vae": ["vae", 0]}},
+        "sav": {"class_type": "SaveImage", "inputs": {"filename_prefix": "lucid-opening", "images": ["dec", 0]}},
+    }
+
+
+def generate_opening(prompt, out_path, w=768, h=1344, seed=None, timeout=180, rating="sfw"):   # 9:16 portrait (matches i2v frame); rating gates the krea2 encoder
     """Gate the prompt, render one t2i frame, copy it to out_path. Returns out_path.
     Raises ValueError if the prompt is red-lined, RuntimeError if generation fails."""
     gated = S.gate_prompt(prompt)
@@ -72,11 +116,13 @@ def generate_opening(prompt, out_path, w=768, h=1344, seed=None, timeout=180):  
         seed = random.randint(1, 2 ** 31)
     # Predict-before-load (read-only; never frees shared GPU state): refuse rather than OOM the
     # box when VRAM is contended. Fail-open if we can't read it.
+    engine = _t2i_engine()
+    est = KREA_EST_MIB if engine == "krea2" else EST_MIB
     free = _free_vram_mib()
-    if free is not None and free < EST_MIB:
+    if free is not None and free < est:
         raise RuntimeError(f"not enough free GPU memory for the opening ({free} MiB free, "
-                           f"need ~{EST_MIB}) — try again when the GPU frees")
-    api = _workflow(gated, seed, w, h)
+                           f"need ~{est}) — try again when the GPU frees")
+    api = _workflow_krea(gated, seed, w, h, rating) if engine == "krea2" else _workflow(gated, seed, w, h)
     pid, _client = cc.submit(api)          # submit() returns (prompt_id, client_id)
     hist = cc.wait(pid, timeout=timeout)
     imgs = [f for f in cc.output_files(hist) if f.lower().endswith(_IMG_EXTS)]
