@@ -73,7 +73,16 @@ use crate::feed::{
 /// per-task cards (read-only from kanban.db) + `recurring` (Hermes cron). Each addition is purely
 /// additive; an older consumer ignores the unknown field and the serializer always emits an
 /// honest-empty default ([], -1, ""), never absent.
-const SCHEMA: u32 = 5;
+/// schema 6 (ADR-0051 amendment): adds the additive `written_at` producer heartbeat (epoch secs) —
+/// without it a CRASHED producer leaves a readable last file and the consumer keeps asserting the
+/// stale "N LIVE" forever (edge-dedup makes mtime useless for this). The stamp refreshes at least
+/// every `HEARTBEAT_SECS` even when the payload dedups.
+const SCHEMA: u32 = 6;
+
+/// schema 6: rewrite the (otherwise edge-deduped) feed at least this often, purely to refresh
+/// `written_at`. Consumers treat a stamp older than ~3× this as a dead producer → honest UNKNOWN
+/// (KeyholeModel.qml uses 90s). Cheap: one small tmpfs write every 30s at worst.
+const HEARTBEAT_SECS: u64 = 30;
 
 /// Negative sentinel for an unreadable integer datum — distinct from a real `0` (ADR-0012 §4).
 const UNK: i64 = -1;
@@ -153,6 +162,10 @@ pub struct KeyholeFeed {
     /// schema 5 (ADR-0051): Hermes recurring/cron jobs from `~/.hermes/cron/jobs.json` (the cadence
     /// the `tasks` table does not carry). `[]` == none / unreadable — calm fail-open, never faked.
     pub recurring: Vec<Recurring>,
+    /// schema 6: producer-liveness heartbeat (epoch secs), stamped at each actual write and
+    /// refreshed at least every `HEARTBEAT_SECS`. Held at `0` while the frame is BUILT so the
+    /// edge-dedup compares payloads, not clocks; the loop stamps it just before writing.
+    pub written_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -771,6 +784,7 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut first_seen: HashMap<String, Instant> = HashMap::new();
     let mut last: Option<KeyholeFeed> = None;
+    let mut last_write: Option<Instant> = None;
 
     loop {
         let now = Instant::now();
@@ -817,24 +831,36 @@ pub fn run(once: bool) -> Result<(), Box<dyn std::error::Error>> {
             check_ins,            // schema 5: per-task cards (read-only kanban); [] == none/can't-read.
             check_ins_total,      // schema 5: pre-cap total for honest truncation; -1 == unknown.
             recurring,            // schema 5: Hermes cron jobs; [] == none/can't-read.
+            written_at: 0,        // schema 6: held at 0 for the payload compare; stamped at write.
         };
 
+        // Edge-dedup on the PAYLOAD (written_at held at 0 on both sides), plus a liveness
+        // heartbeat: even a byte-identical frame is rewritten once HEARTBEAT_SECS lapse, so a
+        // consumer can tell "producer alive, nothing changed" from "producer dead, file frozen".
         let changed = last.as_ref() != Some(&feed);
-        if changed || once {
-            match write_keyhole(&dir, &feed) {
-                Ok(()) if changed => println!(
-                    "[{}] {} (gw {}, run {}, vram {}/{}M, models {}, work {}, lease {})",
-                    crate::now_hms(),
-                    feed.state,
-                    feed.gateway,
-                    feed.fleet.running,
-                    feed.vram.used_mib,
-                    feed.vram.total_mib,
-                    feed.residency.len(),
-                    if feed.workload.name.is_empty() { "-" } else { &feed.workload.name },
-                    if feed.lease.tier.is_empty() { "-" } else { &feed.lease.tier },
-                ),
-                Ok(()) => {}
+        let heartbeat_due =
+            last_write.is_none_or(|t: Instant| t.elapsed() >= Duration::from_secs(HEARTBEAT_SECS));
+        if changed || heartbeat_due || once {
+            let mut stamped = feed.clone();
+            stamped.written_at = now_secs();
+            match write_keyhole(&dir, &stamped) {
+                Ok(()) => {
+                    last_write = Some(Instant::now());
+                    if changed {
+                        println!(
+                            "[{}] {} (gw {}, run {}, vram {}/{}M, models {}, work {}, lease {})",
+                            crate::now_hms(),
+                            feed.state,
+                            feed.gateway,
+                            feed.fleet.running,
+                            feed.vram.used_mib,
+                            feed.vram.total_mib,
+                            feed.residency.len(),
+                            if feed.workload.name.is_empty() { "-" } else { &feed.workload.name },
+                            if feed.lease.tier.is_empty() { "-" } else { &feed.lease.tier },
+                        );
+                    }
+                }
                 Err(e) => eprintln!("agentosd keyhole: write failed: {e}"),
             }
             last = Some(feed);
@@ -975,8 +1001,9 @@ mod tests {
         // schema 4 (ADR-0041): `queue` (live arbiter wait-queue) appended after `pending_requests`.
         // schema 5 (ADR-0051): `gpu_util_pct` + `check_ins` + `check_ins_total` + `recurring`
         // appended after `queue` (additive; an older consumer ignores the trailing fields).
+        // schema 6 (ADR-0051 amendment): `written_at` producer heartbeat appended last (additive).
         let feed = KeyholeFeed {
-            schema: 5,
+            schema: 6,
             state: "working".into(),
             gateway: "running".into(),
             floats: Floats { busy: 0.85, warm: 0.0, snag: 0.0 },
@@ -1018,10 +1045,11 @@ mod tests {
                 last_run: "2026-06-29T05:21:52-07:00".into(),
                 last_status: "ok".into(),
             }],
+            written_at: 1_751_000_000,
         };
         assert_eq!(
             serde_json::to_string(&feed).unwrap(),
-            r#"{"schema":5,"state":"working","gateway":"running","floats":{"busy":0.85,"warm":0.0,"snag":0.0},"fleet":{"running":3,"queued":2,"snagged":0},"lease":{"tier":"interactive","holder":"Hermes","preempt":"wallpaper yielded ~1.5GB -> qwen2.5 loaded"},"vram":{"used_mib":6240,"total_mib":8192},"residency":[{"name":"qwen2.5:14b","loaded_secs":240}],"workload":{"name":"ComfyUI","used_mib":21000},"tokens_per_sec":null,"pending_requests":{"held":2,"needs_review":1},"queue":{"depth":3,"next_tier":"batch"},"gpu_util_pct":42,"check_ins":[{"id":"t1","title":"Refactor feed","assignee":"qwen","status":"running","priority":5,"consecutive_failures":0,"created_at":1750000000,"started_at":1750000100,"last_heartbeat_at":1750000200,"step":"edit","last_error":""}],"check_ins_total":1,"recurring":[{"id":"job1","name":"Daily audit","schedule":"0 4 * * *","enabled":true,"state":"scheduled","next_run":"2026-06-30T04:00:00-07:00","last_run":"2026-06-29T05:21:52-07:00","last_status":"ok"}]}"#
+            r#"{"schema":6,"state":"working","gateway":"running","floats":{"busy":0.85,"warm":0.0,"snag":0.0},"fleet":{"running":3,"queued":2,"snagged":0},"lease":{"tier":"interactive","holder":"Hermes","preempt":"wallpaper yielded ~1.5GB -> qwen2.5 loaded"},"vram":{"used_mib":6240,"total_mib":8192},"residency":[{"name":"qwen2.5:14b","loaded_secs":240}],"workload":{"name":"ComfyUI","used_mib":21000},"tokens_per_sec":null,"pending_requests":{"held":2,"needs_review":1},"queue":{"depth":3,"next_tier":"batch"},"gpu_util_pct":42,"check_ins":[{"id":"t1","title":"Refactor feed","assignee":"qwen","status":"running","priority":5,"consecutive_failures":0,"created_at":1750000000,"started_at":1750000100,"last_heartbeat_at":1750000200,"step":"edit","last_error":""}],"check_ins_total":1,"recurring":[{"id":"job1","name":"Daily audit","schedule":"0 4 * * *","enabled":true,"state":"scheduled","next_run":"2026-06-30T04:00:00-07:00","last_run":"2026-06-29T05:21:52-07:00","last_status":"ok"}],"written_at":1751000000}"#
         );
     }
 
@@ -1093,6 +1121,7 @@ mod tests {
             check_ins: vec![],
             check_ins_total: UNK,
             recurring: vec![],
+            written_at: 0,
         };
         let s = serde_json::to_string(&feed).unwrap();
         assert!(s.contains(r#""fleet":{"running":-1,"queued":-1,"snagged":-1}"#));

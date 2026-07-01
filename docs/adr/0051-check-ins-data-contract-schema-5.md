@@ -94,3 +94,25 @@ Proposed; Phase A read-only. The contract must be pinned the same way schema 1�
 cron cadence — but the source is already `~/.hermes/cron/jobs.json`, so the `recurring` block here may
 make a separate ADR unnecessary). Writes remain out of scope (ADR-0053); the write client is
 **ADR-0054** (Phase B).
+
+## Amendment (2026-07-01) — schema 6: the `written_at` producer heartbeat; sentinel consumption
+
+A fidelity review found the consumer dropping two of this contract's honesty signals, one of which
+needed a producer addition to be detectable at all.
+
+1. **Schema 6 appends `written_at` (epoch secs), the producer's own liveness heartbeat.** A crashed
+   `agentosd keyhole` leaves a READABLE last file; the view re-parses it forever, so `gateway`
+   honesty (§8) never fires and the tab keeps asserting "N LIVE" on frozen data — mtime cannot
+   expose this because the §Consequences edge-dedup makes an unchanged file legitimate. The stamp is
+   held at `0` while a frame is built (the dedup compares payloads, not clocks) and stamped at each
+   actual write; a byte-identical frame is still rewritten every `HEARTBEAT_SECS` (30s, one tmpfs
+   write). The consumer folds a stamp older than **90s** (3× the heartbeat) into `effectiveState ==
+   "unknown"`; a pre-schema-6 file omits the field and the old freshness rules stand.
+2. **The `check_ins_total: -1` sentinel now renders.** §4/§7 built the sentinel so an unreadable
+   kanban would not read as phantom calm — but the view showed the same "No active check-ins" for
+   both. `KeyholeModel.checkInsUnavailableReason()` now surfaces "Check-ins unavailable — can't read
+   the Hermes kanban" (and "Check-ins need a newer agentosd (schema 5)" when a pre-schema-5 producer
+   is still running), in the subline, the empty body, and above a recurring-only list.
+3. **`recurring.next_run` / `last_run` are consumed as §5 intended:** the card renders a live
+   "next in Xh XXm" countdown and "last run Xm ago · ok/error" from the ISO stamps; a `last_status`
+   of `""` renders the honest **"not yet run"**, never a fabricated ok.
