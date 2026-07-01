@@ -125,13 +125,20 @@ Rectangle {
             }
         }
 
-        // --- read-only actions (board/compact hides them to save width) --------
+        // --- actions (board/compact hides them to save width): Pause is the deferred write seam
+        // (ADR-0053); Open is a READ-ONLY link-out and therefore LIVE, gated the same way the
+        // Instrument footer's "Open board ↗" is (writes are deferred — reads never were)
         ColumnLayout {
             visible: !card.compact
             Layout.alignment: Qt.AlignVCenter
             spacing: 6
             ActionButton { skin: card.skin; glyph: "⏸"; title: "Pause" }
-            ActionButton { skin: card.skin; glyph: "↗"; title: "Open in board" }
+            ActionButton {
+                skin: card.skin; glyph: "↗"; title: "Open in board"
+                enabledAction: card.model && card.model.gateway === "running"
+                whyDisabled: "Board unavailable (gateway " + (card.model ? card.model.gateway : "unknown") + ")"
+                onTriggered: Qt.openUrlExternally("http://127.0.0.1:9119")
+            }
         }
     }
 }

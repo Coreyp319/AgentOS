@@ -12,7 +12,7 @@ import QtQuick.Layouts
 
 Rectangle {
     id: card
-    property var model              // KeyholeModel (for cronHuman)
+    property var model              // KeyholeModel (cronHuman / recurringMood / next+last stamps)
     property var skin
     property var job                // a recurring entry
     property int tick: 0
@@ -20,12 +20,8 @@ Rectangle {
     property bool animate: true
     property int phase: 0
 
-    readonly property string mood: {
-        if (!job) return "calm"
-        if (!job.enabled || job.state === "paused") return "calm"
-        if (job.last_status === "error") return "stalled"
-        return "done"               // enabled + last ok → a calm "done/ready" pal
-    }
+    // ONE mood source (KeyholeModel.recurringMood) — the filter chips + this card must agree.
+    readonly property string mood: (model && job) ? model.recurringMood(job) : "calm"
 
     radius: 13
     color: skin ? Qt.rgba(skin.text.r, skin.text.g, skin.text.b, 0.022) : "#15171f"
@@ -37,7 +33,9 @@ Rectangle {
     Accessible.role: Accessible.StaticText
     Accessible.name: (job ? job.name : "") + ", " + (card.model && job ? card.model.cronHuman(job.schedule) : (job ? job.schedule : ""))
         + ", " + (job && job.enabled ? "enabled" : "paused")
-        + ", last run " + (job && job.last_status ? job.last_status : "never")
+        + (card.model && job && job.enabled && card.model.recurringNextString(job).length
+           ? (", " + card.model.recurringNextString(job)) : "")
+        + ", " + (card.model && job ? card.model.recurringLastString(job) : "")
 
     RowLayout {
         id: row
@@ -86,17 +84,27 @@ Rectangle {
                 elide: Text.ElideRight
                 Accessible.ignored: true
             }
+            // status: "next in 2h 05m" countdown from the REAL next_run stamp / "paused"; hidden when
+            // the stamp is absent (never an invented countdown)
             Text {
                 Layout.fillWidth: true
-                text: {
-                    if (!card.job) return ""
-                    if (!card.job.enabled || card.job.state === "paused") return "paused"
-                    return card.job.last_status === "error" ? "last run · error" : "last run · ok"
-                }
+                visible: text.length > 0
+                text: (card.model && card.job) ? card.model.recurringNextString(card.job) : ""
                 color: card.mood === "stalled" ? (card.skin ? card.skin.stAmber : "#D9B45A")
                                                : (card.skin ? card.skin.muted : "#B4BAC8")
                 font.pixelSize: 12
                 font.family: "monospace"
+                elide: Text.ElideRight
+                Accessible.ignored: true
+            }
+            // "last run 48m ago · ok" / "· error" / the honest "not yet run" (last_status "")
+            Text {
+                Layout.fillWidth: true
+                visible: text.length > 0
+                text: (card.model && card.job) ? card.model.recurringLastString(card.job) : ""
+                color: card.mood === "stalled" ? (card.skin ? card.skin.stAmber : "#D9B45A")
+                                               : (card.skin ? card.skin.label : "#878C9B")
+                font.pixelSize: 10
                 elide: Text.ElideRight
                 Accessible.ignored: true
             }
@@ -108,6 +116,14 @@ Rectangle {
             ActionButton { skin: card.skin; glyph: "↻"; title: "Run now" }
             ActionButton { skin: card.skin; glyph: card.job && !card.job.enabled ? "▶" : "⏸"
                            title: card.job && !card.job.enabled ? "Resume" : "Pause" }
+            // Open is a READ-ONLY link-out, not a deferred write — live when the gateway is (the
+            // same gate the Instrument footer's "Open board ↗" uses; ADR-0053 defers writes only)
+            ActionButton {
+                skin: card.skin; glyph: "↗"; title: "Open in board"
+                enabledAction: card.model && card.model.gateway === "running"
+                whyDisabled: "Board unavailable (gateway " + (card.model ? card.model.gateway : "unknown") + ")"
+                onTriggered: Qt.openUrlExternally("http://127.0.0.1:9119")
+            }
         }
     }
 }

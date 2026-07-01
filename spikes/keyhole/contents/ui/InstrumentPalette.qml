@@ -19,6 +19,12 @@ QtObject {
     // canonical instrument register (also what the standalone harness shows).
     property bool dark: true
 
+    // The active nimbus-aurora WALLPAPER ramp — 5 colour stops (dark→bright). main.qml
+    // resolves it from the wallpaper config (Theme preset or Custom Color0..4, the same
+    // INI-cat path as `dark`) and the aurora porthole wears it, so the keyhole glyph
+    // matches the wallpaper's theme instead of a baked blue. Default = Big Sur.
+    property var portholeStops: ["#0d0f29", "#1c2e73", "#4552b8", "#8f5cb8", "#fa8c73"]
+
     // --- chrome ---------------------------------------------------------------
     readonly property color base:      dark ? "#12141C" : "#F1F3F8"   // panel base
     readonly property color deep:      dark ? "#161A28" : "#E6EAF3"   // mid background

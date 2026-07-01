@@ -114,7 +114,9 @@ Item {
         id: sprite
         visible: cr.variant === "pixel"
         width: cr.implicitWidth
-        height: cr.implicitWidth * 9 / 12
+        // 9 bitmap rows + 2 HEADROOM rows on top: the needs-you antenna draws there — a Canvas
+        // clips negative y, which used to shave the antenna to a stub
+        height: cr.implicitWidth * 11 / 12
         anchors.centerIn: parent
         Accessible.ignored: true
         // repaint when the look changes (mood/tick/poke); bob+squash are transforms, not repaints.
@@ -132,7 +134,8 @@ Item {
         onPaint: {
             var ctx = getContext("2d")
             ctx.reset()
-            var cw = width / 12.0, ch = height / 9.0
+            // 11 canvas rows = 2 headroom (antenna) + 9 bitmap; body rows draw at y+2
+            var cw = width / 12.0, ch = height / 11.0, top = 2
             var t = cr.tick
             var blink = cr._animate && ((t + cr.phase * 7) % 28) < 2
             for (var y = 0; y < 9; ++y) {
@@ -141,7 +144,7 @@ Item {
                     var c = rowStr.charAt(x)
                     if (c === "X" || c === "H") {
                         ctx.fillStyle = (c === "H") ? Qt.rgba(1, 1, 1, 0.45) : cr.faceColor
-                        ctx.fillRect(x * cw, y * ch, cw + 0.5, ch + 0.5)
+                        ctx.fillRect(x * cw, (y + top) * ch, cw + 0.5, ch + 0.5)
                     }
                 }
             }
@@ -154,17 +157,18 @@ Item {
                 ctx.fillStyle = cr.skin ? cr.skin.base : "#0b0d14"
                 for (var ri = 0; ri < rows.length; ++ri)
                     for (var ci = 0; ci < cols.length; ++ci)
-                        ctx.fillRect(cols[ci] * cw, rows[ri] * ch, cw + 0.5, ch + 0.5)
+                        ctx.fillRect(cols[ci] * cw, (rows[ri] + top) * ch, cw + 0.5, ch + 0.5)
             }
             // working sparkle — slow (~1.8Hz) and motion-gated, never a 4.5Hz strobe (WCAG 2.3.1)
             if (cr._animate && cr.mood === "working" && ((t + cr.phase) % 6) < 1) {
                 ctx.fillStyle = "#ffffff"
-                ctx.fillRect(9.5 * cw, 0, cw, ch)
+                ctx.fillRect(9.5 * cw, top * ch, cw, ch)
             }
-            // needs-you alert dot — STEADY (present, not blinking), redundant with the column/word
+            // needs-you alert antenna — STEADY (present, not blinking), redundant with the column/
+            // word; drawn fully inside the headroom so it reads as a 2-cell mast above the head
             if (cr.mood === "needsyou") {
                 ctx.fillStyle = cr.faceColor
-                ctx.fillRect(5.5 * cw, -ch * 1.2, cw, ch * 2)
+                ctx.fillRect(5.5 * cw, 0.2 * ch, cw, ch * 2)
             }
         }
     }

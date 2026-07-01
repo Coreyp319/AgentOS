@@ -20,13 +20,14 @@ RowLayout {
     property string state: "unknown"
     property real warm: 0.0
     property bool reducedMotion: false
-    // live aurora porthole inputs (the same floats + palette the wallpaper reads),
-    // injected by the host so every surface samples ONE source (no per-surface drift).
+    // live aurora porthole inputs (the same floats the wallpaper reads), injected by
+    // the host so every surface samples ONE source (no per-surface drift). The corona
+    // hue comes from the active colour-scheme accent, read off the shared `skin`.
     property color aurora: Qt.rgba(0.10, 0.13, 0.22, 1.0)   // legacy (unused by the porthole)
     property real  busy: 0.0
     property real  snag: 0.0
+    property real  music: 0.0
     property real  energy: 0.95
-    property var   dawnPalette: null
     // EARNED bloom + breath — computed by KeyholeModel.ringIntensityFor / breathingFor.
     property real ringIntensity: 0
     property bool breathing: false
@@ -59,10 +60,11 @@ RowLayout {
         diameter: 34
         glyph: token.glyph
         glyphColor: "#ECEFF6"     // always a light ink over the dawn (a11y; state = shape + mood + label)
-        dawnPalette: token.dawnPalette
+        themeStops: token.skin.portholeStops
         busy: token.busy
         warm: token.warm
         snag: token.snag
+        music: token.music
         unknownState: token.state === "unknown"
         energy: token.energy
         bloom: token.ringIntensity

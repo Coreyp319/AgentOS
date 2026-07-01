@@ -2,10 +2,10 @@
  * AuroraRing.qml — the keyhole glyph as a PORTHOLE onto the LIVE nimbus-aurora sky.
  *
  * The porthole's background is now the REAL animated aurora: a small ShaderEffect
- * running porthole.frag.qsb — the SAME "Flow" domain-warp the wallpaper
- * (com.nimbus.aurora's aurora.frag) and the status-panel backdrop
- * (spikes/ambient-backdrop/aurora-web.html) use, re-paletted to the deep-navy
- * instrument register. It reads the SAME live floats the wallpaper reads, so the
+ * running porthole.frag.qsb — the same Prism corona the wallpaper
+ * (com.nimbus.aurora's aurora.frag, uStyle 7) paints, re-paletted to the deep-navy
+ * instrument register (a calm dark centre ringed by an iridescent chromatic-
+ * dispersion corona). It reads the SAME live floats the wallpaper reads, so the
  * keyhole and the wallpaper move together:
  *   busy → faster flow + a touch brighter    warm → dawn glow low in frame (needs_you)
  *   snag → desaturate + dim (never red)       unknown → cold, colourless ghost
@@ -41,17 +41,26 @@ Item {
     property real busy: 0.0
     property real warm: 0.0
     property real snag: 0.0
+    property real music: 0.0         // SECONDARY beat-shimmer (host pre-gates by MusicReact)
     property bool unknownState: false
     property real energy: 0.95       // overall brightness (idle calm; working lifts — lit-from-within)
     property real bloom: 0.0         // earned outer glow strength (KeyholeModel.ringIntensityFor)
     property bool hovered: false      // dock affordance: brightens the rim on hover
 
-    // --- palette: the host injects the live wallpaper stops; only the earned halo
-    //     + rim sample it now (the disc colour is the shader's baked deep-navy ramp,
-    //     identical to the validated status-panel backdrop). null → default crest. --
-    property var dawnPalette: null
-    readonly property color _crest: (ring.dawnPalette && ring.dawnPalette.length === 5)
-        ? ring.dawnPalette[2] : Qt.rgba(0.20, 0.31, 0.64, 1)   // luminous blue crest
+    // --- palette ------------------------------------------------------------
+    // `palette` is the active nimbus-aurora WALLPAPER ramp — 5 colour stops (dark→bright),
+    // read by main.qml from the wallpaper config and threaded via the skin. It paints the
+    // porthole corona in the shader AND the earned halo/rim crest here, so the glyph wears
+    // the same theme the wallpaper does and tracks it live. Default = Big Sur (the
+    // wallpaper's own default) so the standalone harness still renders.
+    // (named themeStops, NOT `palette` — Item.palette already exists and shadowing it warns)
+    property var themeStops: ["#0d0f29", "#1c2e73", "#4552b8", "#8f5cb8", "#fa8c73"]
+    readonly property color _c0: (ring.themeStops && ring.themeStops.length === 5) ? ring.themeStops[0] : "#0d0f29"
+    readonly property color _c1: (ring.themeStops && ring.themeStops.length === 5) ? ring.themeStops[1] : "#1c2e73"
+    readonly property color _c2: (ring.themeStops && ring.themeStops.length === 5) ? ring.themeStops[2] : "#4552b8"
+    readonly property color _c3: (ring.themeStops && ring.themeStops.length === 5) ? ring.themeStops[3] : "#8f5cb8"
+    readonly property color _c4: (ring.themeStops && ring.themeStops.length === 5) ? ring.themeStops[4] : "#fa8c73"
+    readonly property color _crest: ring._c4   // the bright crest tints the earned bloom/rim
 
     // --- a11y shape + motion -------------------------------------------------
     property string glyph: "○"
@@ -67,11 +76,14 @@ Item {
     property real _snag:   snag
     property real _energy: energy
     property real _bloom:  bloom
+    // music eases on a SHORT envelope so a kick reads as a quick shimmer, not a slow swell.
+    property real _music:  ring.reducedMotion ? 0.0 : music
     Behavior on _busy   { enabled: !ring.reducedMotion; NumberAnimation { duration: 1200; easing.type: Easing.OutCubic } }
     Behavior on _warm   { enabled: !ring.reducedMotion; NumberAnimation { duration: 1500; easing.type: Easing.OutCubic } }
     Behavior on _snag   { enabled: !ring.reducedMotion; NumberAnimation { duration: 1200; easing.type: Easing.OutCubic } }
     Behavior on _energy { enabled: !ring.reducedMotion; NumberAnimation { duration: 1200; easing.type: Easing.OutCubic } }
     Behavior on _bloom  { enabled: !ring.reducedMotion; NumberAnimation { duration: 1200; easing.type: Easing.OutCubic } }
+    Behavior on _music  { enabled: !ring.reducedMotion; NumberAnimation { duration: 180;  easing.type: Easing.OutCubic } }
 
     // --- the live aurora clock -----------------------------------------------
     // iTime advances ONLY while the porthole is on screen and motion is allowed; the
@@ -113,6 +125,13 @@ Item {
         property real     uSnag: ring._snag
         property real     uIntensity: ring._energy
         property real     uGray: ring.unknownState ? 1.0 : 0.0
+        property real     uMusic: ring._music
+        // the live wallpaper ramp (5 stops) → the corona wears the wallpaper's theme
+        property vector4d uC0: Qt.vector4d(ring._c0.r, ring._c0.g, ring._c0.b, 1.0)
+        property vector4d uC1: Qt.vector4d(ring._c1.r, ring._c1.g, ring._c1.b, 1.0)
+        property vector4d uC2: Qt.vector4d(ring._c2.r, ring._c2.g, ring._c2.b, 1.0)
+        property vector4d uC3: Qt.vector4d(ring._c3.r, ring._c3.g, ring._c3.b, 1.0)
+        property vector4d uC4: Qt.vector4d(ring._c4.r, ring._c4.g, ring._c4.b, 1.0)
         Behavior on uGray { enabled: !ring.reducedMotion; NumberAnimation { duration: 900 } }
     }
 

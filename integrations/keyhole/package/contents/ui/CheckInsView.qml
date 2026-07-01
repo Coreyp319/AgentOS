@@ -56,17 +56,29 @@ Item {
         if (filter === "working") return tasks.filter(function(t) { return _mood(t) === "working" || _mood(t) === "stalled" })
         return tasks
     }
+    // the chips filter BOTH sections (the design's match() does) — a cron can never be needsyou
+    // (no review state exists for cron), and "working" admits the same stalled the task filter does
+    readonly property var filteredRecurring: {
+        if (filter === "needs") return []
+        if (filter === "working") return recurring.filter(function(j) {
+            return model && model.recurringMood(j) === "stalled" })
+        return recurring
+    }
     readonly property var schedTasks: _byCol("scheduled")
     readonly property var needsColTasks: _byCol("needs_you")
     readonly property var runTasks: _byCol("running")
     readonly property var doneTasks: _byCol("done")
+    // the ADR-0051 §4 -1 sentinel / pre-schema-5 producer — "" when the tasks read is trustworthy
+    readonly property string unavailableReason: (model && !unknown) ? model.checkInsUnavailableReason() : ""
 
     function subline() {
         if (unknown) return "Can't reach Hermes"
         var n = tasks.length
-        if (n === 0) return "No active tasks on your GPU"
+        // no run-location claim — ADR-0051 ships none (the same honesty that cut the GPU/CLOUD chip)
+        if (n === 0) return unavailableReason.length ? "Check-ins unavailable" : "No active tasks"
         var needs = model ? model.checkInNeedsYouCount() : 0
-        return n + (n === 1 ? " task" : " tasks") + (needs > 0 ? " · " + needs + " need you" : " · all healthy")
+        return n + (n === 1 ? " task" : " tasks")
+               + (needs > 0 ? (" · " + needs + (needs === 1 ? " needs you" : " need you")) : " · all healthy")
     }
 
     ColumnLayout {
@@ -217,12 +229,16 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 topPadding: 28
                 wrapMode: Text.WordWrap
-                text: checkins.unknown
-                      ? (checkins.model ? checkins.model.checkInsEmptyReason() : "—")
-                      : (checkins.viewMode === 1 && checkins.recurring.length > 0)
-                        ? ("No active tasks — " + checkins.recurring.length
-                           + (checkins.recurring.length === 1 ? " recurring check is in List" : " recurring checks are in List"))
-                        : (checkins.model ? checkins.model.checkInsEmptyReason() : "—")
+                text: {
+                    if (checkins.unknown) return checkins.model ? checkins.model.checkInsEmptyReason() : "—"
+                    // the -1 sentinel / old-producer reason OUTRANKS the friendly pointers — an
+                    // unreadable kanban must never read as a calm "No active tasks"
+                    if (checkins.unavailableReason.length) return checkins.unavailableReason
+                    if (checkins.viewMode === 1 && checkins.recurring.length > 0)
+                        return "No active tasks — " + checkins.recurring.length
+                               + (checkins.recurring.length === 1 ? " recurring check is in List" : " recurring checks are in List")
+                    return checkins.model ? checkins.model.checkInsEmptyReason() : "—"
+                }
                 color: checkins.skin ? checkins.skin.label : "#878C9B"
                 font.pixelSize: 12
             }
@@ -261,15 +277,24 @@ Item {
                     text: "No tasks match this filter"
                     color: checkins.skin ? checkins.skin.label : "#878C9B"; font.pixelSize: 12
                 }
+                // unreadable-kanban / old-producer notice when recurring keep the list alive (the
+                // showEmpty message only covers the fully-empty body — this case still has cron cards)
+                Text {
+                    visible: checkins.empty && checkins.unavailableReason.length > 0 && checkins.recurring.length > 0
+                    width: parent.width; horizontalAlignment: Text.AlignHCenter
+                    topPadding: 6; bottomPadding: 4; wrapMode: Text.WordWrap
+                    text: checkins.unavailableReason
+                    color: checkins.skin ? checkins.skin.label : "#878C9B"; font.pixelSize: 12
+                }
 
-                // RECURRING
+                // RECURRING (chip-filtered like TASKS)
                 CheckInsSectionHeader {
-                    visible: checkins.recurring.length > 0
+                    visible: checkins.filteredRecurring.length > 0
                     width: parent.width; skin: checkins.skin
                     label: "RECURRING"; note: "wake on a schedule"
                 }
                 Repeater {
-                    model: checkins.recurring
+                    model: checkins.filteredRecurring
                     delegate: RecurringCard {
                         required property int index
                         required property var modelData
@@ -277,7 +302,10 @@ Item {
                         model: checkins.model; skin: checkins.skin; job: modelData
                         tick: checkins.tick; reducedMotion: checkins.reducedMotion
                         phase: index + 3
-                        animate: checkins.active && !checkins.reducedMotion && index < checkins.creatureCap
+                        // the ~10-creature cap is a WHOLE-TAB budget (ADR-0052 §4), so recurring
+                        // spend what the task section left, not a fresh allowance
+                        animate: checkins.active && !checkins.reducedMotion
+                                 && (index + checkins.filteredTasks.length) < checkins.creatureCap
                     }
                 }
             }
@@ -291,12 +319,17 @@ Item {
 
                 Repeater {
                     model: [
-                        {k: "needs_you", l: "NEEDS YOU", tone: "needsyou", rows: checkins.needsColTasks},
-                        {k: "running",   l: "RUNNING",   tone: "working",  rows: checkins.runTasks},
-                        {k: "scheduled", l: "SCHEDULED", tone: "calm",     rows: checkins.schedTasks},
-                        {k: "done",      l: "DONE",      tone: "done",     rows: checkins.doneTasks}
+                        {k: "needs_you", l: "NEEDS YOU", tone: "needsyou", rows: checkins.needsColTasks,
+                         animOff: 0},
+                        {k: "running",   l: "RUNNING",   tone: "working",  rows: checkins.runTasks,
+                         animOff: checkins.needsColTasks.length},
+                        {k: "scheduled", l: "SCHEDULED", tone: "calm",     rows: checkins.schedTasks,
+                         animOff: checkins.needsColTasks.length + checkins.runTasks.length},
+                        {k: "done",      l: "DONE",      tone: "done",     rows: checkins.doneTasks,
+                         animOff: checkins.needsColTasks.length + checkins.runTasks.length + checkins.schedTasks.length}
                     ]
                     delegate: Column {
+                        id: colDelegate
                         required property var modelData
                         width: boardCol.width
                         spacing: 8
@@ -321,7 +354,7 @@ Item {
                             }
                         }
                         Repeater {
-                            model: modelData.rows
+                            model: colDelegate.modelData.rows
                             delegate: TaskCard {
                                 required property int index
                                 required property var modelData
@@ -329,8 +362,10 @@ Item {
                                 compact: true
                                 model: checkins.model; skin: checkins.skin; task: modelData
                                 tick: checkins.tick; reducedMotion: checkins.reducedMotion
-                                phase: index
-                                animate: checkins.active && !checkins.reducedMotion && index < checkins.creatureCap
+                                phase: index + colDelegate.modelData.animOff
+                                // whole-BOARD budget, not per-column (ADR-0052 §4's aggregate cap)
+                                animate: checkins.active && !checkins.reducedMotion
+                                         && (index + colDelegate.modelData.animOff) < checkins.creatureCap
                             }
                         }
                     }

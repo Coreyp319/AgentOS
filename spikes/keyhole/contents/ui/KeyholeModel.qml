@@ -59,21 +59,32 @@ Item {
     property int checkInsTotal: -1      // pre-cap total for honest "N of M"; -1 == kanban unreadable
     property int gpuUtil: -1            // schema 5: real NVML GPU %; -1 == UNKNOWN (a real 0 == idle GPU)
     property var recurring: []          // schema 5: Hermes cron jobs (the cadence the tasks table lacks)
+    // schema 6 (ADR-0051 amendment): the producer's own heartbeat (epoch secs), refreshed even when
+    // the payload edge-dedups. -1 == a pre-schema-6 file (no heartbeat to check).
+    property double writtenAt: -1
 
     // --- Freshness / liveness ------------------------------------------------
     property bool everLoaded: false     // have we ever parsed a good file?
     property bool fileReachable: false  // did the LAST poll succeed?
     property double lastGoodMs: 0       // Date.now() of last good parse
+    // a coarse reactive clock (epoch secs, advanced by the poll Timer) so time-window bindings
+    // (producerSilent, the recurring next-in countdown) re-evaluate — Date.now() alone is inert.
+    property double nowSec: Date.now() / 1000
     // mtime-staleness: if the file stops changing AND gateway is not running,
     // we slide toward UNKNOWN. (In v1 the producer also writes gateway=unknown
     // on a dead Hermes, so this is belt-and-suspenders.)
     readonly property bool stale: everLoaded && (Date.now() - lastGoodMs) > (pollIntervalMs * 4)
+    // producer-death honesty: a crashed producer leaves a READABLE last file, so fileReachable/
+    // lastGoodMs alone would keep the tab asserting "N LIVE" forever. The schema-6 written_at
+    // heartbeat (≤30s cadence) exposes it: a stamp >90s old means the PRODUCER went silent.
+    readonly property bool producerSilent: writtenAt > 0 && (nowSec - writtenAt) > 90
 
     // The DISPLAYED state: UNKNOWN wins over a stale-but-cached look, per the
     // honesty contract. A never-reached file is UNKNOWN, not idle.
     readonly property string effectiveState: {
         if (!everLoaded) return "unknown"
         if (!fileReachable && stale) return "unknown"
+        if (producerSilent) return "unknown"
         if (gateway === "unknown") return "unknown"
         return state
     }
@@ -311,6 +322,8 @@ Item {
         checkInsTotal = (d.check_ins_total === undefined) ? -1 : d.check_ins_total
         gpuUtil       = (d.gpu_util_pct === undefined) ? -1 : d.gpu_util_pct
         recurring     = d.recurring || []
+        // schema 6: the producer heartbeat. Absent on older files → -1 (producerSilent stays inert).
+        writtenAt     = (d.written_at === undefined) ? -1 : d.written_at
     }
 
     // schema 2: the two tray lines (held = calm weather; needs_review = your-move). Empty queue →
@@ -401,17 +414,28 @@ Item {
     // Honest truncation: the producer caps the list; checkInsTotal is the pre-cap count.
     function checkInsTruncated()   { return checkInsTotal > 0 && checkInsTotal > (checkIns ? checkIns.length : 0) }
     function checkInsHiddenCount() { return checkInsTruncated() ? (checkInsTotal - checkIns.length) : 0 }
-    // The two distinct empty states (no new flag — split on the existing UNKNOWN honesty).
-    function checkInsEmptyReason() {
-        return (effectiveState === "unknown") ? "Can't reach Hermes" : "No active check-ins"
+    // The THIRD empty state ADR-0051 §4/§7 built the -1 sentinel for: a REACHABLE Hermes whose kanban
+    // the producer could not read (check_ins_total === -1 on a schema-5+ file), or a pre-schema-5
+    // producer still running. Neither may render as the calm "No active check-ins" (phantom calm).
+    // "" when the tasks read is genuinely trustworthy (or the whole tab is already UNKNOWN).
+    function checkInsUnavailableReason() {
+        if (effectiveState === "unknown" || !everLoaded) return ""
+        if (schema > 0 && schema < 5) return "Check-ins need a newer agentosd (schema 5)"
+        if (checkInsTotal === -1) return "Check-ins unavailable — can't read the Hermes kanban"
+        return ""
     }
-    // Header counts derived from the cards (no extra producer field needed).
+    // The distinct empty states (no new flag — split on the existing UNKNOWN + sentinel honesty).
+    function checkInsEmptyReason() {
+        if (effectiveState === "unknown") return "Can't reach Hermes"
+        var r = checkInsUnavailableReason()
+        return r.length ? r : "No active check-ins"
+    }
+    // Header counts derived from the cards (no extra producer field needed). LIVE means genuinely
+    // in flight (the design's runN): stalled is NOT live — it reads amber elsewhere, never as liveness.
     function checkInRunningCount() {
         var n = 0
-        if (checkIns) for (var i = 0; i < checkIns.length; i++) {
-            var m = checkInMood(checkIns[i].status, checkIns[i].consecutive_failures)
-            if (m === "working" || m === "stalled") n++
-        }
+        if (checkIns) for (var i = 0; i < checkIns.length; i++)
+            if (checkInMood(checkIns[i].status, checkIns[i].consecutive_failures) === "working") n++
         return n
     }
     function checkInNeedsYouCount() {
@@ -423,6 +447,46 @@ Item {
     // GPU util for the rail — honest em-dash on UNKNOWN, a real "0%" when the GPU is genuinely idle.
     function gpuUtilString()   { return (effectiveState === "unknown" || gpuUtil < 0) ? emdash() : (gpuUtil + "%") }
     function gpuUtilFraction() { return (gpuUtil < 0) ? 0 : Math.max(0, Math.min(1, gpuUtil / 100)) }
+
+    // --- recurring (cron) derivations — ONE source, sampled by card/filter/board alike -----------
+    // enabled + last ok → a calm "done/ready" pal; a cron error is stalled; paused/disabled is calm.
+    // (No review state exists for cron, so recurring can never be needsyou — honest, not an omission.)
+    function recurringMood(job) {
+        if (!job) return "calm"
+        if (!job.enabled || job.state === "paused") return "calm"
+        if (job.last_status === "error") return "stalled"
+        return "done"
+    }
+    // Hermes cron stamps are ISO-8601 strings ("" == never). -1 == absent/unparseable — never guess.
+    function isoEpoch(s) {
+        if (!s || !s.length) return -1
+        var t = new Date(s).getTime()
+        return isNaN(t) ? -1 : Math.floor(t / 1000)
+    }
+    // "next in 2h 05m" (the design's fmtNext shape); "paused" when disabled; "" when the stamp is
+    // absent/unparseable (never invent a countdown). nowSec keeps the countdown live between polls.
+    function recurringNextString(job) {
+        if (!job) return ""
+        if (!job.enabled || job.state === "paused") return "paused"
+        var ts = isoEpoch(job.next_run)
+        if (ts < 0) return ""
+        var s = Math.floor(ts - nowSec)
+        if (s <= 0) return "due now"
+        if (s >= 3600) { var h = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60)
+                         return "next in " + h + "h " + (mm < 10 ? "0" : "") + mm + "m" }
+        if (s >= 60)   { var mn = Math.floor(s / 60), ss = s % 60
+                         return "next in " + mn + "m " + (ss < 10 ? "0" : "") + ss + "s" }
+        return "next in " + s + "s"
+    }
+    // "last run 48m ago · ok" — and the honest third state: last_status "" == the job NEVER ran,
+    // which must read "not yet run", never a fabricated ok (the visible text and the card's
+    // Accessible.name have to agree on this).
+    function recurringLastString(job) {
+        if (!job) return ""
+        if (!job.last_status || !job.last_status.length) return "not yet run"
+        var ts = isoEpoch(job.last_run)
+        return "last run " + (ts > 0 ? (agoString(ts) + " ") : "") + "· " + job.last_status
+    }
 
     // Humanize a 5-field cron expr into a readable cadence — raw "0 4 * * *" means nothing to a human.
     // Falls back to the raw expr for shapes it doesn't recognise (never invents a wrong time).
@@ -460,6 +524,6 @@ Item {
         running: true
         repeat: true
         triggeredOnStart: true   // first read immediately, don't wait one interval
-        onTriggered: model.poll()
+        onTriggered: { model.nowSec = Date.now() / 1000; model.poll() }
     }
 }

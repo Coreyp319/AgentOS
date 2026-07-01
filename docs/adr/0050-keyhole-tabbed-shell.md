@@ -86,3 +86,47 @@ Phase B — discharges the ADR-0012 item-3 gate so the action controls this shel
 light up), **ADR-0055** (tok/s graduation + the cost/$budget tile when the ADR-0002 proxy lands,
 Phase C). Gate before `Accepted`: the design-council / ambient-embodiment / ui-accessibility pass the
 keyhole's prior visible surfaces went through, run shell-wide (tab keyboard model + the snap height).
+
+## Amendment (2026-07-01) — Check-ins becomes the primary face; the divergence record
+
+A 5-lens fidelity review against the design source (`Agent Orchestrator - Check-ins.dc.html`)
+confirmed the translation and surfaced that several deliberate adaptations were undocumented. This
+amendment is their record; each keeps §7's calm/honest contract and the popup form factor
+(≈360–520px) that the 1280×820 design canvas does not share.
+
+1. **Check-ins is the PRIMARY face (tab 0); the arbitration Instrument is the secondary tab.** The
+   popup opens on the per-task view (`segments: ["Check-ins", "Instrument"]`); §Decision 1's "two
+   co-equal readings" stands — only the opening order changed. The creature-tick `active` gate binds
+   to the Check-ins view's own `visible` (never a literal tab index) so a future reorder cannot
+   silently freeze the visible tab again.
+2. **The metrics rail is fronted by the live AuroraRing porthole** (the ADR-0012 §7 shader, shared
+   mood-driven with the wallpaper) instead of the flat `RingGauge` % arc; the honest GPU-LOAD % is
+   plain text beside it and goes **amber above 90%** (the design's hot cue, kept as a text tint —
+   shape+number stay the signal). A present-only **use-case line** (dominant WORKLOAD, else the held
+   lease) folds the Instrument's "what is the GPU spent on" answer into the rail. `RingGauge.qml` is
+   retired (unreferenced; delete or repurpose when ADR-0055 lands its tiles).
+3. **No rail collapse-on-scroll.** The design collapses a 96px rail to a 16px mini-strip; the popup
+   rail is a permanent 66px — three of the four mini-strip datums (tok/s, API, $budget) have no
+   honest source until ADR-0055, and 66px in a popup is not worth a scroll-linked animation
+   (WCAG 2.3.3-adjacent).
+4. **List is the default view; the toggle reads `["List", "Board"]`** (design defaults to Board).
+   List is the only view showing RECURRING, so it is the no-data-hidden default. The choice is
+   session-only (matching the prototype); a plasmoid config key can persist it later if wanted.
+5. **The Board renders the design's ≤560px stacked reflow permanently**, columns reordered
+   **attention-first** (NEEDS YOU · RUNNING · SCHEDULED · DONE — the same priority the design's
+   ≤900px mode expresses by dropping sched+done). Empty columns are hidden rather than dashed
+   "nothing here" placeholders (four dashed boxes are noise at popup width); recurring stay
+   List-only and the Board empty-state points to them.
+6. **Section label "TASKS", not "LONG-RUNNING"** — the kanban does not guarantee run-to-completion
+   semantics; the header's note slot carries the ADR-0051 §4 truncation honesty ("showing N of M")
+   instead of the design's editorial copy.
+7. **"Open in board" is live** (gateway-gated `Qt.openUrlExternally` → `:9119`, the Instrument
+   footer's exact idiom) on task and recurring cards: it is a read-only link-out — ADR-0053 defers
+   *writes* only. Pause / run-now / Auto-pilot remain the disabled-with-reason seam.
+8. **"N LIVE" counts `working` only** (the design's runN): a stalled task reads amber on its card
+   and in the RUNNING column, but never inflates liveness.
+9. **Accepted creature-register adaptations** (ADR-0052's token/calm ethos over pixel parity):
+   fixed creature sizes for the popup (no full/compact split), the working spinner riding the mouth
+   slot, softened sway/bob amplitudes, outline instead of glow on letterforms, and the shared sine
+   bob on the pixel sprite. The ~10-creature animation cap is a **whole-tab budget** (recurring and
+   board columns spend from one allowance), per ADR-0052 §4's aggregate reading.

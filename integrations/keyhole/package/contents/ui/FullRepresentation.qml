@@ -24,8 +24,10 @@ Item {
     property var skin: _defaultSkin
     InstrumentPalette { id: _defaultSkin }
     property bool reducedMotion: model ? model.reducedMotion : false
-    // ADR-0050: which tab is showing (0 = Instrument, 1 = Check-ins). The HorizonStrip, the state
-    // glyph honesty, and the compact tray stay shell-global; only the body below the tab bar swaps.
+    // ADR-0050 (amended 2026-07-01 — Check-ins promoted to the primary face): which tab is showing
+    // (0 = Check-ins, the PRIMARY face the popup opens on; 1 = Instrument, the secondary
+    // arbitration/status view). The HorizonStrip, the state glyph honesty, and the compact tray stay
+    // shell-global; only the body below the tab bar swaps.
     property int currentTab: 0
     // Honest UNKNOWN: a stale/unreachable board performs NO motion (no tint sunrise,
     // no ember, no breath) — the rows go dim-still instead.
@@ -34,8 +36,8 @@ Item {
     // Per-tab height so the popup re-measures to the ACTIVE tab (a StackLayout would size to the
     // tallest child and clip the shorter). Snap on switch — no height tween (the contentHeight->0
     // popup-clip + WCAG 2.3.3 lesson the SYSTEM board already follows).
-    implicitHeight: (currentTab === 0 ? (col.y + col.implicitHeight)
-                                      : (checkins.y + checkins.implicitHeight)) + 16
+    implicitHeight: (currentTab === 0 ? (checkins.y + checkins.implicitHeight)
+                                      : (col.y + col.implicitHeight)) + 16
 
     // Authoritative size for the host popup (PlasmaCore.Dialog reads the mainItem's
     // Layout hints): pin min == preferred == implicit so the popup opens at full height
@@ -101,16 +103,16 @@ Item {
         anchors.rightMargin: 14
         skin: full.skin
         reducedMotion: full.reducedMotion
-        segments: ["Instrument", "Check-ins"]
+        segments: ["Check-ins", "Instrument"]
         currentIndex: full.currentTab
         onActivated: function(i) { full.currentTab = i }
     }
 
-    // Tab 1 — the existing arbitration Instrument, byte-for-byte (only the top anchor + this
-    // `visible` binding changed vs the single-panel original).
+    // Tab 2 (secondary) — the existing arbitration Instrument, byte-for-byte (only the top anchor +
+    // this `visible` binding changed vs the single-panel original).
     ColumnLayout {
         id: col
-        visible: full.currentTab === 0
+        visible: full.currentTab === 1
         anchors { top: tabBar.bottom; left: parent.left; right: parent.right }
         anchors.margins: 12
         anchors.topMargin: 8
@@ -297,7 +299,7 @@ Item {
             Text { text: "SYSTEM"; color: full.labelFg; font.pixelSize: 10; font.letterSpacing: 1.5 }
             Item { Layout.fillWidth: true }
             Text {
-                readonly property bool attn: full.services && full.services.available && full.services.summary.attention > 0
+                readonly property bool attn: !!(full.services && full.services.available && full.services.summary.attention > 0)
                 text: full.services ? full.services.summaryString() : "unavailable"
                 color: attn ? full.warmFg : full.secondaryFg
                 font.pixelSize: 11
@@ -321,7 +323,7 @@ Item {
         // ColumnLayout grows the popup to fit instead of squeezing the list to nothing.
         ListView {
             id: board
-            visible: full.services && full.services.available
+            visible: !!(full.services && full.services.available)
             readonly property real wantHeight: visible ? Math.min(full.services ? full.services.boardPx : 0, 540) : 0
             Layout.fillWidth: true
             Layout.preferredHeight: wantHeight
@@ -572,17 +574,19 @@ Item {
         }
     }
 
-    // Tab 2 — the Check-ins page (ADR-0050/0051/0052/0053). Sibling of `col`; shown on tab 1. Owns
-    // its own shared creature Timer gated on `active`, so the Instrument tab pays nothing for it.
+    // Tab 1 (the primary face) — the Check-ins page (ADR-0050/0051/0052/0053). Sibling of `col`; shown
+    // on tab 0. Owns its own shared creature Timer gated on `active`, so the Instrument tab pays nothing.
     CheckInsView {
         id: checkins
-        visible: full.currentTab === 1
+        visible: full.currentTab === 0
         anchors { top: tabBar.bottom; left: parent.left; right: parent.right }
         anchors.margins: 12
         anchors.topMargin: 8
         model: full.model
         skin: full.skin
         reducedMotion: full.reducedMotion
-        active: full.visible && full.currentTab === 1
+        // gate follows the tab this view actually occupies — a mismatch freezes every creature
+        // (and kills poke) on the visible tab while burning the tick behind the hidden one
+        active: full.visible && checkins.visible
     }
 }
