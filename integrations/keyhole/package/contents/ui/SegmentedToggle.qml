@@ -81,6 +81,7 @@ Item {
                 Accessible.role: Accessible.PageTab
                 Accessible.name: segItem.modelData + (segItem.selected ? ", selected" : "")
                 Accessible.focusable: true
+                Accessible.onPressAction: seg.activated(segItem.index)
                 Keys.onReturnPressed: seg.activated(segItem.index)
                 Keys.onSpacePressed:  seg.activated(segItem.index)
 

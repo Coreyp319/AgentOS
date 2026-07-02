@@ -318,13 +318,21 @@ Item {
         queue = d.queue || ({ depth: 0, next_tier: "" })
         // schema 5 (ADR-0051): the Check-ins cards + GPU util + cron. A pre-schema-5 file omits them →
         // hold the empty/UNKNOWN defaults (never a fabricated task, never a guessed util).
-        checkIns      = d.check_ins || []
+        // DEDUP before assigning: a fresh array every poll would rebuild every card delegate each
+        // 2s tick (the schema-6 heartbeat rewrites the file ≤30s even when nothing changed) — which
+        // yanks AT browse position, destroys keyboard focus on card buttons, and cuts a poke short.
+        // Only a REAL change re-signals; the Repeaters keep their delegates otherwise.
+        var cs = JSON.stringify(d.check_ins || [])
+        if (cs !== _checkInsSig) { _checkInsSig = cs; checkIns = d.check_ins || [] }
         checkInsTotal = (d.check_ins_total === undefined) ? -1 : d.check_ins_total
         gpuUtil       = (d.gpu_util_pct === undefined) ? -1 : d.gpu_util_pct
-        recurring     = d.recurring || []
+        var rs = JSON.stringify(d.recurring || [])
+        if (rs !== _recurringSig) { _recurringSig = rs; recurring = d.recurring || [] }
         // schema 6: the producer heartbeat. Absent on older files → -1 (producerSilent stays inert).
         writtenAt     = (d.written_at === undefined) ? -1 : d.written_at
     }
+    property string _checkInsSig: ""
+    property string _recurringSig: ""
 
     // schema 2: the two tray lines (held = calm weather; needs_review = your-move). Empty queue →
     // empty strings so the FullRepresentation rows collapse and the panel returns to its idle look.
@@ -374,10 +382,12 @@ Item {
         if (m === "done") return "done"
         return "scheduled"
     }
-    // Hermes stamps are epoch SECONDS (int(time.time())); Date.now() is ms. em-dash for an unset stamp.
+    // Hermes stamps are epoch SECONDS (int(time.time())). em-dash for an unset stamp. Reads the
+    // reactive nowSec (not inert Date.now()) so "Xm ago" bindings keep refreshing now that the
+    // dedup in applyContract no longer reassigns unchanged arrays every poll.
     function agoString(ts) {
         if (!ts || ts <= 0) return emdash()
-        var s = Math.max(0, Math.floor(Date.now() / 1000 - ts))
+        var s = Math.max(0, Math.floor(nowSec - ts))
         if (s < 60)    return s + "s ago"
         if (s < 3600)  return Math.floor(s / 60) + "m ago"
         if (s < 86400) return Math.floor(s / 3600) + "h ago"
@@ -465,7 +475,9 @@ Item {
     }
     // "next in 2h 05m" (the design's fmtNext shape); "paused" when disabled; "" when the stamp is
     // absent/unparseable (never invent a countdown). nowSec keeps the countdown live between polls.
-    function recurringNextString(job) {
+    // `coarse` rounds to minute granularity — for Accessible.name, so a sub-minute countdown doesn't
+    // mutate the spoken name (and fire AT-SPI events) every poll tick.
+    function recurringNextString(job, coarse) {
         if (!job) return ""
         if (!job.enabled || job.state === "paused") return "paused"
         var ts = isoEpoch(job.next_run)
@@ -475,8 +487,9 @@ Item {
         if (s >= 3600) { var h = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60)
                          return "next in " + h + "h " + (mm < 10 ? "0" : "") + mm + "m" }
         if (s >= 60)   { var mn = Math.floor(s / 60), ss = s % 60
-                         return "next in " + mn + "m " + (ss < 10 ? "0" : "") + ss + "s" }
-        return "next in " + s + "s"
+                         return coarse ? ("next in " + mn + "m")
+                                       : ("next in " + mn + "m " + (ss < 10 ? "0" : "") + ss + "s") }
+        return coarse ? "next in under 1m" : ("next in " + s + "s")
     }
     // "last run 48m ago · ok" — and the honest third state: last_status "" == the job NEVER ran,
     // which must read "not yet run", never a fabricated ok (the visible text and the card's

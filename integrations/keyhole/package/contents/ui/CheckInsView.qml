@@ -11,6 +11,7 @@
  */
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Window
 import QtQuick.Controls as QQC2
 
 Item {
@@ -52,10 +53,21 @@ Item {
         return out
     }
     readonly property var filteredTasks: {
-        if (filter === "needs") return tasks.filter(function(t) { return _mood(t) === "needsyou" })
-        if (filter === "working") return tasks.filter(function(t) { return _mood(t) === "working" || _mood(t) === "stalled" })
-        return tasks
+        var base = tasks
+        if (filter === "needs") base = tasks.filter(function(t) { return _mood(t) === "needsyou" })
+        if (filter === "working") base = tasks.filter(function(t) { return _mood(t) === "working" || _mood(t) === "stalled" })
+        // attention-first (stable partition): needsyou cards lead, matching the Board's column
+        // order — the warm tray click must land ON the thing that asked for you, never below the
+        // scroll fold. Producer order (the honest cap selection) is preserved within each half,
+        // and the creature-cap budget automatically favors the needs-you cards.
+        var needs = [], rest = []
+        for (var i = 0; i < base.length; ++i)
+            (_mood(base[i]) === "needsyou" ? needs : rest).push(base[i])
+        return needs.concat(rest)
     }
+    // a sticky filter must never outlive the data it filtered: tasks draining to zero while a
+    // non-"all" chip is active would render a blank, uncontrollable body (the chips hide on empty)
+    onEmptyChanged: if (empty) filter = "all"
     // the chips filter BOTH sections (the design's match() does) — a cron can never be needsyou
     // (no review state exists for cron), and "working" admits the same stalled the task filter does
     readonly property var filteredRecurring: {
@@ -73,12 +85,30 @@ Item {
 
     function subline() {
         if (unknown) return "Can't reach Hermes"
-        var n = tasks.length
+        // headline the PRE-CAP total when the producer truncated — "5 tasks" over a 7-task fleet
+        // would under-report; the section note's "showing 5 of 7" then explains the difference
+        var n = Math.max(tasks.length, (model && model.checkInsTotal > 0) ? model.checkInsTotal : 0)
         // no run-location claim — ADR-0051 ships none (the same honesty that cut the GPU/CLOUD chip)
         if (n === 0) return unavailableReason.length ? "Check-ins unavailable" : "No active tasks"
         var needs = model ? model.checkInNeedsYouCount() : 0
         return n + (n === 1 ? " task" : " tasks")
                + (needs > 0 ? (" · " + needs + (needs === 1 ? " needs you" : " need you")) : " · all healthy")
+    }
+
+    // keep keyboard focus VISIBLE inside the scrolling body (WCAG 2.4.7/2.4.11): when focus lands
+    // on a control inside the body's content (the now-live card actions), scroll it into view.
+    readonly property Item _afi: Window.activeFocusItem
+    on_AfiChanged: {
+        var it = _afi
+        if (!it || !body.interactive) return
+        var p = it.parent, inside = false
+        while (p) { if (p === body.contentItem) { inside = true; break } p = p.parent }
+        if (!inside) return
+        var pos = it.mapToItem(body.contentItem, 0, 0)
+        if (pos.y < body.contentY) body.contentY = Math.max(0, pos.y - 8)
+        else if (pos.y + it.height > body.contentY + body.height)
+            body.contentY = Math.min(Math.max(0, body.contentHeight - body.height),
+                                     pos.y + it.height - body.height + 8)
     }
 
     ColumnLayout {
@@ -87,38 +117,30 @@ Item {
         spacing: 11
 
         // --- HEADER ---------------------------------------------------------
+        // No page title: the selected tab segment already says "Check-ins" — repeating it 20px
+        // below made the switcher read as a static caption. The live summary IS the headline.
         RowLayout {
             Layout.fillWidth: true
-            spacing: 10
-            ColumnLayout {
+            spacing: 9
+            Text {
                 Layout.fillWidth: true
-                spacing: 3
-                RowLayout {
-                    spacing: 9
-                    Text {
-                        text: "Check-ins"
-                        color: checkins.skin ? checkins.skin.text : "#E6E9F0"
-                        font.pixelSize: 16; font.bold: true
-                    }
-                    Rectangle {
-                        visible: !checkins.unknown && checkins.model && checkins.model.checkInRunningCount() > 0
-                        radius: 5
-                        color: checkins.skin ? Qt.rgba(checkins.skin.blue.r, checkins.skin.blue.g, checkins.skin.blue.b, 0.14) : "#23204a"
-                        Layout.preferredWidth: liveText.implicitWidth + 12
-                        Layout.preferredHeight: liveText.implicitHeight + 4
-                        Text {
-                            id: liveText
-                            anchors.centerIn: parent
-                            text: (checkins.model ? checkins.model.checkInRunningCount() : 0) + " LIVE"
-                            color: checkins.skin ? checkins.skin.blue : "#9B82E0"
-                            font.pixelSize: 9; font.bold: true; font.letterSpacing: 1.1; font.family: "monospace"
-                        }
-                    }
-                }
+                text: checkins.subline()
+                color: checkins.skin ? checkins.skin.text : "#E6E9F0"
+                font.pixelSize: 13
+                elide: Text.ElideRight
+            }
+            Rectangle {
+                visible: !checkins.unknown && checkins.model && checkins.model.checkInRunningCount() > 0
+                radius: 5
+                color: checkins.skin ? Qt.rgba(checkins.skin.blue.r, checkins.skin.blue.g, checkins.skin.blue.b, 0.14) : "#23204a"
+                Layout.preferredWidth: liveText.implicitWidth + 12
+                Layout.preferredHeight: liveText.implicitHeight + 4
                 Text {
-                    text: checkins.subline()
-                    color: checkins.skin ? checkins.skin.label : "#878C9B"
-                    font.pixelSize: 11
+                    id: liveText
+                    anchors.centerIn: parent
+                    text: (checkins.model ? checkins.model.checkInRunningCount() : 0) + " LIVE"
+                    color: checkins.skin ? checkins.skin.blue : "#9B82E0"
+                    font.pixelSize: 9; font.bold: true; font.letterSpacing: 1.1; font.family: "monospace"
                 }
             }
             // read-only Auto-pilot (the deferred write seam, ADR-0053)
@@ -152,9 +174,12 @@ Item {
                 onActivated: function(i) { checkins.viewMode = i }
             }
             Item { Layout.fillWidth: true }
-            // filter chips (List mode only) — keyboard + screen-reader operable (WCAG 2.1.1 / 4.1.2)
+            // filter chips (List mode only) — keyboard + screen-reader operable (WCAG 2.1.1 / 4.1.2).
+            // Stay visible while a non-"all" filter is active even if it matched nothing, so the
+            // control that emptied the body is never invisible (the onEmptyChanged reset also holds).
             Row {
-                visible: checkins.viewMode === 0 && !checkins.empty && !checkins.unknown
+                visible: checkins.viewMode === 0 && !checkins.unknown
+                         && (!checkins.empty || checkins.filter !== "all")
                 spacing: 6
                 Repeater {
                     model: [ {k: "all", l: "All"}, {k: "needs", l: "Needs you"}, {k: "working", l: "Working"} ]
@@ -168,14 +193,17 @@ Item {
                         color: on ? (checkins.skin ? checkins.skin.blue : "#9B82E0")
                                   : (checkins.skin ? Qt.rgba(checkins.skin.text.r, checkins.skin.text.g, checkins.skin.text.b, 0.05) : "#15171f")
                         border.width: 1
-                        // border doubles as the focus ring (blue when focused) — WCAG 2.4.7
-                        border.color: chip.activeFocus ? (checkins.skin ? checkins.skin.blue : "#9B82E0")
+                        // border doubles as the focus ring — WCAG 2.4.7. On a SELECTED (blue-filled)
+                        // chip the ring is the ink color, never blue-on-blue (~1:1, invisible).
+                        border.color: chip.activeFocus ? (chip.on ? (checkins.skin ? checkins.skin.text : "#E6E9F0")
+                                                                  : (checkins.skin ? checkins.skin.blue : "#9B82E0"))
                                     : on ? "transparent" : (checkins.skin ? checkins.skin.hairline : "#262A36")
                         activeFocusOnTab: true
                         Accessible.role: Accessible.RadioButton
                         Accessible.name: chip.modelData.l + (chip.on ? ", selected" : "")
                         Accessible.checkable: true
                         Accessible.checked: chip.on
+                        Accessible.onPressAction: checkins.filter = chip.modelData.k
                         Keys.onReturnPressed: checkins.filter = chip.modelData.k
                         Keys.onSpacePressed:  checkins.filter = chip.modelData.k
                         Text {
@@ -187,7 +215,9 @@ Item {
                             font.pixelSize: 11; font.bold: chip.on
                             Accessible.ignored: true
                         }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        // -2 margins grow the hit target to 26px (WCAG 2.5.8 headroom on a 22px chip)
+                        MouseArea { anchors.fill: parent; anchors.margins: -2
+                                    cursorShape: Qt.PointingHandCursor
                                     onClicked: checkins.filter = chip.modelData.k }
                     }
                 }
@@ -195,17 +225,23 @@ Item {
         }
 
         // --- BODY (deterministic, capped, scrollable) -----------------------
-        Flickable {
-            id: body
+        Item {
             Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(body.activeH, checkins.bodyCap)
+
+            Flickable {
+            id: body
+            anchors.fill: parent
             // when the empty/unknown message shows, the list/board columns collapse to ~0 height — so
             // give the Flickable a fixed height for the message, else it clips to nothing (the
             // board-renders-blank bug: an empty board has 0 task cards AND no recurring of its own).
+            // Failure states carry the recovery link below the message, so they run taller.
             readonly property bool showEmpty: checkins.unknown
                                               || (checkins.empty && (checkins.viewMode === 1 || checkins.recurring.length === 0))
-            readonly property real activeH: showEmpty ? 84
+            readonly property bool showRecovery: showEmpty
+                                                 && (checkins.unknown || checkins.unavailableReason.length > 0)
+            readonly property real activeH: showEmpty ? (showRecovery ? 122 : 84)
                                             : (checkins.viewMode === 0 ? listCol.implicitHeight : boardCol.implicitHeight)
-            Layout.preferredHeight: Math.min(activeH, checkins.bodyCap)
             contentWidth: width
             contentHeight: activeH
             clip: true
@@ -223,6 +259,7 @@ Item {
             // columns (no recurring), so an empty board ALWAYS needs this line even when recurring
             // exist — and it points the user to where the recurring live (the List view).
             Text {
+                id: emptyText
                 visible: body.showEmpty
                 width: body.width - 24
                 x: 12
@@ -242,6 +279,35 @@ Item {
                 color: checkins.skin ? checkins.skin.label : "#878C9B"
                 font.pixelSize: 12
             }
+            // failure states must not strand the user (the SYSTEM board + dispatch/adopt actions
+            // live behind this link) — read-only, always live, the footer's exact idiom
+            Text {
+                id: recoveryLink
+                visible: body.showRecovery
+                anchors.top: emptyText.bottom
+                anchors.topMargin: 10
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Full status ↗"
+                color: checkins.skin ? checkins.skin.blue : "#9B82E0"
+                font.pixelSize: 12
+                font.underline: true
+                activeFocusOnTab: visible
+                Accessible.role: Accessible.Button
+                Accessible.name: "Full status — opens the AgentOS status panel"
+                Accessible.onPressAction: Qt.openUrlExternally("http://127.0.0.1:9123")
+                Keys.onReturnPressed: Qt.openUrlExternally("http://127.0.0.1:9123")
+                Keys.onSpacePressed:  Qt.openUrlExternally("http://127.0.0.1:9123")
+                Rectangle {   // shape focus ring (the shell idiom)
+                    anchors.fill: parent; anchors.margins: -3
+                    radius: 5; color: "transparent"
+                    border.width: 1
+                    border.color: checkins.skin ? checkins.skin.text : "#E6E9F0"
+                    visible: recoveryLink.activeFocus
+                }
+                MouseArea { anchors.fill: parent; anchors.margins: -4
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: Qt.openUrlExternally("http://127.0.0.1:9123") }
+            }
 
             // ===== LIST =====
             Column {
@@ -255,7 +321,9 @@ Item {
                     visible: checkins.filteredTasks.length > 0
                     width: parent.width; skin: checkins.skin
                     label: "TASKS"
-                    note: checkins.model && checkins.model.checkInsTruncated()
+                    // truncation note only under "All" — under a chip it would conflate
+                    // filter-hidden with cap-hidden ("showing 1 of 7" when 6 are merely filtered)
+                    note: checkins.filter === "all" && checkins.model && checkins.model.checkInsTruncated()
                           ? ("showing " + checkins.filteredTasks.length + " of " + checkins.model.checkInsTotal) : ""
                 }
                 Repeater {
@@ -370,6 +438,18 @@ Item {
                         }
                     }
                 }
+            }
+            }
+
+            // shape focus ring for the scroll viewport — without it the body is an
+            // invisible keyboard tab stop (WCAG 2.4.7)
+            Rectangle {
+                anchors.fill: parent
+                radius: 6; color: "transparent"
+                border.width: 1
+                border.color: checkins.skin ? checkins.skin.text : "#E6E9F0"
+                visible: body.activeFocus
+                z: 3
             }
         }
     }

@@ -1,7 +1,9 @@
 # ADR-0051: The Check-ins data contract — keyhole.json schema 5 (per-task rows, honest GPU-util, recurring)
 
-- Status: **Proposed** — built this session (Phase A, the read-only floor). The contract the
-  Check-ins tab (ADR-0050) renders.
+- Status: **Accepted** (2026-07-01) — the §Status/next pin gate is discharged
+  (`pins_the_exact_contract` extended through schema 6, `KeyholeModel.qml` in lockstep) and the
+  ADR-0050 shell-wide reviewer gate covered the rendered contract. Built as Phase A, the read-only
+  floor; the contract the Check-ins tab (ADR-0050) renders.
 - Date: 2026-06-29
 - Deciders: Corey (binding product steer: "we'll need many ADRs"; "at the very least" a buildable
   read-only floor), design synthesis from three Plan agents.
@@ -116,3 +118,9 @@ needed a producer addition to be detectable at all.
 3. **`recurring.next_run` / `last_run` are consumed as §5 intended:** the card renders a live
    "next in Xh XXm" countdown and "last run Xm ago · ok/error" from the ISO stamps; a `last_status`
    of `""` renders the honest **"not yet run"**, never a fabricated ok.
+
+**Accepted residual:** a **pre-schema-6** producer that crashes leaves a readable last file and is
+undetectable — `written_at` is absent (`-1`), so `producerSilent` stays inert and `lastGoodMs`
+refreshes on every re-parse of the frozen file; the Instrument tab would keep asserting stale
+lease/VRAM/fleet. The live box runs schema 6, so this bites only a downgraded/foreign producer;
+recorded so "the old freshness rules stand" is never mistaken for producer-death coverage.

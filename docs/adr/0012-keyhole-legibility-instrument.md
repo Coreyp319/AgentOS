@@ -255,10 +255,13 @@ as the wallpaper, so the marginal cost is rounding error. The exception is **bou
   refresh — not an unbounded render loop.
 - **Pauses when off screen; reduced-motion freezes.** When hidden or under reduced-motion the
   clock HOLDS at a representative frame — the disc shows a single **still** aurora (never black),
-  like a reduced-motion wallpaper. The tray placement still **vanishes at true idle**
-  (`PassiveStatus`), so at rest in the tray nothing renders at all. (Production follow-up: the
-  always-present panel/desktop placement should also pause the clock on popup-collapse via the
-  host's visibility signal; the spike gates on `visible` + reduced-motion, the hook for it.)
+  like a reduced-motion wallpaper. *(Corrected 2026-07-01, ADR-0050 gate: the shipped placement is
+  a panel widget that stays visible-but-dim at idle — `PassiveStatus` is never returned; idle wears
+  the calm ○ + the 0.20 resting glow recorded below, and `needs_you` elevates to
+  `NeedsAttentionStatus`. The original §5 idle-vanish contract was a tray-hosting posture this
+  deployment deliberately does not use.)* (Production follow-up: the always-present panel/desktop
+  placement should also pause the clock on popup-collapse via the host's visibility signal; the
+  spike gates on `visible` + reduced-motion, the hook for it.)
 - **Evolves idle:** the porthole now **drifts gently at idle** (like the wallpaper, which is
   never frozen), with `busy` speeding the flow so working/idle differ by PACE as well as
   brightness — a more faithful "porthole onto the living sky" than the frozen gradient. This is

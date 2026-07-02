@@ -1,8 +1,10 @@
 # ADR-0050: The keyhole becomes a tabbed shell — Instrument + an Agent-Orchestrator "Check-ins" view
 
-- Status: **Proposed** — built this session (Phase A of the "Agent Orchestrator — Check-ins"
-  program; the read-only floor). Corey's binding steer: *"we'll need many ADRs"*, and *"at the very
-  least"* a buildable read-only floor that ships now.
+- Status: **Accepted** (2026-07-01) — the shell-wide pre-Accepted gate ran (ambient-embodiment +
+  ui-accessibility + UX, all PASS-WITH-MUST-FIXES; every must-fix applied same day — see the gate
+  record below). Built as Phase A of the "Agent Orchestrator — Check-ins" program (the read-only
+  floor). Corey's binding steer: *"we'll need many ADRs"*, and *"at the very least"* a buildable
+  read-only floor that ships now.
 - Date: 2026-06-29
 - Deciders: Corey (binding product steer: "we'll need many ADRs"; "at the very least" a buildable
   read-only floor), design synthesis from three Plan agents.
@@ -130,3 +132,50 @@ amendment is their record; each keeps §7's calm/honest contract and the popup f
    slot, softened sway/bob amplitudes, outline instead of glow on letterforms, and the shared sine
    bob on the pixel sprite. The ~10-creature animation cap is a **whole-tab budget** (recurring and
    board columns spend from one allowance), per ADR-0052 §4's aggregate reading.
+
+## Gate record (2026-07-01) — shell-wide reviewer gate run; must-fixes applied; → Accepted
+
+The §Status/next gate ran as three parallel lenses over the deployed shell: **ambient-embodiment**,
+**ui-accessibility**, and **UX** (the design-council seat). All three returned
+**PASS-WITH-MUST-FIXES**; every must-fix landed the same day:
+
+- **Keyboard operability of live actions** (a11y BLOCKER): `ActionButton` gained
+  `activeFocusOnTab`/Return/Space/`Accessible.onPressAction` + a shape focus ring when live; the
+  Instrument footer link-outs got the same treatment (pre-existing gap, fixed shell-wide); focus
+  landing inside the scrolling body now scrolls into view.
+- **Delegate churn** (a11y HIGH): `applyContract` dedups `check_ins`/`recurring` by content before
+  reassigning, so the 2s poll (and the schema-6 heartbeat rewrite) no longer rebuilds every card —
+  keyboard focus, AT browse position, and a mid-poke squash all survive a tick. Relative-time
+  strings now read the reactive `nowSec` clock so they keep refreshing without rebuilds.
+- **Focus visibility** (a11y HIGH): the selected filter chip's ring is ink-on-blue (was invisible
+  blue-on-blue); the body Flickable wears a shape ring when focused.
+- **Sticky-filter blank body** (UX HIGH): the filter auto-resets to "all" when tasks drain to
+  zero, and the chips stay visible while a non-"all" filter is active — the control that emptied
+  the body can never be invisible.
+- **Stranded failure states** (UX HIGH): the UNKNOWN / unavailable empty states now carry a live
+  "Full status ↗" link-out (`:9123`, the footer idiom) — the recovery surface is on the face that
+  shows the failure.
+- **Live vs seam legibility** (UX+a11y MEDIUM): a live action paints link-blue (the shell's
+  clickable idiom), never opacity-only; a click on a *disabled* seam control flashes the "why"
+  tooltip instead of being swallowed.
+- **Attention-first List** (ambient MEDIUM): `filteredTasks` stable-partitions `needsyou` cards
+  first, matching the Board's column order — the warm tray click lands ON the thing that asked.
+- **Count coherence** (UX MEDIUM): the subline headlines the pre-cap total when truncated; the
+  rail cell is renamed **LIVE** (one liveness word shell-wide); the truncation note shows only
+  under the "All" chip; RecurringCard's stalled text routes through `creatureStalled`; the rail
+  fold-in now carries **preempt + queue** (the agency-stakes arbitration datums) alongside the
+  workload.
+- **Docs honesty** (ambient MEDIUM): §Decision 2's "glyph still vanishes at true idle" described a
+  tray-hosting posture the shipped panel-widget placement never had — corrected here and in the
+  ADR-0012 porthole amendment: idle stays **visible-but-dim** (calm ○, 0.20 resting glow);
+  `needs_you` elevates to `NeedsAttentionStatus`. ADR-0052 §2's "exclusively inside tab 2" reads as
+  *confined to the Check-ins view, whichever tab position it occupies* (the tick gate binds the
+  view's own `visible`, never an index); the popup-open click is the navigation consent.
+
+**Considered and declined:** renaming the "Instrument" segment (proposed "GPU"/"System" — both
+narrower than what the tab shows; the name stays, revisit on real confusion). **Deferred:** a
+visible "AUTO" caption on the Auto-pilot glyph (the control earns a label when ADR-0054 makes it
+live); porthole-glyph scrim deepening under light-crest wallpaper palettes (verify visually first).
+**Recorded residuals:** `currentTab` persists per plasmoid session, so a `needs_you` tray surfacing
+can open onto the Instrument tab (the StateToken still says "Needs your OK"); strings are not
+i18n-wrapped; RTL untested.

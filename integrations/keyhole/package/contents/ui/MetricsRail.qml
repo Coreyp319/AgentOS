@@ -9,8 +9,9 @@
  * lease — present ONLY when something runs (calm at rest, like the Instrument's WORKLOAD/QUEUE rows).
  * VRAM (used/total gauge) · ACTIVE (running task count) are unchanged; honest em-dash under UNKNOWN.
  *
- * The porthole is the VISIBLE tab's one shader (it pauses off-screen / freezes under reduced-motion),
- * so the cost is the same single porthole the Instrument already pays — never two at once.
+ * The porthole is the visible TAB's one shader (it pauses off-screen / freezes under reduced-motion):
+ * per-tab the cost matches the Instrument's single porthole. (The always-visible tray ring runs
+ * beside it while the popup is open — two <100px shaders, a rounding-error cost, noted honestly.)
  *
  * SPDX-License-Identifier: MIT
  */
@@ -24,15 +25,22 @@ Item {
     property bool reducedMotion: false
     implicitHeight: 66
 
-    // The fold-in from the arbitration (Instrument) tab: the GPU's current USE CASE, present-only + calm.
-    // WORKLOAD (the heavy process) leads; else a held lease; "" at rest so the line stays quiet (the same
-    // "density grows with load" idiom the Instrument's WORKLOAD/QUEUE rows follow).
+    // The fold-in from the arbitration (Instrument) tab: what the GPU is being SPENT on, present-only
+    // + calm ("density grows with load", the Instrument's WORKLOAD/QUEUE idiom). A PREEMPT trace
+    // outranks the workload (when the substrate acted, the why-my-job-stalled answer belongs on the
+    // primary face), and the live wait-queue depth appends — the two arbitration datums with real
+    // agency stakes are never a tab away. "" at rest.
     readonly property string _useCase: {
         if (!model || model.effectiveState === "unknown") return ""
+        var p = (model.lease && model.lease.preempt && model.lease.preempt.length) ? model.lease.preempt : ""
         var w = model.workloadString()                 // "ComfyUI · 21.0 GB" or ""
-        if (w !== "") return w
         var l = model.leaseTierString()                // "batch (holder)" or the em-dash
-        return (l && l !== model.emdash()) ? "lease · " + l : ""
+        var base = p.length ? p
+                 : (w !== "" ? w
+                 : ((l && l !== model.emdash()) ? "lease · " + l : ""))
+        var q = model.queueString()                    // "1 waiting · best-effort next" or ""
+        if (q.length) return base.length ? (base + " · " + q) : q
+        return base
     }
 
     Rectangle {
@@ -152,13 +160,13 @@ Item {
             Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; Layout.topMargin: 14; Layout.bottomMargin: 14
                         color: rail.skin ? rail.skin.hairline : "#262A36" }
 
-            // --- ACTIVE (running task count) ----------------------------------
+            // --- LIVE (working task count — the header chip's word, one vocabulary) ---
             ColumnLayout {
                 Layout.leftMargin: 16
                 Layout.rightMargin: 2
                 spacing: 4
                 Text {
-                    text: "ACTIVE"
+                    text: "LIVE"
                     color: rail.skin ? rail.skin.label : "#878C9B"
                     font.pixelSize: 9; font.letterSpacing: 1.2; font.family: "monospace"; font.bold: true
                 }
@@ -168,7 +176,7 @@ Item {
                     font.pixelSize: 22; font.family: "monospace"; font.bold: true
                     Accessible.role: Accessible.StaticText
                     Accessible.name: (rail.model && rail.model.effectiveState !== "unknown")
-                                     ? (rail.model.checkInRunningCount() + " active tasks") : "active tasks unavailable"
+                                     ? (rail.model.checkInRunningCount() + " tasks live") : "live task count unavailable"
                 }
             }
         }

@@ -1,7 +1,10 @@
 # ADR-0052: The sidekick-creature embodiment grammar — a bounded second register, confined to the Check-ins tab
 
-- Status: **Proposed** — built this session (Phase A). The visual grammar the Check-ins tab
-  (ADR-0050) renders over the schema-5 rows (ADR-0051).
+- Status: **Accepted** (2026-07-01) — the §Consequences reviewer gate ran twice: the 2026-06-29
+  two-lens pass below (must-fixes applied), and the ADR-0050 shell-wide gate confirmed those fixes
+  **survived the primary-face refactor** (copper split, steady `!`, open-eyed reduced-motion
+  stills, decorative `Accessible.ignored`, flash math all verified intact). Built as Phase A; the
+  visual grammar the Check-ins tab (ADR-0050) renders over the schema-5 rows (ADR-0051).
 - Date: 2026-06-29
 - Deciders: Corey (binding product steer: "we'll need many ADRs"; "at the very least" a buildable
   read-only floor), design synthesis from three Plan agents.
@@ -35,7 +38,11 @@ non-negotiables hold by construction.
    tab 2.** The **Instrument tab, the tray glyph, and the wallpaper stay calm** — unchanged by this
    ADR. This is the whole reconciliation: §7's calm is not relaxed *system-wide*; a second, livelier
    register is admitted in **one bounded surface** the user explicitly navigated to, exactly as §7's
-   shader exception was scoped to the one foveal porthole.
+   shader exception was scoped to the one foveal porthole. *(Amended 2026-07-01, ADR-0050
+   primary-face flip: the confinement is to the Check-ins **view**, whichever tab position it
+   occupies — the tick gate binds the view's own `visible`, never a tab index — and the popup-open
+   click is the explicit-navigation consent; the Instrument tab, tray, and wallpaper stay calm
+   exactly as written.)*
 
 3. **Inherit §7's invariants — they are not relaxed, only localized:**
    - **Never spend the reserved warm on anything but `needs_you`.** The warm-**predicate** monopoly

@@ -542,20 +542,34 @@ Item {
 
         Rectangle { Layout.fillWidth: true; height: 1; color: full.hairline }
 
-        // --- Footer link-outs: Hermes board (gateway-gated) + full status panel
+        // --- Footer link-outs: Hermes board (gateway-gated) + full status panel.
+        // Keyboard-operable + real Button roles (WCAG 2.1.1/4.1.2) — the same recipe the card
+        // ActionButtons follow; the shape focus ring is the shell idiom.
         RowLayout {
             Layout.fillWidth: true
             Text {
                 id: boardLink
-                text: (full.model && full.model.gateway === "running")
-                      ? "Open board ↗"
-                      : "Board unavailable (gateway " + (full.model ? full.model.gateway : "unknown") + ")"
-                color: (full.model && full.model.gateway === "running") ? full.linkColor : full.labelFg
+                readonly property bool live: full.model && full.model.gateway === "running"
+                text: live ? "Open board ↗"
+                           : "Board unavailable (gateway " + (full.model ? full.model.gateway : "unknown") + ")"
+                color: live ? full.linkColor : full.labelFg
                 font.pixelSize: 12
-                font.underline: full.model && full.model.gateway === "running"
+                font.underline: live
+                activeFocusOnTab: live
+                Accessible.role: live ? Accessible.Button : Accessible.StaticText
+                Accessible.name: live ? "Open board — opens the Hermes kanban" : text
+                Accessible.onPressAction: if (live) Qt.openUrlExternally("http://127.0.0.1:9119")
+                Keys.onReturnPressed: if (live) Qt.openUrlExternally("http://127.0.0.1:9119")
+                Keys.onSpacePressed:  if (live) Qt.openUrlExternally("http://127.0.0.1:9119")
+                Rectangle {
+                    anchors.fill: parent; anchors.margins: -3
+                    radius: 5; color: "transparent"
+                    border.width: 1; border.color: full.skin ? full.skin.text : "#E6E9F0"
+                    visible: boardLink.activeFocus
+                }
                 MouseArea {
                     anchors.fill: parent
-                    enabled: full.model && full.model.gateway === "running"
+                    enabled: boardLink.live
                     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: Qt.openUrlExternally("http://127.0.0.1:9119")
                 }
@@ -565,6 +579,18 @@ Item {
                 id: statusLink
                 text: "Full status ↗"
                 color: full.linkColor; font.pixelSize: 12; font.underline: true
+                activeFocusOnTab: true
+                Accessible.role: Accessible.Button
+                Accessible.name: "Full status — opens the AgentOS status panel"
+                Accessible.onPressAction: Qt.openUrlExternally("http://127.0.0.1:9123")
+                Keys.onReturnPressed: Qt.openUrlExternally("http://127.0.0.1:9123")
+                Keys.onSpacePressed:  Qt.openUrlExternally("http://127.0.0.1:9123")
+                Rectangle {
+                    anchors.fill: parent; anchors.margins: -3
+                    radius: 5; color: "transparent"
+                    border.width: 1; border.color: full.skin ? full.skin.text : "#E6E9F0"
+                    visible: statusLink.activeFocus
+                }
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor

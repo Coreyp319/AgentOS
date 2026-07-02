@@ -1,7 +1,10 @@
 # ADR-0053: Read-only-first Check-ins + the deferred write-action seam
 
-- Status: **Proposed** — built this session (Phase A, the read-only floor). The charter for the
-  Check-ins tab (ADR-0050) and the seam the future write phase wires into.
+- Status: **Accepted** (2026-07-01) — the ADR-0050 shell-wide gate verified the seam renders
+  honestly (disabled-with-reason, StaticText + why, the "why" now also answers a click) and that
+  read-only link-outs ("Open in board") run LIVE, since this charter defers *writes* only. Built
+  as Phase A, the read-only floor; the charter for the Check-ins tab (ADR-0050) and the seam the
+  future write phase wires into.
 - Date: 2026-06-29
 - Deciders: Corey (binding product steer: "we'll need many ADRs"; "at the very least" a buildable
   read-only floor), design synthesis from three Plan agents.

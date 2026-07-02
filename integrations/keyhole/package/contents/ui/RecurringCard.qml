@@ -31,10 +31,11 @@ Rectangle {
     implicitHeight: row.implicitHeight + 22
 
     Accessible.role: Accessible.StaticText
+    // coarse (minute-granular) countdown in the NAME so it doesn't mutate + fire AT events each poll
     Accessible.name: (job ? job.name : "") + ", " + (card.model && job ? card.model.cronHuman(job.schedule) : (job ? job.schedule : ""))
         + ", " + (job && job.enabled ? "enabled" : "paused")
-        + (card.model && job && job.enabled && card.model.recurringNextString(job).length
-           ? (", " + card.model.recurringNextString(job)) : "")
+        + (card.model && job && job.enabled && card.model.recurringNextString(job, true).length
+           ? (", " + card.model.recurringNextString(job, true)) : "")
         + ", " + (card.model && job ? card.model.recurringLastString(job) : "")
 
     RowLayout {
@@ -90,7 +91,9 @@ Rectangle {
                 Layout.fillWidth: true
                 visible: text.length > 0
                 text: (card.model && card.job) ? card.model.recurringNextString(card.job) : ""
-                color: card.mood === "stalled" ? (card.skin ? card.skin.stAmber : "#D9B45A")
+                // creatureStalled, not raw stAmber: the register-split token minted for exactly
+                // this small-text-on-card-glass surface (light stAmber sits at a 4.67:1 razor)
+                color: card.mood === "stalled" ? (card.skin ? card.skin.creatureStalled : "#D9B45A")
                                                : (card.skin ? card.skin.muted : "#B4BAC8")
                 font.pixelSize: 12
                 font.family: "monospace"
@@ -102,7 +105,7 @@ Rectangle {
                 Layout.fillWidth: true
                 visible: text.length > 0
                 text: (card.model && card.job) ? card.model.recurringLastString(card.job) : ""
-                color: card.mood === "stalled" ? (card.skin ? card.skin.stAmber : "#D9B45A")
+                color: card.mood === "stalled" ? (card.skin ? card.skin.creatureStalled : "#D9B45A")
                                                : (card.skin ? card.skin.label : "#878C9B")
                 font.pixelSize: 10
                 elide: Text.ElideRight

@@ -49,6 +49,7 @@ Rectangle {
     Accessible.name: (task ? task.title : "")
         + ", " + (task && task.assignee ? task.assignee : "unassigned")
         + ", " + (model && task ? model.checkInStatusLine(task) : "")
+        + (!compact && model && task ? (", last check-in " + model.lastSeenString(task)) : "")
 
     RowLayout {
         id: row
